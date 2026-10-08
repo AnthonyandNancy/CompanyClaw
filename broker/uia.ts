@@ -26,6 +26,9 @@ interface RunPowerShellOptions {
   runner?: typeof execFile;
 }
 
+/** Options callers actually supply; the script name is chosen per probe. */
+export type ProbeOptions = Omit<RunPowerShellOptions, "scriptName">;
+
 /** Parses the `{ windows: [...] }` payload the scripts emit. */
 export function parseWindowList(raw: string): UiaProbeResult<WindowDescriptor[]> {
   let parsed: unknown;
@@ -56,7 +59,7 @@ export function parseWindowList(raw: string): UiaProbeResult<WindowDescriptor[]>
 }
 
 export function runListWindows(
-  options: RunPowerShellOptions,
+  options: ProbeOptions,
 ): Promise<UiaProbeResult<WindowDescriptor[]>> {
   return runScript({ ...options, scriptName: "list-windows.ps1" }).then((result) =>
     result.ok ? parseWindowList(result.value) : result,
