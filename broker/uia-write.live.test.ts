@@ -1,7 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runFindElements, runListWindows, runReadValue, runSetValue } from "./uia";
+import {
+  runFindElements,
+  runListWindows,
+  runReadValue,
+  runSendKeys,
+  runSetValue,
+} from "./uia";
 
 /**
  * Live write verification against a real Windows application.
@@ -132,6 +138,68 @@ describe.skipIf(!isWindows)("live UIA write path", () => {
         timeoutMs: TIMEOUT_MS,
       });
       expect(result).toEqual({ ok: false, reason: "target-element-not-found" });
+    } finally {
+      stopNotepad(child);
+    }
+  }, 300_000);
+});
+
+describe.skipIf(!isWindows)("live UIA send-keys path", () => {
+  it("types into a real control and confirms the text landed", async () => {
+    const { child } = await launchNotepad();
+    try {
+      const tree = await runFindElements({
+        scriptDir,
+        processName: PROCESS_NAME,
+        maxDepth: 6,
+        maxElements: 400,
+        timeoutMs: TIMEOUT_MS,
+      });
+      expect(tree.ok).toBe(true);
+      if (!tree.ok) return;
+
+      const editable = tree.value.elements.find(
+        (element) =>
+          element.controlType.includes("Edit") || element.className.includes("Edit"),
+      );
+      expect(editable, "no editable control found").toBeDefined();
+      if (!editable) return;
+
+      const selector = editable.automationId
+        ? { automationId: editable.automationId }
+        : { className: editable.className, controlType: editable.controlType };
+
+      // Replace mode: the field should end up holding exactly this text.
+      const first = `CompanyClaw-A-${Date.now()}`;
+      const typedOnce = await runSendKeys({
+        scriptDir,
+        processName: PROCESS_NAME,
+        selector,
+        text: first,
+        append: false,
+        maxDepth: 6,
+        timeoutMs: TIMEOUT_MS,
+      });
+      expect(typedOnce.ok, `send-keys failed: ${typedOnce.ok ? "" : typedOnce.reason}`).toBe(true);
+      if (!typedOnce.ok) return;
+      expect(typedOnce.value.verified).toBe(true);
+      expect(typedOnce.value.observedValue).toBe(first);
+
+      // Append mode: the previous text must still be there.
+      const suffix = `-B-${Date.now()}`;
+      const appended = await runSendKeys({
+        scriptDir,
+        processName: PROCESS_NAME,
+        selector,
+        text: suffix,
+        append: true,
+        maxDepth: 6,
+        timeoutMs: TIMEOUT_MS,
+      });
+      expect(appended.ok).toBe(true);
+      if (!appended.ok) return;
+      expect(appended.value.verified).toBe(true);
+      expect(appended.value.observedValue).toBe(`${first}${suffix}`);
     } finally {
       stopNotepad(child);
     }

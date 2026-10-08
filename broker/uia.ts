@@ -334,6 +334,55 @@ export function parseSetValue(raw: string): UiaProbeResult<SetValueResult> {
   }));
 }
 
+export interface SendKeysOptions extends ProbeOptions {
+  processName: string;
+  windowTitle?: string;
+  selector: ElementSelector;
+  text: string;
+  /** Append to the existing value instead of replacing it. */
+  append?: boolean;
+  maxDepth?: number;
+  maxVisited?: number;
+}
+
+export interface SendKeysResult {
+  window: WindowIdentity;
+  element: ElementSummary;
+  typed: string;
+  expected: string;
+  observedValue: string | null;
+  verified: boolean;
+}
+
+export async function runSendKeys(
+  options: SendKeysOptions,
+): Promise<UiaProbeResult<SendKeysResult>> {
+  const raw = await runScript({
+    ...options,
+    scriptName: "send-keys.ps1",
+    env: {
+      ...options.env,
+      ...buildTargetEnv(options),
+      ...selectorToEnv(options.selector),
+      CC_TEXT: options.text,
+      CC_APPEND: options.append ? "1" : "0",
+    },
+  });
+  if (!raw.ok) return raw;
+  return parseSendKeys(raw.value);
+}
+
+export function parseSendKeys(raw: string): UiaProbeResult<SendKeysResult> {
+  return parseElementOperation(raw, (record, window, element) => ({
+    window,
+    element,
+    typed: typeof record.typed === "string" ? record.typed : "",
+    expected: typeof record.expected === "string" ? record.expected : "",
+    observedValue: typeof record.observedValue === "string" ? record.observedValue : null,
+    verified: record.verified === true,
+  }));
+}
+
 export function parseInvokePattern(raw: string): UiaProbeResult<InvokePatternResult> {
   return parseElementOperation(raw, (record, window, element) => ({
     window,

@@ -13,6 +13,7 @@ import {
   runInvokePattern,
   runListWindows,
   runReadValue,
+  runSendKeys,
   runSetValue,
   type ElementDescriptor,
   type ElementSelector,
@@ -70,6 +71,20 @@ export interface BrokerServerOptions {
   >;
   invokePattern?: (options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" }) => Promise<
     | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
+    | { ok: false; reason: string }
+  >;
+  sendKeys?: (options: ElementOperationOptions & { text: string; append?: boolean }) => Promise<
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          typed: string;
+          expected: string;
+          observedValue: string | null;
+          verified: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
 }
@@ -131,6 +146,8 @@ export async function startBrokerServer(
   const invokePattern =
     options.invokePattern ??
     ((opts) => runInvokePattern({ ...opts, scriptDir: opts.scriptDir }));
+  const sendKeys =
+    options.sendKeys ?? ((opts) => runSendKeys({ ...opts, scriptDir: opts.scriptDir }));
 
   const server: Server = createServer((socket) => {
     handleConnection(socket, {
@@ -143,6 +160,7 @@ export async function startBrokerServer(
       readValue,
       setValue,
       invokePattern,
+      sendKeys,
     });
   });
 
@@ -201,6 +219,20 @@ interface ConnectionContext {
     options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" },
   ) => Promise<
     | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
+    | { ok: false; reason: string }
+  >;
+  sendKeys: (options: ElementOperationOptions & { text: string; append?: boolean }) => Promise<
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          typed: string;
+          expected: string;
+          observedValue: string | null;
+          verified: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
 }
@@ -291,7 +323,13 @@ export async function executeAuthorized(
   request: BrokerRequest,
   context: Pick<
     ConnectionContext,
-    "scriptDir" | "listWindows" | "findElements" | "readValue" | "setValue" | "invokePattern"
+    | "scriptDir"
+    | "listWindows"
+    | "findElements"
+    | "readValue"
+    | "setValue"
+    | "invokePattern"
+    | "sendKeys"
   >,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
@@ -367,9 +405,24 @@ export async function executeAuthorized(
       if (!result.value.invoked) return { status: "failed", reason: "invoke-not-confirmed" };
       return { status: "ok", data: result.value };
     }
+    case "send-keys": {
+      const elementOptions = buildElementOptions(request, context.scriptDir);
+      if (!elementOptions.ok) return { status: "rejected", reason: elementOptions.reason };
+      const text = request.args?.text;
+      if (typeof text !== "string" || text.length === 0) {
+        return { status: "rejected", reason: "missing-text" };
+      }
+      const append = request.args?.append === true;
+      const result = await context.sendKeys({ ...elementOptions.value, text, append });
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      if (!result.value.verified) {
+        // The text did not reach the control; never report that it did.
+        return { status: "failed", reason: "verification-failed" };
+      }
+      return { status: "ok", data: result.value };
+    }
     case "describe-element":
     case "wait-for-window":
-    case "send-keys":
       return { status: "failed", reason: "not-implemented" };
     default:
       return { status: "rejected", reason: "unsupported-operation" };

@@ -326,7 +326,71 @@ describe("broker server transport", () => {
     );
   });
 
-  it("still reports not-implemented for operations that are genuinely absent", async () => {
+  it("reports not-implemented for the operations that are still genuinely absent", async () => {
+    for (const operation of ["describe-element", "wait-for-window"] as const) {
+      await withServer(
+        async (port) => {
+          const response = await roundTrip(port, {
+            token: TOKEN,
+            request: makeRequest({
+              operation,
+              target: { processName: "notepad" },
+              args: { selector: { automationId: "edit-1" } },
+            }),
+          });
+          expect(response).toMatchObject({ status: "failed", reason: "not-implemented" });
+        },
+        { verifyTicket: () => true },
+      );
+    }
+  });
+
+  it("refuses a send-keys request whose text never reached the control", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "send-keys",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" }, text: "张三" },
+            approvalTicket: {
+              contract: "companyclaw.approval-ticket.v1",
+              nonce: "n-1",
+              bindingHash: "b".repeat(64),
+              issuedAt: "2026-10-08T00:00:00.000Z",
+              expiresAt: "2026-10-08T00:01:00.000Z",
+              signature: "sig",
+            },
+          }),
+        });
+        expect(response).toMatchObject({ status: "failed", reason: "verification-failed" });
+      },
+      {
+        verifyTicket: () => true,
+        sendKeys: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            element: {
+              name: "文本编辑器",
+              automationId: "edit-1",
+              controlType: "ControlType.Edit",
+              className: "Edit",
+              isEnabled: true,
+              processId: 111,
+            },
+            typed: "张三",
+            expected: "张三",
+            observedValue: "",
+            verified: false,
+          },
+        }),
+      },
+    );
+  });
+
+  it("refuses send-keys without text", async () => {
     await withServer(
       async (port) => {
         const response = await roundTrip(port, {
@@ -345,9 +409,8 @@ describe("broker server transport", () => {
             },
           }),
         });
-        expect(response).toMatchObject({ status: "failed", reason: "not-implemented" });
+        expect(response).toMatchObject({ status: "rejected", reason: "missing-text" });
       },
-      // A verified ticket is required to even reach the operation switch.
       { verifyTicket: () => true },
     );
   });
