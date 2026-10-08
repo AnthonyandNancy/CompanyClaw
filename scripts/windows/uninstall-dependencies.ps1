@@ -9,25 +9,40 @@
       3. 清理系统级 npm 全局 openclaw
       4. 删除 Git (~/.openclaw-git)
       5. 清理 PATH 环境变量（不包含 Node.js 路径）
-      6. 删除 OpenClaw 配置 (~/.openclaw)
+      6. 保留 OpenClaw 用户配置 (~/.openclaw)【默认保留，除非显式 -PurgeUserData】
       7. 删除 npm 缓存
-      8. 移除 Windows Defender 排除项
+      8. 保留 Windows Defender 排除项【默认保留，除非显式 -RemoveDefenderExclusions】
 
     此脚本不会删除 Node.js（即使是托管安装在 ~/.openclaw-node）。
     此脚本不会删除 MicroClaw 桌面客户端 (~/.microclaw)。
     使用 MicroClaw 安装器卸载桌面客户端。
 
+    用户数据保护（CompanyClaw）：
+      ~/.openclaw 含模型凭据、微信绑定、浏览器工作 Profile、任务历史。
+      默认**不删除**，避免卸载依赖时误删员工数据。
+
 .PARAMETER SkipGit
     跳过 Git 卸载
+
+.PARAMETER PurgeUserData
+    显式要求删除 OpenClaw 用户配置 (~/.openclaw)。
+    默认 false：普通卸载保留员工配置与数据。
+
+.PARAMETER RemoveDefenderExclusions
+    显式要求移除 Windows Defender 排除项（需要管理员）。
+    默认 false：CompanyClaw 默认不新增排除项，卸载时也不主动改动主机 AV 配置。
 
 .EXAMPLE
     .\uninstall-dependencies.ps1
     .\uninstall-dependencies.ps1 -SkipGit
+    .\uninstall-dependencies.ps1 -PurgeUserData -RemoveDefenderExclusions
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$SkipGit
+    [switch]$SkipGit,
+    [switch]$PurgeUserData = $false,
+    [switch]$RemoveDefenderExclusions = $false
 )
 
 Set-StrictMode -Version Latest
@@ -235,19 +250,28 @@ Broadcast-SettingsChange
 Write-Ok "PATH cleaned (restart terminal to take effect)"
 
 # ══════════════════════════════════════════════════════════════
-# Step 6: Remove OpenClaw config (~/.openclaw)
+# Step 6: OpenClaw user config (~/.openclaw) — PRESERVED by default
 # ══════════════════════════════════════════════════════════════
+# ~/.openclaw holds model credentials, the WeChat binding, the browser work
+# profile and task history. CompanyClaw keeps it unless the operator asks for
+# a purge, so uninstalling dependencies can never destroy employee data.
 $OpenClawDir = Join-Path $env:USERPROFILE ".openclaw"
-Write-Step "Removing OpenClaw config ($OpenClawDir)..."
-if (Test-Path $OpenClawDir) {
-    Remove-Item -Path $OpenClawDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($PurgeUserData) {
+    Write-Step "Purging OpenClaw user config ($OpenClawDir)..."
     if (Test-Path $OpenClawDir) {
-        Write-Warn "$OpenClawDir not fully deleted"
+        Remove-Item -Path $OpenClawDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $OpenClawDir) {
+            Write-Warn "$OpenClawDir not fully deleted"
+        } else {
+            Write-Ok "Deleted $OpenClawDir"
+        }
     } else {
-        Write-Ok "Deleted $OpenClawDir"
+        Write-Info "$OpenClawDir does not exist, skipping"
     }
 } else {
-    Write-Info "$OpenClawDir does not exist, skipping"
+    Write-Step "Preserving OpenClaw user config ($OpenClawDir)..."
+    Write-Info "Kept by default (model keys, WeChat binding, browser profile, task history)."
+    Write-Info "Pass -PurgeUserData to remove it explicitly."
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -262,22 +286,29 @@ if (Test-Path $NpmCache) {
 }
 
 # ══════════════════════════════════════════════════════════════
-# Step 8: Remove Defender exclusions
+# Step 8: Defender exclusions — PRESERVED unless explicitly requested
 # ══════════════════════════════════════════════════════════════
-Write-Step "Removing Windows Defender exclusions (requires admin)..."
-$exclusionDirs = @(
-    $GitDir,
-    $NpmCache,
-    $env:TEMP
-) | Where-Object { $_ }
+# CompanyClaw does not add exclusions by default, so it must not silently
+# rewrite the host's AV configuration on uninstall either.
+if ($RemoveDefenderExclusions) {
+    Write-Step "Removing Windows Defender exclusions (requires admin)..."
+    $exclusionDirs = @(
+        $GitDir,
+        $NpmCache,
+        $env:TEMP
+    ) | Where-Object { $_ }
 
-$psCommands = ($exclusionDirs | ForEach-Object { "Remove-MpPreference -ExclusionPath '$($_.Replace("'","''"))' -ErrorAction SilentlyContinue" }) -join "; "
+    $psCommands = ($exclusionDirs | ForEach-Object { "Remove-MpPreference -ExclusionPath '$($_.Replace("'","''"))' -ErrorAction SilentlyContinue" }) -join "; "
 
-try {
-    Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command", $psCommands -ErrorAction Stop
-    Write-Ok "Defender exclusions removed"
-} catch {
-    Write-Warn "Defender exclusion removal failed (non-fatal, may need admin): $_"
+    try {
+        Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command", $psCommands -ErrorAction Stop
+        Write-Ok "Defender exclusions removed"
+    } catch {
+        Write-Warn "Defender exclusion removal failed (non-fatal, may need admin): $_"
+    }
+} else {
+    Write-Step "Preserving Windows Defender configuration..."
+    Write-Info "Left untouched by default. Pass -RemoveDefenderExclusions to change it."
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -292,10 +323,17 @@ Write-Host "Removed:" -ForegroundColor White
 if (-not $SkipGit) {
 Write-Host "  Git:          $GitDir" -ForegroundColor Gray
 }
-Write-Host "  OpenClaw:     (npm global package + config)" -ForegroundColor Gray
+Write-Host "  OpenClaw:     (npm global package)" -ForegroundColor Gray
 Write-Host "  npm cache:    $NpmCache" -ForegroundColor Gray
+if ($PurgeUserData) {
+Write-Host "  OpenClaw cfg: ~/.openclaw (explicitly purged)" -ForegroundColor Gray
+}
 Write-Host ""
 Write-Host "NOT removed:" -ForegroundColor Yellow
 Write-Host "  Node.js:      kept intact ($NodeDir if present)" -ForegroundColor Gray
 Write-Host "  Desktop app:  ~/.microclaw (use MicroClaw installer to uninstall)" -ForegroundColor Gray
+if (-not $PurgeUserData) {
+Write-Host "  OpenClaw cfg: ~/.openclaw (kept: model keys, WeChat binding, task history)" -ForegroundColor Gray
+}
+Write-Host "  Defender cfg: unchanged" -ForegroundColor Gray
 Write-Host ""

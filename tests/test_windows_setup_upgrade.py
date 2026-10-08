@@ -2102,10 +2102,15 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         self.ws._add_defender_exclusions.assert_not_called()
 
     def test_defender_exclusions_write_marker_only_after_success(self):
+        # CompanyClaw (Requirement V1.1, conflict 2) makes exclusions opt-in.
+        # The marker semantics below still hold once an operator opts in.
         marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
         self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=True)
 
-        self.assertTrue(self.ws.ensure_defender_exclusions())
+        with unittest.mock.patch.dict(
+            "os.environ", {"COMPANYCLAW_DEFENDER_EXCLUSIONS": "1"}, clear=False
+        ):
+            self.assertTrue(self.ws.ensure_defender_exclusions())
 
         self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["schema"], 1)
         configured_paths = self.ws._add_defender_exclusions.call_args.args[0]
@@ -2118,7 +2123,10 @@ class WindowsSetupUpgradeTests(unittest.TestCase):
         marker = self.root / ".microclaw" / "install-state" / "defender-exclusions.json"
         self.ws._add_defender_exclusions = unittest.mock.Mock(return_value=False)
 
-        self.assertTrue(self.ws.ensure_defender_exclusions())
+        with unittest.mock.patch.dict(
+            "os.environ", {"COMPANYCLAW_DEFENDER_EXCLUSIONS": "1"}, clear=False
+        ):
+            self.assertTrue(self.ws.ensure_defender_exclusions())
 
         self.assertFalse(marker.exists())
 

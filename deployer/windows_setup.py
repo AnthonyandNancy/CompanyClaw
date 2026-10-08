@@ -172,6 +172,29 @@ _CREATE_SUSPENDED = 0x00000004
 # above the CLI boot time to avoid spurious validation failures.
 _OPENCLAW_RPC_TIMEOUT = 120
 
+# CompanyClaw: widening host AV exclusions must be an explicit operator choice.
+# Requirement V1.1 (conflict 2) requires the default to be "no exclusions".
+_DEFENDER_EXCLUSION_OPT_IN_VARS = (
+    "COMPANYCLAW_DEFENDER_EXCLUSIONS",
+    "OPENCLAW_DEFENDER_EXCLUSIONS",
+)
+_DEFENDER_EXCLUSION_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _defender_exclusions_opted_in() -> bool:
+    """True only when an operator explicitly opted into Defender exclusions.
+
+    Absent or unrecognised values mean "do not touch the host's AV config",
+    which keeps the default fail-safe.
+    """
+    for name in _DEFENDER_EXCLUSION_OPT_IN_VARS:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        if raw.strip().lower() in _DEFENDER_EXCLUSION_TRUTHY:
+            return True
+    return False
+
 
 class _WindowsKillOnCloseJob:
     """Own a Windows Job Object that terminates its process tree when closed."""
@@ -5308,13 +5331,25 @@ class WindowsSetup:
         return self._resolve_packaged_icon("microclaw-uninstall.ico", "microclaw-uninstall.ico")
 
     def ensure_defender_exclusions(self) -> bool:
-        """Add Windows Defender exclusions for all managed directories.
+        """Opt-in Windows Defender exclusions for all managed directories.
 
-        Real-time AV scanning thousands of JS/EXE files is the primary cause
-        of slow plugin installs and gateway startup on Windows.  Runs as a
-        standalone step so exclusions are applied regardless of whether Node.js
-        was freshly installed or already present.
+        Real-time AV scanning thousands of JS/EXE files slows plugin installs and
+        gateway startup on Windows, but widening the host's AV exclusions is a
+        security decision that must not happen silently. CompanyClaw therefore
+        **skips this step by default** and only runs it when the operator sets
+        ``COMPANYCLAW_DEFENDER_EXCLUSIONS=1`` explicitly (or the legacy
+        ``OPENCLAW_DEFENDER_EXCLUSIONS=1`` alias).
+
+        Requirement V1.1 (conflict 2) forbids adding Defender exclusions by
+        default; this method is the single enforcement point for that rule.
         """
+        if not _defender_exclusions_opted_in():
+            self.log.info(
+                "  Skipping Windows Defender exclusions (disabled by default). "
+                "Set COMPANYCLAW_DEFENDER_EXCLUSIONS=1 to opt in."
+            )
+            return True
+
         self.log.step("正在添加 Windows Defender 排除项…")
         local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
         appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
