@@ -8,7 +8,18 @@ import {
   type BrokerRequest,
   type BrokerOutcome,
 } from "./protocol";
-import { runFindElements, runListWindows, type ElementDescriptor, type WindowDescriptor } from "./uia";
+import {
+  runFindElements,
+  runInvokePattern,
+  runListWindows,
+  runReadValue,
+  runSetValue,
+  type ElementDescriptor,
+  type ElementSelector,
+  type ElementSummary,
+  type WindowDescriptor,
+  type WindowIdentity,
+} from "./uia";
 
 /**
  * Broker IPC server.
@@ -38,6 +49,38 @@ export interface BrokerServerOptions {
     | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
     | { ok: false; reason: string }
   >;
+  /** Injectable element operations; default to the real UIA probes. */
+  readValue?: (options: ElementOperationOptions) => Promise<
+    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; value: string | null; valueReadable: boolean } }
+    | { ok: false; reason: string }
+  >;
+  setValue?: (options: ElementOperationOptions & { newValue: string }) => Promise<
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          previousValue: string | null;
+          newValue: string;
+          observedValue: string | null;
+          verified: boolean;
+        };
+      }
+    | { ok: false; reason: string }
+  >;
+  invokePattern?: (options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" }) => Promise<
+    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
+    | { ok: false; reason: string }
+  >;
+}
+
+export interface ElementOperationOptions {
+  scriptDir: string;
+  processName: string;
+  windowTitle?: string;
+  selector: ElementSelector;
+  maxDepth?: number;
+  maxVisited?: number;
 }
 
 export interface FindElementsProbeOptions {
@@ -81,6 +124,13 @@ export async function startBrokerServer(
   const listWindows = options.listWindows ?? ((opts) => runListWindows({ scriptDir: opts.scriptDir }));
   const findElements =
     options.findElements ?? ((opts) => runFindElements({ ...opts, scriptDir: opts.scriptDir }));
+  const readValue =
+    options.readValue ?? ((opts) => runReadValue({ ...opts, scriptDir: opts.scriptDir }));
+  const setValue =
+    options.setValue ?? ((opts) => runSetValue({ ...opts, scriptDir: opts.scriptDir }));
+  const invokePattern =
+    options.invokePattern ??
+    ((opts) => runInvokePattern({ ...opts, scriptDir: opts.scriptDir }));
 
   const server: Server = createServer((socket) => {
     handleConnection(socket, {
@@ -90,6 +140,9 @@ export async function startBrokerServer(
       now,
       listWindows,
       findElements,
+      readValue,
+      setValue,
+      invokePattern,
     });
   });
 
@@ -124,6 +177,30 @@ interface ConnectionContext {
   >;
   findElements: (options: FindElementsProbeOptions) => Promise<
     | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
+    | { ok: false; reason: string }
+  >;
+  readValue: (options: ElementOperationOptions) => Promise<
+    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; value: string | null; valueReadable: boolean } }
+    | { ok: false; reason: string }
+  >;
+  setValue: (options: ElementOperationOptions & { newValue: string }) => Promise<
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          previousValue: string | null;
+          newValue: string;
+          observedValue: string | null;
+          verified: boolean;
+        };
+      }
+    | { ok: false; reason: string }
+  >;
+  invokePattern: (
+    options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" },
+  ) => Promise<
+    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
     | { ok: false; reason: string }
   >;
 }
@@ -212,7 +289,10 @@ async function handleLine(line: string, context: ConnectionContext): Promise<unk
  */
 export async function executeAuthorized(
   request: BrokerRequest,
-  context: Pick<ConnectionContext, "scriptDir" | "listWindows" | "findElements">,
+  context: Pick<
+    ConnectionContext,
+    "scriptDir" | "listWindows" | "findElements" | "readValue" | "setValue" | "invokePattern"
+  >,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
     case "list-windows": {
@@ -246,16 +326,97 @@ export async function executeAuthorized(
       if (!result.ok) return { status: "failed", reason: result.reason };
       return { status: "ok", data: result.value };
     }
+    case "read-value": {
+      const elementOptions = buildElementOptions(request, context.scriptDir);
+      if (!elementOptions.ok) return { status: "rejected", reason: elementOptions.reason };
+      const result = await context.readValue(elementOptions.value);
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      return { status: "ok", data: result.value };
+    }
+    case "set-value": {
+      const elementOptions = buildElementOptions(request, context.scriptDir);
+      if (!elementOptions.ok) return { status: "rejected", reason: elementOptions.reason };
+      const newValue = request.args?.newValue;
+      if (typeof newValue !== "string") {
+        return { status: "rejected", reason: "missing-new-value" };
+      }
+      const result = await context.setValue({ ...elementOptions.value, newValue });
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      // A write that did not survive read-back is not a success. The operation
+      // ran, but the broker must not claim the change took effect.
+      if (!result.value.verified) {
+        return {
+          status: "failed",
+          reason: "verification-failed",
+        };
+      }
+      return { status: "ok", data: result.value };
+    }
+    case "invoke-pattern": {
+      const elementOptions = buildElementOptions(request, context.scriptDir);
+      if (!elementOptions.ok) return { status: "rejected", reason: elementOptions.reason };
+      const pattern = request.args?.pattern;
+      if (pattern !== undefined && pattern !== "Invoke" && pattern !== "SelectionItem") {
+        return { status: "rejected", reason: "unsupported-pattern" };
+      }
+      const result = await context.invokePattern({
+        ...elementOptions.value,
+        ...(pattern ? { pattern } : {}),
+      });
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      if (!result.value.invoked) return { status: "failed", reason: "invoke-not-confirmed" };
+      return { status: "ok", data: result.value };
+    }
     case "describe-element":
-    case "read-value":
     case "wait-for-window":
-    case "invoke-pattern":
-    case "set-value":
     case "send-keys":
       return { status: "failed", reason: "not-implemented" };
     default:
       return { status: "rejected", reason: "unsupported-operation" };
   }
+}
+
+/** Builds the element-addressing options the three element scripts share. */
+function buildElementOptions(
+  request: BrokerRequest,
+  scriptDir: string,
+): { ok: true; value: ElementOperationOptions } | { ok: false; reason: string } {
+  const processName = request.target?.processName;
+  if (!processName) return { ok: false, reason: "target-required" };
+  const selectorRaw = request.args?.selector;
+  if (typeof selectorRaw !== "object" || selectorRaw === null) {
+    return { ok: false, reason: "missing-selector" };
+  }
+  const selectorRecord = selectorRaw as Record<string, unknown>;
+  const selector: ElementSelector = {};
+  for (const key of ["automationId", "name", "controlType", "className"] as const) {
+    const value = selectorRecord[key];
+    if (typeof value === "string" && value.length > 0) selector[key] = value;
+  }
+  if (typeof selectorRecord.index === "number" && Number.isInteger(selectorRecord.index)) {
+    if (selectorRecord.index < 0) return { ok: false, reason: "invalid-selector-index" };
+    selector.index = selectorRecord.index;
+  }
+  // An empty selector would address the first arbitrary descendant, which is
+  // exactly the "click something that looks right" failure the requirements
+  // forbid.
+  if (Object.keys(selector).length === 0) {
+    return { ok: false, reason: "empty-selector" };
+  }
+  const maxDepth = typeof request.args?.maxDepth === "number" ? request.args.maxDepth : undefined;
+  const maxVisited =
+    typeof request.args?.maxVisited === "number" ? request.args.maxVisited : undefined;
+  return {
+    ok: true,
+    value: {
+      scriptDir,
+      processName,
+      selector,
+      ...(request.target?.windowTitle ? { windowTitle: request.target.windowTitle } : {}),
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+      ...(maxVisited !== undefined ? { maxVisited } : {}),
+    },
+  };
 }
 
 export function describeHost(): { hostname: string; platform: NodeJS.Platform } {

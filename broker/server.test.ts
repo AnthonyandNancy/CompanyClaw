@@ -176,7 +176,9 @@ describe("broker server transport", () => {
     );
   });
 
-  it("reports not-implemented for a mutating operation instead of faking success", async () => {
+  it("refuses a mutating operation whose read-back did not confirm the change", async () => {
+    // The operation executed, but the value did not stick. The broker must not
+    // report success for an unverified write.
     await withServer(
       async (port) => {
         const response = await roundTrip(port, {
@@ -184,6 +186,155 @@ describe("broker server transport", () => {
           request: makeRequest({
             operation: "set-value",
             target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" }, newValue: "张三" },
+            approvalTicket: {
+              contract: "companyclaw.approval-ticket.v1",
+              nonce: "n-1",
+              bindingHash: "b".repeat(64),
+              issuedAt: "2026-10-08T00:00:00.000Z",
+              expiresAt: "2026-10-08T00:01:00.000Z",
+              signature: "sig",
+            },
+          }),
+        });
+        expect(response).toMatchObject({ status: "failed", reason: "verification-failed" });
+      },
+      {
+        verifyTicket: () => true,
+        setValue: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            element: {
+              name: "文本编辑器",
+              automationId: "edit-1",
+              controlType: "ControlType.Edit",
+              className: "Edit",
+              isEnabled: true,
+              processId: 111,
+            },
+            previousValue: "旧值",
+            newValue: "张三",
+            observedValue: "旧值",
+            verified: false,
+          },
+        }),
+      },
+    );
+  });
+
+  it("reports a verified write as success with the read-back value", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "set-value",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" }, newValue: "张三" },
+            approvalTicket: {
+              contract: "companyclaw.approval-ticket.v1",
+              nonce: "n-1",
+              bindingHash: "b".repeat(64),
+              issuedAt: "2026-10-08T00:00:00.000Z",
+              expiresAt: "2026-10-08T00:01:00.000Z",
+              signature: "sig",
+            },
+          }),
+        });
+        expect(response.status).toBe("ok");
+        expect(response.data).toMatchObject({
+          previousValue: "旧值",
+          newValue: "张三",
+          observedValue: "张三",
+          verified: true,
+        });
+      },
+      {
+        verifyTicket: () => true,
+        setValue: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            element: {
+              name: "文本编辑器",
+              automationId: "edit-1",
+              controlType: "ControlType.Edit",
+              className: "Edit",
+              isEnabled: true,
+              processId: 111,
+            },
+            previousValue: "旧值",
+            newValue: "张三",
+            observedValue: "张三",
+            verified: true,
+          },
+        }),
+      },
+    );
+  });
+
+  it("refuses an element operation with an empty selector", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "read-value",
+            target: { processName: "notepad" },
+            args: { selector: {} },
+          }),
+        });
+        expect(response).toMatchObject({ status: "rejected", reason: "empty-selector" });
+      },
+      { readValue: async () => ({ ok: false, reason: "should-not-run" }) },
+    );
+  });
+
+  it("serves a read-value request through the real gate", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "read-value",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" } },
+          }),
+        });
+        expect(response.status).toBe("ok");
+        expect(response.data).toMatchObject({ value: "当前值", valueReadable: true });
+      },
+      {
+        readValue: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            element: {
+              name: "文本编辑器",
+              automationId: "edit-1",
+              controlType: "ControlType.Edit",
+              className: "Edit",
+              isEnabled: true,
+              processId: 111,
+            },
+            value: "当前值",
+            valueReadable: true,
+          },
+        }),
+      },
+    );
+  });
+
+  it("still reports not-implemented for operations that are genuinely absent", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "send-keys",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" } },
             approvalTicket: {
               contract: "companyclaw.approval-ticket.v1",
               nonce: "n-1",
@@ -196,7 +347,33 @@ describe("broker server transport", () => {
         });
         expect(response).toMatchObject({ status: "failed", reason: "not-implemented" });
       },
+      // A verified ticket is required to even reach the operation switch.
       { verifyTicket: () => true },
+    );
+  });
+
+  it("rejects a mutating operation whose ticket fails verification", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "send-keys",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" } },
+            approvalTicket: {
+              contract: "companyclaw.approval-ticket.v1",
+              nonce: "n-1",
+              bindingHash: "b".repeat(64),
+              issuedAt: "2026-10-08T00:00:00.000Z",
+              expiresAt: "2026-10-08T00:01:00.000Z",
+              signature: "sig",
+            },
+          }),
+        });
+        expect(response).toMatchObject({ status: "rejected", reason: "invalid-approval-ticket" });
+      },
+      // Default verifyTicket returns false.
     );
   });
 

@@ -108,6 +108,241 @@ export async function runFindElements(
   return parseFindElements(raw.value);
 }
 
+/** Selector for one target element, mirrored into CC_SEL_* env vars. */
+export interface ElementSelector {
+  automationId?: string;
+  name?: string;
+  controlType?: string;
+  className?: string;
+  index?: number;
+}
+
+export interface ElementSummary {
+  name: string;
+  automationId: string;
+  controlType: string;
+  className: string;
+  isEnabled: boolean;
+  processId: number;
+}
+
+export interface WindowIdentity {
+  name: string;
+  processId: number;
+}
+
+function selectorToEnv(selector: ElementSelector): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (selector.automationId) env.CC_SEL_AUTOMATION_ID = selector.automationId;
+  if (selector.name) env.CC_SEL_NAME = selector.name;
+  if (selector.controlType) env.CC_SEL_CONTROL_TYPE = selector.controlType;
+  if (selector.className) env.CC_SEL_CLASS_NAME = selector.className;
+  if (selector.index !== undefined) env.CC_SEL_INDEX = String(selector.index);
+  return env;
+}
+
+export interface ReadValueOptions extends ProbeOptions {
+  processName: string;
+  windowTitle?: string;
+  selector: ElementSelector;
+  maxDepth?: number;
+  maxVisited?: number;
+}
+
+export interface ReadValueResult {
+  window: WindowIdentity;
+  element: ElementSummary;
+  /** Null when the element exposes no ValuePattern. */
+  value: string | null;
+  valueReadable: boolean;
+}
+
+export async function runReadValue(
+  options: ReadValueOptions,
+): Promise<UiaProbeResult<ReadValueResult>> {
+  const raw = await runScript({
+    ...options,
+    scriptName: "read-value.ps1",
+    env: { ...options.env, ...buildTargetEnv(options), ...selectorToEnv(options.selector) },
+  });
+  if (!raw.ok) return raw;
+  return parseReadValue(raw.value);
+}
+
+export interface SetValueOptions extends ProbeOptions {
+  processName: string;
+  windowTitle?: string;
+  selector: ElementSelector;
+  newValue: string;
+  maxDepth?: number;
+  maxVisited?: number;
+}
+
+export interface SetValueResult {
+  window: WindowIdentity;
+  element: ElementSummary;
+  previousValue: string | null;
+  newValue: string;
+  observedValue: string | null;
+  /** Read-back comparison: the caller reports success only when this is true. */
+  verified: boolean;
+}
+
+export async function runSetValue(
+  options: SetValueOptions,
+): Promise<UiaProbeResult<SetValueResult>> {
+  const raw = await runScript({
+    ...options,
+    scriptName: "set-value.ps1",
+    env: {
+      ...options.env,
+      ...buildTargetEnv(options),
+      ...selectorToEnv(options.selector),
+      CC_NEW_VALUE: options.newValue,
+    },
+  });
+  if (!raw.ok) return raw;
+  return parseSetValue(raw.value);
+}
+
+export interface InvokePatternOptions extends ProbeOptions {
+  processName: string;
+  windowTitle?: string;
+  selector: ElementSelector;
+  pattern?: "Invoke" | "SelectionItem";
+  maxDepth?: number;
+  maxVisited?: number;
+}
+
+export interface InvokePatternResult {
+  window: WindowIdentity;
+  element: ElementSummary;
+  pattern: string;
+  invoked: boolean;
+}
+
+export async function runInvokePattern(
+  options: InvokePatternOptions,
+): Promise<UiaProbeResult<InvokePatternResult>> {
+  const raw = await runScript({
+    ...options,
+    scriptName: "invoke-pattern.ps1",
+    env: {
+      ...options.env,
+      ...buildTargetEnv(options),
+      ...selectorToEnv(options.selector),
+      ...(options.pattern ? { CC_PATTERN: options.pattern } : {}),
+    },
+  });
+  if (!raw.ok) return raw;
+  return parseInvokePattern(raw.value);
+}
+
+function buildTargetEnv(options: {
+  processName: string;
+  windowTitle?: string;
+  maxDepth?: number;
+  maxVisited?: number;
+}): Record<string, string> {
+  const env: Record<string, string> = { CC_TARGET_PROCESS: options.processName };
+  if (options.windowTitle) env.CC_TARGET_TITLE = options.windowTitle;
+  if (options.maxDepth !== undefined) env.CC_MAX_DEPTH = String(options.maxDepth);
+  if (options.maxVisited !== undefined) env.CC_MAX_VISITED = String(options.maxVisited);
+  return env;
+}
+
+/** Shared parsing for the three element-addressing scripts. */
+function parseElementOperation<T>(
+  raw: string,
+  build: (record: Record<string, unknown>, window: WindowIdentity, element: ElementSummary) => T,
+): UiaProbeResult<T> {
+  const base = parseWindowAndElement(raw);
+  if (!base.ok) return base;
+  return { ok: true, value: build(base.record, base.window, base.element) };
+}
+
+function parseWindowAndElement(
+  raw: string,
+):
+  | { ok: true; record: Record<string, unknown>; window: WindowIdentity; element: ElementSummary }
+  | { ok: false; reason: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.error === "string") {
+    return { ok: false, reason: record.error };
+  }
+  const window = record.window;
+  const element = record.element;
+  if (
+    typeof window !== "object" ||
+    window === null ||
+    typeof element !== "object" ||
+    element === null
+  ) {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  const windowRecord = window as Record<string, unknown>;
+  const elementRecord = element as Record<string, unknown>;
+  if (typeof windowRecord.name !== "string" || typeof elementRecord.controlType !== "string") {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  return {
+    ok: true,
+    record,
+    window: {
+      name: windowRecord.name,
+      processId: typeof windowRecord.processId === "number" ? windowRecord.processId : -1,
+    },
+    element: {
+      name: typeof elementRecord.name === "string" ? elementRecord.name : "",
+      automationId:
+        typeof elementRecord.automationId === "string" ? elementRecord.automationId : "",
+      controlType: elementRecord.controlType,
+      className: typeof elementRecord.className === "string" ? elementRecord.className : "",
+      isEnabled: elementRecord.isEnabled === true,
+      processId: typeof elementRecord.processId === "number" ? elementRecord.processId : -1,
+    },
+  };
+}
+
+export function parseReadValue(raw: string): UiaProbeResult<ReadValueResult> {
+  return parseElementOperation(raw, (record, window, element) => ({
+    window,
+    element,
+    value: typeof record.value === "string" ? record.value : null,
+    valueReadable: record.valueReadable === true,
+  }));
+}
+
+export function parseSetValue(raw: string): UiaProbeResult<SetValueResult> {
+  return parseElementOperation(raw, (record, window, element) => ({
+    window,
+    element,
+    previousValue: typeof record.previousValue === "string" ? record.previousValue : null,
+    newValue: typeof record.newValue === "string" ? record.newValue : "",
+    observedValue: typeof record.observedValue === "string" ? record.observedValue : null,
+    // Absent `verified` must never be read as success.
+    verified: record.verified === true,
+  }));
+}
+
+export function parseInvokePattern(raw: string): UiaProbeResult<InvokePatternResult> {
+  return parseElementOperation(raw, (record, window, element) => ({
+    window,
+    element,
+    pattern: typeof record.pattern === "string" ? record.pattern : "",
+    invoked: record.invoked === true,
+  }));
+}
+
 export function parseFindElements(raw: string): UiaProbeResult<FindElementsResult> {
   let parsed: unknown;
   try {
