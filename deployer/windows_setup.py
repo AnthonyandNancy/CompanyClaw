@@ -120,23 +120,24 @@ GIT_MIRROR_FALLBACK_ORDER = (
 
 # Default install location.
 #
-# The Node.js Windows MSI is authored as a per-machine installer (it does
-# NOT support per-user installs — passing ``MSIINSTALLPERUSER=1`` fails with
-# exit code 1603).  Its default ``INSTALLDIR`` is ``C:\Program Files\nodejs``
-# and we mirror that here so the standard, Authenticode-trusted path is
-# used.  Windows Defender does not flag binaries under Program Files the
-# way it did with the previous zip-extract-to-dotfolder approach.
+# CompanyClaw installs per-user by default: everyday use must not require
+# administrator rights, so the runtime lives under the current user's profile
+# (``%LocalAppData%\Programs\nodejs``), which that user can always write.
 #
-# Legacy zip-extract layouts under ~/.openclaw-node and the per-user
-# ``%LocalAppData%\Programs\nodejs`` directory are still recognised at
-# runtime for users upgrading from earlier builds (see check_node_windows /
-# sandbox-state.js).
+# Installing to ``C:\Program Files\nodejs`` remains supported but is now an
+# explicit choice, for IT pre-deployment or a machine that already has a
+# supported system Node. Set ``OPENCLAW_NODE_DIR`` to opt in.
+#
+# The Node.js Windows MSI is authored as a per-machine installer and does NOT
+# support per-user installs (passing ``MSIINSTALLPERUSER=1`` fails with exit
+# code 1603). Where a machine-wide MSI would be required, the installer must
+# surface that to the operator rather than silently elevating.
 _PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
 _LOCAL_APPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
 DEFAULT_NODE_DIR = Path(
     os.environ.get(
         "OPENCLAW_NODE_DIR",
-        str(_PROGRAM_FILES / "nodejs"),
+        str(_LOCAL_APPDATA / "Programs" / "nodejs"),
     )
 )
 LEGACY_NODE_DIRS = (
@@ -1224,11 +1225,15 @@ class WindowsSetup:
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows via the official signed MSI.
 
-        Uses ``msiexec`` to install the Authenticode-signed Node.js MSI to a
-        per-user, standard path (``%LocalAppData%\\Programs\\nodejs\\`` by
-        default).  This avoids triggering Windows Defender's behavior-based
-        detections that the previous zip-extract-to-dotfolder approach
-        produced on some configurations.
+        Uses ``msiexec`` to install the Authenticode-signed Node.js MSI.
+
+        Note on scope: this MSI is per-machine — it does not support a per-user
+        install (``MSIINSTALLPERUSER=1`` fails with exit code 1603). Because
+        CompanyClaw must work for an ordinary employee account, a suitable
+        runtime under the user's own profile is preferred and reused when
+        present; only when none exists does this method invoke the MSI, and the
+        caller is expected to have surfaced that need to the operator rather
+        than elevating silently.
         """
         self._select_download_mirror()
         self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")

@@ -42,9 +42,14 @@ appx:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  # Requirement V1.1 (conflict 2): everyday use must not need administrator
+  # rights. A per-machine install would require elevation, so the installer
+  # installs into the current user's own directory and never asks for admin.
+  perMachine: false
+  allowElevation: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: OpenClaw
+  shortcutName: CompanyClaw
 
 extraResources:
   - from: dist/github-copilot-auth-worker.js
