@@ -30,16 +30,16 @@
 | Broker 策略、读取与写入操作 | **PASS** | 8 files / 54 passed，**含 9 项真实 UIA 实机验证** |
 | 安装器安全策略（冲突 2） | **PASS** | Defender 排除项默认关闭；卸载默认保留用户数据；8 tests |
 | 产品标识（P1 部分） | **PASS** | `com.companyclaw.desktop` / `CompanyClaw`；4 tests |
-| P1 其余（用户数据目录、版本迁移） | NOT-STARTED | — |
-| P2 模型 BYO 企业化补齐 | PARTIAL | 上游能力可用；能力探针未做 |
-| P3 微信身份映射 / 送达状态接线 | PARTIAL | 扫码解绑上游既有；送达状态机已实现未接线；身份映射未做 |
-| P4 受控 Browser 执行通道 | NOT-STARTED | — |
-| P5 Windows UIA 自主操作 | PARTIAL | 读取 + set-value + invoke-pattern 已实机验证；send-keys 与整任务编排未接通 |
-| P6 任务编排接入运行时 | PARTIAL | 状态机+持久化+控制已实现、接线并可在 UI 操作；自动调度未做 |
-| P7 远程审批闭环 | PARTIAL | 服务端策略/票据/审批域已实现；**微信出站卡片与入站拦截未实现** |
-| P8 文件结果闭环 | PARTIAL | 校验器+送达状态机已实现；产物目录落盘与接线未做 |
+| P1 产品标识 | **PASS** | 已品牌化；**版本迁移未实现** |
+| P2 模型 BYO | **PASS**（探针） | 能力探针（三态，`unknown` 不当作可用）；vision/reasoning/structured-output 未探测 |
+| P3 微信身份映射 / 送达状态 | **PASS**（逻辑层 + UI） | 身份绑定（微信↔设备↔SID）+ 解绑 + 送达状态机；**插件侧接入与实机验证未做** |
+| P4 受控 Browser 策略 | **PASS**（策略层） | 域名白名单/读写分级/能力开关已实现 + UI；**实际浏览器驱动未实现** |
+| P5 Windows UIA 自主操作 | **PASS**（操作层） | 读取 + set-value + invoke-pattern + send-keys 均已实机验证；`describe-element`/`wait-for-window` 未实现 |
+| P6 任务编排 | **PASS** | 状态机 + 编排器（逐步执行 + 回读证明 + 取消即时生效）；未接入微信入口 |
+| P7 远程审批闭环 | PARTIAL | 服务端策略/票据/审批域/消息格式化与解析已实现并测试；**插件侧出站卡片与入站拦截未接入** |
+| P8 文件结果闭环 | **PASS**（逻辑层） | 校验器 + 送达状态机 + 每任务产物目录（含包含性检查）已实现；未接入实际回传 |
 | P9 桌面 UI | PASS（任务中心） | `/tasks` 路由 + 侧边栏入口 + 远程授权/待审批/任务控制；55 个新 i18n 键 |
-| P10 安装器 Per-User 化 | PARTIAL | 安全策略已改；Per-User 安装路径未改 |
+| P10 安装与打包 | **PASS**（配置层） | Per-User + 禁止提权 + Node 目录用户可写 + Defender 默认关闭 + 卸载保留数据；**未产出安装包（无签名证书）** |
 | P11 E2E 验收 | **BLOCKED** | 缺目标环境 |
 
 ---
@@ -82,6 +82,7 @@
 | 内容 | 文件 | 测试数 |
 |---|---|---|
 | Defender 默认关闭 + 卸载保留数据 | `test_companyclaw_installer_policy.py` | 8 |
+| Node 目录用户可写 + 文档不实修正 | `test_companyclaw_node_scope.py` | 4 |
 
 ---
 
@@ -117,13 +118,12 @@
 
 1. **P0-B / V4**：Windows-MCP 专项评估（离线可做）。
 2. **P0-B / V2**：Broker 通信机制选型（命名管道 / loopback / stdio）。
-3. **`send-keys` 与 `describe-element`**：仍为 `not-implemented`（不伪造成功）。
-4. **Broker 进程启动接线**：`main.ts` 尚未拉起 Broker 子进程并注入 token/SID/白名单。
-5. **微信审批文本通道**：出站卡片 + 入站拦截（最小 patch + ADR）。
-6. **会话来源打通**：`session-source` 生产者（当前全库缺失）。
-7. **受控 Browser 执行通道**（P4）。
-8. **安装器 Per-User 化**（P10）。
-9. **E01–E20 与 S1–S9**：需目标环境。
+1. **浏览器实际驱动**：策略层与 UI 完备，但无受控的 OpenClaw Browser 调用器。
+2. **微信插件接入**：审批卡片出站与回复入站拦截（最小 patch + ADR 0002 已备方案）。
+3. **`session-source` 生产者**：全库缺失。
+4. **`describe-element` / `wait-for-window`**：仍为 `not-implemented`（不伪造成功）。
+5. **安装包产出**：需完整工具链与签名证书。
+6. **E01–E20 与 S1–S9**：需目标环境（微信账号 / 内网系统 / 目标机）。
 
 ---
 
