@@ -8,7 +8,7 @@ import {
   type BrokerRequest,
   type BrokerOutcome,
 } from "./protocol";
-import { runListWindows, type WindowDescriptor } from "./uia";
+import { runFindElements, runListWindows, type ElementDescriptor, type WindowDescriptor } from "./uia";
 
 /**
  * Broker IPC server.
@@ -33,6 +33,19 @@ export interface BrokerServerOptions {
   listWindows?: (options: { scriptDir: string }) => Promise<
     { ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }
   >;
+  /** Injectable element reader; defaults to the real UIA probe. */
+  findElements?: (options: FindElementsProbeOptions) => Promise<
+    | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
+    | { ok: false; reason: string }
+  >;
+}
+
+export interface FindElementsProbeOptions {
+  scriptDir: string;
+  processName: string;
+  windowTitle?: string;
+  maxDepth?: number;
+  maxElements?: number;
 }
 
 export interface BrokerServerHandle {
@@ -66,6 +79,8 @@ export async function startBrokerServer(
     verifyTicket: options.verifyTicket,
   });
   const listWindows = options.listWindows ?? ((opts) => runListWindows({ scriptDir: opts.scriptDir }));
+  const findElements =
+    options.findElements ?? ((opts) => runFindElements({ ...opts, scriptDir: opts.scriptDir }));
 
   const server: Server = createServer((socket) => {
     handleConnection(socket, {
@@ -74,6 +89,7 @@ export async function startBrokerServer(
       token: options.token,
       now,
       listWindows,
+      findElements,
     });
   });
 
@@ -105,6 +121,10 @@ interface ConnectionContext {
   now: () => Date;
   listWindows: (options: { scriptDir: string }) => Promise<
     { ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }
+  >;
+  findElements: (options: FindElementsProbeOptions) => Promise<
+    | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
+    | { ok: false; reason: string }
   >;
 }
 
@@ -192,20 +212,41 @@ async function handleLine(line: string, context: ConnectionContext): Promise<unk
  */
 export async function executeAuthorized(
   request: BrokerRequest,
-  context: Pick<ConnectionContext, "scriptDir" | "listWindows">,
+  context: Pick<ConnectionContext, "scriptDir" | "listWindows" | "findElements">,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
     case "list-windows": {
       const result = await context.listWindows({ scriptDir: context.scriptDir });
       if (!result.ok) return { status: "failed", reason: result.reason };
       const processName = request.target?.processName;
+      // Filter on the real executable base name the OS reported. The policy has
+      // already vetted it; this only narrows the output to the target app.
       const windows = processName
-        ? result.value.filter((window) => filterByProcessPlaceholder(window, processName))
+        ? result.value.filter(
+            (window) =>
+              window.processName.replace(/\.exe$/i, "").toLowerCase() ===
+              processName.replace(/\.exe$/i, "").toLowerCase(),
+          )
         : result.value;
       return { status: "ok", data: { windows } };
     }
+    case "find-elements": {
+      const processName = request.target?.processName;
+      if (!processName) return { status: "rejected", reason: "target-required" };
+      const maxDepth = typeof request.args?.maxDepth === "number" ? request.args.maxDepth : undefined;
+      const maxElements =
+        typeof request.args?.maxElements === "number" ? request.args.maxElements : undefined;
+      const result = await context.findElements({
+        scriptDir: context.scriptDir,
+        processName,
+        ...(request.target?.windowTitle ? { windowTitle: request.target.windowTitle } : {}),
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(maxElements !== undefined ? { maxElements } : {}),
+      });
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      return { status: "ok", data: result.value };
+    }
     case "describe-element":
-    case "find-elements":
     case "read-value":
     case "wait-for-window":
     case "invoke-pattern":
@@ -215,16 +256,6 @@ export async function executeAuthorized(
     default:
       return { status: "rejected", reason: "unsupported-operation" };
   }
-}
-
-/**
- * Window titles are not process names, so a title filter only narrows by the
- * text the OS reported. The real process binding happens in the caller's
- * allow-list check (BrokerPolicy); this keeps the read path honest about what
- * it can actually prove.
- */
-function filterByProcessPlaceholder(window: WindowDescriptor, processName: string): boolean {
-  return window.name.toLowerCase().includes(processName.toLowerCase());
 }
 
 export function describeHost(): { hostname: string; platform: NodeJS.Platform } {

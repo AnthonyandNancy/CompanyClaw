@@ -6,6 +6,10 @@
 #
 # Output: JSON array of { name, processId, automationId }.
 
+# Output: JSON { windows: [ { name, processId, processName, automationId } ] }
+# `processName` is the executable base name (no .exe) so the broker can enforce
+# its allow-list on the real process rather than on window-title text.
+
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 $root = [System.Windows.Automation.AutomationElement]::RootElement
@@ -18,9 +22,17 @@ $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $windo
 $result = @()
 foreach ($window in $windows) {
     try {
+        $processId = [int]$window.Current.ProcessId
+        $processName = ""
+        try {
+            $processName = [string](Get-Process -Id $processId -ErrorAction Stop).ProcessName
+        } catch {
+            $processName = ""
+        }
         $result += [pscustomobject]@{
             name         = [string]$window.Current.Name
-            processId    = [int]$window.Current.ProcessId
+            processId    = $processId
+            processName  = $processName
             automationId = [string]$window.Current.AutomationId
         }
     } catch {

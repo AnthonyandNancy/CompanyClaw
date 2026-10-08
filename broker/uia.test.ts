@@ -5,22 +5,24 @@ describe("parseWindowList", () => {
   it("returns descriptors for a well-formed payload", () => {
     const raw = JSON.stringify({
       windows: [
-        { name: "Notepad", processId: 100, automationId: "" },
-        { name: "Excel", processId: 200, automationId: "Book1" },
+        { name: "Notepad", processId: 100, processName: "notepad", automationId: "" },
+        { name: "Excel", processId: 200, processName: "excel", automationId: "Book1" },
       ],
     });
     expect(parseWindowList(raw)).toEqual({
       ok: true,
       value: [
-        { name: "Notepad", processId: 100, automationId: "" },
-        { name: "Excel", processId: 200, automationId: "Book1" },
+        { name: "Notepad", processId: 100, processName: "notepad", automationId: "" },
+        { name: "Excel", processId: 200, processName: "excel", automationId: "Book1" },
       ],
     });
   });
 
   it("keeps non-ASCII window titles intact", () => {
     const raw = JSON.stringify({
-      windows: [{ name: "物业工程中心 - 工单管理", processId: 1, automationId: "" }],
+      windows: [
+        { name: "物业工程中心 - 工单管理", processId: 1, processName: "chrome", automationId: "" },
+      ],
     });
     const parsed = parseWindowList(raw);
     expect(parsed.ok).toBe(true);
@@ -56,7 +58,13 @@ describe("parseWindowList", () => {
     const raw = JSON.stringify({ windows: [{ name: "x", automationId: 7 }] });
     const parsed = parseWindowList(raw);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.value[0]).toEqual({ name: "x", processId: -1, automationId: "" });
+    if (parsed.ok)
+      expect(parsed.value[0]).toEqual({
+        name: "x",
+        processId: -1,
+        processName: "",
+        automationId: "",
+      });
   });
 });
 
@@ -79,14 +87,21 @@ describe("runListWindows", () => {
 
   it("parses a successful runner's stdout", async () => {
     const runner = vi.fn((_file, _args, _opts, callback) => {
-      callback(null, JSON.stringify({ windows: [{ name: "w", processId: 1, automationId: "" }] }), "");
+      callback(
+        null,
+        JSON.stringify({ windows: [{ name: "w", processId: 1, processName: "app", automationId: "" }] }),
+        "",
+      );
       return undefined as never;
     });
     const result = await runListWindows({
       scriptDir: "C:/broker/scripts",
       runner: runner as never,
     });
-    expect(result).toEqual({ ok: true, value: [{ name: "w", processId: 1, automationId: "" }] });
+    expect(result).toEqual({
+      ok: true,
+      value: [{ name: "w", processId: 1, processName: "app", automationId: "" }],
+    });
   });
 
   it("never lets the runner throw escape", async () => {
