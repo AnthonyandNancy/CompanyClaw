@@ -44,7 +44,9 @@ import {
   createCompanyClawRuntime,
   loadOrCreateTicketSecret,
   registerCompanyClawIpcHandlers,
+  type CompanyClawRuntimeHandle,
 } from "./companyclaw/ipc";
+import { resolveBrokerDir } from "./companyclaw/broker-paths";
 import { resolveOwnerSid } from "./companyclaw/owner-sid";
 import { loadOrCreateDeviceIdentity } from "./device-identity";
 import {
@@ -345,6 +347,8 @@ let gwClient: GatewayClient | null = null;
 let gatewayModelCatalogRequest: Promise<unknown> | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
+/** CompanyClaw security core handle; null until registration succeeds. */
+let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
 const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
@@ -7901,13 +7905,18 @@ function registerIpcHandlers(): void {
       ticketSecret,
       ownerSid: resolveOwnerSid(),
       deviceId: deviceIdentity.deviceId,
+      broker: {
+        brokerDir: resolveBrokerDir({
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          appPath: app.getAppPath(),
+        }),
+      },
     };
-    registerCompanyClawIpcHandlers(
-      createCompanyClawRuntime(companyClawOptions),
-      companyClawOptions,
-    );
+    companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
+    registerCompanyClawIpcHandlers(companyClawRuntime.runtime, companyClawOptions);
     console.log(
-      `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid})`,
+      `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid}, broker=${companyClawOptions.broker.brokerDir})`,
     );
   } catch (error) {
     // The core must never take the app down: if registration fails the
@@ -8071,6 +8080,8 @@ app.on("before-quit", () => {
   githubCopilotAuthManager.stop();
   gwClient?.stop();
   stopGatewayProcess();
+  // Stop the broker so no UI Automation listener outlives the app.
+  void companyClawRuntime?.broker?.stop();
 });
 
 app.on("activate", () => {

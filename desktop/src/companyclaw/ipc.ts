@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ipcMain } from "electron";
+import { BrokerClient } from "./broker-client";
+import { resolveBrokerScriptDir } from "./broker-paths";
 import { CompanyClawRuntime, type RuntimePaths } from "./runtime";
 
 /**
@@ -19,6 +21,17 @@ interface CompanyClawIpcOptions {
   /** Current Windows user SID; approval ownership is scoped to it. */
   ownerSid: string;
   deviceId: string;
+  /**
+   * Broker location. Omitted in tests that do not exercise execution; when
+   * present the runtime can spawn the broker on first use.
+   */
+  broker?: { brokerDir: string };
+}
+
+/** Handle returned to `main.ts` so it can stop the broker on quit. */
+export interface CompanyClawRuntimeHandle {
+  runtime: CompanyClawRuntime;
+  broker: { stop(): Promise<void> } | null;
 }
 
 export const COMPANYCLAW_TICKET_SECRET_FILE = "companyclaw-ticket-secret";
@@ -49,10 +62,22 @@ export function loadOrCreateTicketSecret(userDataDir: string, createSecret: () =
   return secret;
 }
 
-export function createCompanyClawRuntime(options: CompanyClawIpcOptions): CompanyClawRuntime {
+export function createCompanyClawRuntime(
+  options: CompanyClawIpcOptions,
+): CompanyClawRuntimeHandle {
   const paths = resolveCompanyClawPaths(options.userDataDir);
   fs.mkdirSync(path.dirname(paths.tasksFile), { recursive: true, mode: 0o700 });
-  return new CompanyClawRuntime({
+  const broker = options.broker
+    ? new BrokerClient({
+        brokerDir: options.broker.brokerDir,
+        scriptDir: resolveBrokerScriptDir(options.broker.brokerDir),
+        ownerSid: options.ownerSid,
+        deviceId: options.deviceId,
+        allowedProcesses: [],
+        allowedWindowTitles: [],
+      })
+    : null;
+  const runtime = new CompanyClawRuntime({
     paths,
     ticketSecret: options.ticketSecret,
     existsFile: (filePath) => fs.existsSync(filePath),
@@ -64,6 +89,7 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
       await fs.promises.rename(temporary, filePath);
     },
   });
+  return { runtime, broker };
 }
 
 export function registerCompanyClawIpcHandlers(
