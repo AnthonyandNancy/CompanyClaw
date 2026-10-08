@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import { basename as pathBasename } from "node:path";
 import { CompanyClawApprovalStore } from "./approvals/approval-store";
 import { ExecutionBridge, type BridgeResult, type BridgeTransport } from "./bridge/execution-bridge";
 import { decideAction, type ActionDescriptor } from "./policy/risk-classifier";
@@ -9,6 +11,11 @@ import {
   type ApprovalTicket,
 } from "./policy/approval-ticket";
 import { applyApprovalReply, formatApprovalBatch, parseApprovalReply } from "./remote/approval-message";
+import {
+  buildTaskArtifactDir,
+  isPathInsideTaskDir,
+  sanitizeArtifactFileName,
+} from "./results/task-artifacts";
 import { RemoteAuthorization } from "./remote/remote-authorization";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
@@ -22,6 +29,8 @@ const MAX_TTL_MINUTES = 60 * 24 * 7;
 export interface RuntimePaths {
   tasksFile: string;
   approvalsFile: string;
+  /** Root for per-task artifact directories (jobs/<taskId>/artifacts). */
+  artifactsRoot: string;
 }
 
 export interface RuntimeDependencies {
@@ -359,6 +368,59 @@ export class CompanyClawRuntime {
       consumedNonces: this.consumedNonces,
     });
     return await bridge.execute(request);
+  }
+
+  // ── Artifacts ────────────────────────────────────────────────────────
+
+  /**
+   * Resolves the artifact directory for a task, creating the shape only when
+   * asked. Returns null for an unknown task or an unusable id, so a caller can
+   * never be handed a path outside the task's own sandbox.
+   */
+  resolveArtifactDir(input: {
+    taskId: string;
+    ownerSid: string;
+    create?: boolean;
+  }): { ok: true; dir: string } | { ok: false; reason: string } {
+    const record = this.tasks.get(input.taskId);
+    if (!record) return { ok: false, reason: "unknown-task" };
+    if (record.ownerSid !== input.ownerSid) return { ok: false, reason: "owner-mismatch" };
+    const dir = buildTaskArtifactDir(this.deps.paths.artifactsRoot, input.taskId);
+    if (!dir) return { ok: false, reason: "unusable-task-id" };
+    if (input.create) {
+      try {
+        // mode 0o700 keeps other Windows users out of the task's files.
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      } catch (error) {
+        return {
+          ok: false,
+          reason: `mkdir-failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    return { ok: true, dir };
+  }
+
+  /**
+   * Validates that a produced file may be accepted for a task: it must live
+   * inside that task's own artifact directory and carry a usable leaf name.
+   */
+  acceptArtifact(input: {
+    taskId: string;
+    ownerSid: string;
+    filePath: string;
+  }): { ok: true; fileName: string } | { ok: false; reason: string } {
+    const resolved = this.resolveArtifactDir({
+      taskId: input.taskId,
+      ownerSid: input.ownerSid,
+    });
+    if (!resolved.ok) return resolved;
+    if (!isPathInsideTaskDir(resolved.dir, input.filePath)) {
+      return { ok: false, reason: "outside-task-directory" };
+    }
+    const fileName = sanitizeArtifactFileName(pathBasename(input.filePath));
+    if (!fileName) return { ok: false, reason: "unusable-file-name" };
+    return { ok: true, fileName };
   }
 
   // ── internals ────────────────────────────────────────────────────────

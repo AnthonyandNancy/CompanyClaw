@@ -21,6 +21,7 @@ const REQUIRED_CHANNELS = [
   "companyclaw:tasks:control",
   "companyclaw:approvals:list-pending",
   "companyclaw:approvals:resolve",
+  "companyclaw:artifacts:resolve",
 ] as const;
 
 describe("CompanyClaw IPC contract", () => {

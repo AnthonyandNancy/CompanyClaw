@@ -526,5 +526,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       resolve: (input: { approvalId: string; decision: "approved" | "denied" }) =>
         ipcRenderer.invoke("companyclaw:approvals:resolve", input) as Promise<unknown>,
     },
+    artifacts: {
+      resolve: (input: { taskId: string }) =>
+        ipcRenderer.invoke("companyclaw:artifacts:resolve", input) as Promise<
+          { ok: true; dir: string } | { ok: false; reason: string }
+        >,
+    },
   },
 });

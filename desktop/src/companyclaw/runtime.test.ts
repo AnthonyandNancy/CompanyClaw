@@ -21,6 +21,7 @@ function makeRuntime(paths?: Partial<RuntimePaths>) {
   const resolved: RuntimePaths = {
     tasksFile: "C:/state/tasks.json",
     approvalsFile: "C:/state/approvals.json",
+    artifactsRoot: "C:/state",
     ...paths,
   };
   const runtime = new CompanyClawRuntime({
@@ -308,5 +309,169 @@ describe("CompanyClawRuntime approvals", () => {
     expect(() =>
       runtime.issueTicketForApproval({ approvalId: pending.approvalId, ownerSid: "S-1" }),
     ).toThrow(/not approved/i);
+  });
+});
+
+describe("CompanyClawRuntime approval messaging", () => {
+  async function withPending(runtime: ReturnType<typeof makeRuntime>["runtime"]) {
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    return await runtime.requestApproval({
+      ownerSid: "S-1",
+      action: { kind: "write", writesBusinessData: true },
+      binding: makeBinding(),
+    });
+  }
+
+  it("returns no message when nothing awaits confirmation", () => {
+    const { runtime } = makeRuntime();
+    expect(runtime.buildApprovalMessage("S-1")).toBe("");
+  });
+
+  it("describes the exact change in the confirmation text", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const text = runtime.buildApprovalMessage("S-1");
+    expect(text).toContain("sys");
+    expect(text).toContain("rec-1");
+    expect(text).toContain("owner");
+    expect(text).toContain("a");
+    expect(text).toContain("b");
+  });
+
+  it("never shows another owner's pending approvals", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    expect(runtime.buildApprovalMessage("S-2")).toBe("");
+  });
+
+  it("approves this owner's pending request from a reply", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const result = await runtime.applyApprovalReply("S-1", "Y");
+    expect(result).toEqual({ handled: true, resolved: 1, decision: "approved" });
+    expect(runtime.listPendingApprovals("S-1")).toHaveLength(0);
+  });
+
+  it("denies from a Chinese reply", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const result = await runtime.applyApprovalReply("S-1", "拒绝");
+    expect(result).toEqual({ handled: true, resolved: 1, decision: "denied" });
+  });
+
+  it("lets ordinary chat through instead of swallowing it", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const result = await runtime.applyApprovalReply("S-1", "帮我看看今天的工单");
+    expect(result).toEqual({ handled: false, reason: "not-a-reply" });
+    // The request must still be pending after a non-reply.
+    expect(runtime.listPendingApprovals("S-1")).toHaveLength(1);
+  });
+
+  it("refuses a reply from someone who owns no pending request", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const result = await runtime.applyApprovalReply("S-2", "Y");
+    expect(result).toEqual({ handled: false, reason: "no-pending" });
+    expect(runtime.listPendingApprovals("S-1")).toHaveLength(1);
+  });
+
+  it("refuses an out-of-range index", async () => {
+    const { runtime } = makeRuntime();
+    await withPending(runtime);
+    const result = await runtime.applyApprovalReply("S-1", "Y5");
+    expect(result).toEqual({ handled: false, reason: "index-out-of-range" });
+    expect(runtime.listPendingApprovals("S-1")).toHaveLength(1);
+  });
+
+  it("reports no-pending when a recognised reply arrives with nothing to confirm", async () => {
+    const { runtime } = makeRuntime();
+    const result = await runtime.applyApprovalReply("S-1", "Y");
+    expect(result).toEqual({ handled: false, reason: "no-pending" });
+  });
+});
+
+describe("CompanyClawRuntime artifacts", () => {
+  it("refuses an artifact directory for an unknown task", () => {
+    const { runtime } = makeRuntime();
+    expect(runtime.resolveArtifactDir({ taskId: "nope", ownerSid: "S-1" })).toEqual({
+      ok: false,
+      reason: "unknown-task",
+    });
+  });
+
+  it("refuses an artifact directory for another owner", async () => {
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "openclaw-weixin",
+      objective: "o",
+    });
+    expect(runtime.resolveArtifactDir({ taskId: task.taskId, ownerSid: "S-2" })).toEqual({
+      ok: false,
+      reason: "owner-mismatch",
+    });
+  });
+
+  it("places a task's artifacts under its own jobs directory", async () => {
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "openclaw-weixin",
+      objective: "o",
+    });
+    const resolved = runtime.resolveArtifactDir({ taskId: task.taskId, ownerSid: "S-1" });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.dir.split("\\").join("/")).toContain(`/jobs/${task.taskId}/artifacts`);
+  });
+
+  it("accepts a file inside the task directory and rejects one outside", async () => {
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "openclaw-weixin",
+      objective: "o",
+    });
+    const resolved = runtime.resolveArtifactDir({ taskId: task.taskId, ownerSid: "S-1" });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+
+    const inside = `${resolved.dir}/报告.xlsx`;
+    expect(runtime.acceptArtifact({ taskId: task.taskId, ownerSid: "S-1", filePath: inside })).toEqual(
+      { ok: true, fileName: "报告.xlsx" },
+    );
+    expect(
+      runtime.acceptArtifact({
+        taskId: task.taskId,
+        ownerSid: "S-1",
+        filePath: "C:/Windows/System32/evil.xlsx",
+      }),
+    ).toEqual({ ok: false, reason: "outside-task-directory" });
+  });
+
+  it("refuses a traversal attempt escaping the task directory", async () => {
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "openclaw-weixin",
+      objective: "o",
+    });
+    const resolved = runtime.resolveArtifactDir({ taskId: task.taskId, ownerSid: "S-1" });
+    if (!resolved.ok) throw new Error("expected a resolved dir");
+    const escaped = `${resolved.dir}/../../../Windows/evil.xlsx`;
+    expect(
+      runtime.acceptArtifact({ taskId: task.taskId, ownerSid: "S-1", filePath: escaped }),
+    ).toEqual({ ok: false, reason: "outside-task-directory" });
   });
 });

@@ -41,6 +41,7 @@ export function resolveCompanyClawPaths(userDataDir: string): RuntimePaths {
   return {
     tasksFile: path.join(root, "tasks.json"),
     approvalsFile: path.join(root, "approvals.json"),
+    artifactsRoot: root,
   };
 }
 
@@ -147,6 +148,15 @@ export function registerCompanyClawIpcHandlers(
 
   ipcMain.handle("companyclaw:approvals:list-pending", () =>
     runtime.listPendingApprovals(options.ownerSid),
+  );
+
+  ipcMain.handle(
+    "companyclaw:artifacts:resolve",
+    (_event, input: { taskId: string }) =>
+      runtime.resolveArtifactDir({
+        taskId: input?.taskId ?? "",
+        ownerSid: options.ownerSid,
+      }),
   );
 
   ipcMain.handle(
