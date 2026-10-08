@@ -8,6 +8,7 @@ import {
   type ApprovalBinding,
   type ApprovalTicket,
 } from "./policy/approval-ticket";
+import { applyApprovalReply, formatApprovalBatch, parseApprovalReply } from "./remote/approval-message";
 import { RemoteAuthorization } from "./remote/remote-authorization";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
@@ -249,6 +250,67 @@ export class CompanyClawRuntime {
 
   async resolveApproval(input: ResolveApprovalInput) {
     return await this.approvals.resolve(input.approvalId, input.decision, input.resolvedBy);
+  }
+
+  /**
+   * Builds the confirmation text for the owner's pending approvals.
+   *
+   * Returns an empty string when nothing awaits confirmation, so the caller
+   * sends no card at all rather than an empty one.
+   */
+  buildApprovalMessage(ownerSid: string): string {
+    const pending = this.listPendingApprovals(ownerSid);
+    if (pending.length === 0) return "";
+    return formatApprovalBatch(
+      pending.map((record) => ({
+        approvalId: record.approvalId,
+        targetSystem: record.targetSystem,
+        recordId: record.recordId,
+        field: record.field,
+        oldValue: record.oldValue,
+        newValue: record.newValue,
+        expiresAt: record.expiresAt,
+        riskLevel: "R2",
+      })),
+    );
+  }
+
+  /**
+   * Applies a WeChat reply to this owner's pending approvals.
+   *
+   * The reply is only ever mapped onto approvals belonging to `ownerSid`, so a
+   * message from one user can never decide another user's request. An
+   * unrecognised message is reported as `not-a-reply` so the caller lets it
+   * continue to the AI instead of swallowing it.
+   */
+  async applyApprovalReply(
+    ownerSid: string,
+    rawReply: string,
+  ): Promise<
+    | { handled: true; resolved: number; decision: "approved" | "denied" }
+    | { handled: false; reason: "not-a-reply" | "no-pending" | "index-out-of-range" }
+  > {
+    const reply = parseApprovalReply(rawReply);
+    if (!reply) return { handled: false, reason: "not-a-reply" };
+
+    const pending = this.listPendingApprovals(ownerSid).map((record) => ({
+      approvalId: record.approvalId,
+      ownerSid: record.ownerSid,
+    }));
+    const applied = applyApprovalReply(reply, pending);
+    if (!applied.ok) return { handled: false, reason: applied.reason };
+
+    let resolved = 0;
+    for (const target of applied.targets) {
+      try {
+        await this.approvals.resolve(target.approvalId, target.decision, ownerSid);
+        resolved += 1;
+      } catch {
+        // A concurrent decision (already resolved or expired) is not a failure
+        // of this reply; the remaining targets still apply.
+      }
+    }
+    return { handled: true, resolved, decision: reply.decision };
   }
 
   /**
