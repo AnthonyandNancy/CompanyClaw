@@ -2,6 +2,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ipcMain } from "electron";
 import { BrokerClient } from "./broker-client";
+import {
+  buildCapabilityProbeRequest,
+  interpretCapabilityProbe,
+  summarizeCapabilities,
+} from "./model/capability-probe";
 import { resolveBrokerScriptDir } from "./broker-paths";
 import { CompanyClawRuntime, type RuntimePaths } from "./runtime";
 
@@ -150,6 +155,55 @@ export function registerCompanyClawIpcHandlers(
 
   ipcMain.handle("companyclaw:approvals:list-pending", () =>
     runtime.listPendingApprovals(options.ownerSid),
+  );
+
+  // Model capability probe. The API key is supplied per call and never stored
+  // here; only the verdict is returned.
+  ipcMain.handle(
+    "companyclaw:model:probe-capabilities",
+    async (
+      _event,
+      input: {
+        baseUrl: string;
+        model: string;
+        apiFormat: "openai-chat" | "openai-responses" | "anthropic";
+        apiKey: string;
+      },
+    ) => {
+      const request = buildCapabilityProbeRequest({
+        baseUrl: input?.baseUrl ?? "",
+        model: input?.model ?? "",
+        apiFormat: input?.apiFormat ?? "openai-chat",
+      });
+      try {
+        const response = await fetch(request.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(input?.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {}),
+          },
+          body: request.body,
+        });
+        const body = await response.text();
+        const capabilities = interpretCapabilityProbe({ status: response.status, body });
+        return { capabilities, summary: summarizeCapabilities(capabilities) };
+      } catch (error) {
+        // A transport failure tells us nothing about the model.
+        const capabilities = interpretCapabilityProbe({ status: 0, body: "" });
+        return {
+          capabilities: {
+            ...capabilities,
+            error: "network-error",
+            errorDetail: error instanceof Error ? error.message : String(error),
+          },
+          summary: summarizeCapabilities({
+            ...capabilities,
+            error: "network-error",
+            errorDetail: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    },
   );
 
   ipcMain.handle("companyclaw:browser:get-policy", () => runtime.describeBrowserPolicy());

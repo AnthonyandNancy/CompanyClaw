@@ -532,6 +532,18 @@ contextBridge.exposeInMainWorld("openclaw", {
           { ok: true; dir: string } | { ok: false; reason: string }
         >,
     },
+    model: {
+      probeCapabilities: (input: {
+        baseUrl: string;
+        model: string;
+        apiFormat: "openai-chat" | "openai-responses" | "anthropic";
+        apiKey: string;
+      }) =>
+        ipcRenderer.invoke("companyclaw:model:probe-capabilities", input) as Promise<{
+          capabilities: Record<string, unknown>;
+          summary: string;
+        }>,
+    },
     browser: {
       getPolicy: () =>
         ipcRenderer.invoke("companyclaw:browser:get-policy") as Promise<{
