@@ -41,6 +41,13 @@ import {
 } from "./chat-attachments";
 import { prepareAttachmentForOpen } from "./attachment-open";
 import {
+  createCompanyClawRuntime,
+  loadOrCreateTicketSecret,
+  registerCompanyClawIpcHandlers,
+} from "./companyclaw/ipc";
+import { resolveOwnerSid } from "./companyclaw/owner-sid";
+import { loadOrCreateDeviceIdentity } from "./device-identity";
+import {
   recoverInterruptedOpenClawUpgrade,
   UpgradeInProgressError,
   validateInstallerOwnedUpgrade,
@@ -7879,6 +7886,34 @@ function registerIpcHandlers(): void {
       }
     },
   );
+
+  // --- CompanyClaw security core ---
+  // Registration only: task/approval/authorization decisions live in
+  // CompanyClawRuntime, so widening access requires changing the core.
+  try {
+    const deviceIdentity = loadOrCreateDeviceIdentity();
+    const companyClawUserDataDir = app.getPath("userData");
+    const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () =>
+      randomUUID(),
+    );
+    const companyClawOptions = {
+      userDataDir: companyClawUserDataDir,
+      ticketSecret,
+      ownerSid: resolveOwnerSid(),
+      deviceId: deviceIdentity.deviceId,
+    };
+    registerCompanyClawIpcHandlers(
+      createCompanyClawRuntime(companyClawOptions),
+      companyClawOptions,
+    );
+    console.log(
+      `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid})`,
+    );
+  } catch (error) {
+    // The core must never take the app down: if registration fails the
+    // handlers simply stay absent and the renderer reports "unsupported".
+    console.error("[companyclaw] Failed to register security-core IPC:", error);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,135 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { ipcMain } from "electron";
+import { CompanyClawRuntime, type RuntimePaths } from "./runtime";
+
+/**
+ * Wires the CompanyClaw security core to the renderer.
+ *
+ * This module owns registration only: every authorization decision stays inside
+ * `CompanyClawRuntime`, so widening access still requires changing the core
+ * rather than a handler. It never touches AppContainer, MXC or the host's
+ * security configuration.
+ */
+
+interface CompanyClawIpcOptions {
+  userDataDir: string;
+  /** Stable per-install secret used to sign approval tickets. */
+  ticketSecret: string;
+  /** Current Windows user SID; approval ownership is scoped to it. */
+  ownerSid: string;
+  deviceId: string;
+}
+
+export const COMPANYCLAW_TICKET_SECRET_FILE = "companyclaw-ticket-secret";
+
+export function resolveCompanyClawPaths(userDataDir: string): RuntimePaths {
+  const root = path.join(userDataDir, "companyclaw");
+  return {
+    tasksFile: path.join(root, "tasks.json"),
+    approvalsFile: path.join(root, "approvals.json"),
+  };
+}
+
+/**
+ * Reads (or creates) the per-install signing secret with owner-only
+ * permissions. The value never leaves the main process.
+ */
+export function loadOrCreateTicketSecret(userDataDir: string, createSecret: () => string): string {
+  const filePath = path.join(userDataDir, "companyclaw", COMPANYCLAW_TICKET_SECRET_FILE);
+  try {
+    const existing = fs.readFileSync(filePath, "utf-8").trim();
+    if (existing) return existing;
+  } catch {
+    // fall through to creation
+  }
+  const secret = createSecret();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(filePath, `${secret}\n`, { encoding: "utf-8", mode: 0o600 });
+  return secret;
+}
+
+export function createCompanyClawRuntime(options: CompanyClawIpcOptions): CompanyClawRuntime {
+  const paths = resolveCompanyClawPaths(options.userDataDir);
+  fs.mkdirSync(path.dirname(paths.tasksFile), { recursive: true, mode: 0o700 });
+  return new CompanyClawRuntime({
+    paths,
+    ticketSecret: options.ticketSecret,
+    existsFile: (filePath) => fs.existsSync(filePath),
+    readFile: (filePath) => fs.readFileSync(filePath, "utf-8"),
+    writeFile: async (filePath, contents) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      const temporary = `${filePath}.${process.pid}.tmp`;
+      await fs.promises.writeFile(temporary, contents, { encoding: "utf-8", mode: 0o600 });
+      await fs.promises.rename(temporary, filePath);
+    },
+  });
+}
+
+export function registerCompanyClawIpcHandlers(
+  runtime: CompanyClawRuntime,
+  options: CompanyClawIpcOptions,
+): void {
+  ipcMain.handle("companyclaw:get-remote-authorization", () => runtime.getRemoteAuthorization());
+
+  ipcMain.handle(
+    "companyclaw:set-remote-authorization",
+    (
+      _event,
+      input: {
+        enabled: boolean;
+        ttlMinutes?: number;
+        channelUserId?: string;
+      },
+    ) => {
+      // The renderer cannot choose its own ownership: the main process supplies
+      // the SID and device the grant is bound to.
+      return runtime.setRemoteAuthorization({
+        enabled: input?.enabled === true,
+        ownerSid: options.ownerSid,
+        deviceId: options.deviceId,
+        channelUserId: input?.channelUserId ?? "",
+        ttlMinutes: input?.ttlMinutes,
+      });
+    },
+  );
+
+  ipcMain.handle("companyclaw:tasks:list", (_event, input?: { state?: string }) =>
+    runtime.listTasks({
+      ownerSid: options.ownerSid,
+      state: input?.state as never,
+    }),
+  );
+
+  ipcMain.handle("companyclaw:tasks:get", (_event, input: { taskId: string }) =>
+    runtime.getTask(input?.taskId ?? "", options.ownerSid),
+  );
+
+  ipcMain.handle(
+    "companyclaw:tasks:control",
+    (
+      _event,
+      input: { taskId: string; control: "pause" | "resume" | "cancel" | "emergency-stop"; reason?: string },
+    ) =>
+      runtime.controlTask({
+        taskId: input?.taskId ?? "",
+        ownerSid: options.ownerSid,
+        control: input?.control,
+        reason: input?.reason,
+      }),
+  );
+
+  ipcMain.handle("companyclaw:approvals:list-pending", () =>
+    runtime.listPendingApprovals(options.ownerSid),
+  );
+
+  ipcMain.handle(
+    "companyclaw:approvals:resolve",
+    (_event, input: { approvalId: string; decision: "approved" | "denied" }) =>
+      runtime.resolveApproval({
+        approvalId: input?.approvalId ?? "",
+        decision: input?.decision,
+        resolvedBy: options.ownerSid,
+      }),
+  );
+}

@@ -452,4 +452,79 @@ contextBridge.exposeInMainWorld("openclaw", {
     revokeStaleAcl: (dir: string) =>
       ipcRenderer.invoke("sandbox:revoke-stale-acl", dir) as Promise<{ ok: boolean }>,
   },
+
+  // --- CompanyClaw security core ---
+  // Read/decide surfaces only. The renderer cannot pick its own owner SID or
+  // device id; the main process supplies both when a grant is created.
+  companyClaw: {
+    getRemoteAuthorization: () =>
+      ipcRenderer.invoke("companyclaw:get-remote-authorization") as Promise<{
+        state: "disabled" | "enabled" | "expired" | "revoked";
+        ownerSid: string;
+        deviceId: string;
+        channelUserId: string;
+        grantedAt: string | null;
+        expiresAt: string | null;
+      }>,
+    setRemoteAuthorization: (input: {
+      enabled: boolean;
+      ttlMinutes?: number;
+      channelUserId?: string;
+    }) =>
+      ipcRenderer.invoke("companyclaw:set-remote-authorization", input) as Promise<{
+        state: "disabled" | "enabled" | "expired" | "revoked";
+        ownerSid: string;
+        deviceId: string;
+        channelUserId: string;
+        grantedAt: string | null;
+        expiresAt: string | null;
+      }>,
+    tasks: {
+      list: (input?: { state?: string }) =>
+        ipcRenderer.invoke("companyclaw:tasks:list", input) as Promise<
+          Array<{
+            taskId: string;
+            state: string;
+            objective: string;
+            channel: string;
+            createdAt: string;
+            updatedAt: string;
+            terminalAt: string | null;
+            resultSummary: string | null;
+          }>
+        >,
+      get: (input: { taskId: string }) =>
+        ipcRenderer.invoke("companyclaw:tasks:get", input) as Promise<{
+          record: unknown;
+        } | null>,
+      control: (input: {
+        taskId: string;
+        control: "pause" | "resume" | "cancel" | "emergency-stop";
+        reason?: string;
+      }) =>
+        ipcRenderer.invoke("companyclaw:tasks:control", input) as Promise<{
+          accepted: boolean;
+          record: unknown;
+          reason?: string;
+        }>,
+    },
+    approvals: {
+      listPending: () =>
+        ipcRenderer.invoke("companyclaw:approvals:list-pending") as Promise<
+          Array<{
+            approvalId: string;
+            status: string;
+            targetSystem: string;
+            recordId: string;
+            field: string;
+            oldValue: string | null;
+            newValue: string | null;
+            requestedAt: string;
+            expiresAt: string;
+          }>
+        >,
+      resolve: (input: { approvalId: string; decision: "approved" | "denied" }) =>
+        ipcRenderer.invoke("companyclaw:approvals:resolve", input) as Promise<unknown>,
+    },
+  },
 });
