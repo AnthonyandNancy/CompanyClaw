@@ -532,6 +532,24 @@ contextBridge.exposeInMainWorld("openclaw", {
           { ok: true; dir: string } | { ok: false; reason: string }
         >,
     },
+    browser: {
+      getPolicy: () =>
+        ipcRenderer.invoke("companyclaw:browser:get-policy") as Promise<{
+          allowedDomains: string[];
+          allowDownloads: boolean;
+          allowUploads: boolean;
+        }>,
+      setPolicy: (input: {
+        allowedDomains?: string[];
+        allowDownloads?: boolean;
+        allowUploads?: boolean;
+      }) =>
+        ipcRenderer.invoke("companyclaw:browser:set-policy", input) as Promise<{
+          allowedDomains: string[];
+          allowDownloads: boolean;
+          allowUploads: boolean;
+        }>,
+    },
     identity: {
       get: () =>
         ipcRenderer.invoke("companyclaw:identity:get") as Promise<{

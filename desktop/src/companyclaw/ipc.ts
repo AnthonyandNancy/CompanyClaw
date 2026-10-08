@@ -152,6 +152,23 @@ export function registerCompanyClawIpcHandlers(
     runtime.listPendingApprovals(options.ownerSid),
   );
 
+  ipcMain.handle("companyclaw:browser:get-policy", () => runtime.describeBrowserPolicy());
+
+  ipcMain.handle(
+    "companyclaw:browser:set-policy",
+    (
+      _event,
+      input: { allowedDomains?: string[]; allowDownloads?: boolean; allowUploads?: boolean },
+    ) => {
+      runtime.configureBrowser({
+        allowedDomains: Array.isArray(input?.allowedDomains) ? input.allowedDomains : [],
+        allowDownloads: input?.allowDownloads === true,
+        allowUploads: input?.allowUploads === true,
+      });
+      return runtime.describeBrowserPolicy();
+    },
+  );
+
   ipcMain.handle("companyclaw:identity:get", () => runtime.getIdentityBinding());
 
   ipcMain.handle(

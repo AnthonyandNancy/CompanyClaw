@@ -25,6 +25,8 @@ const REQUIRED_CHANNELS = [
   "companyclaw:identity:get",
   "companyclaw:identity:bind",
   "companyclaw:identity:unbind",
+  "companyclaw:browser:get-policy",
+  "companyclaw:browser:set-policy",
 ] as const;
 
 describe("CompanyClaw IPC contract", () => {

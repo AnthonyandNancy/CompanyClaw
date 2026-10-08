@@ -17,6 +17,7 @@ import {
   sanitizeArtifactFileName,
 } from "./results/task-artifacts";
 import { IdentityBindingStore, type IdentityBinding } from "./remote/identity-binding";
+import { BrowserPolicy, type BrowserAuthorization } from "./policy/browser-policy";
 import { RemoteAuthorization } from "./remote/remote-authorization";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
@@ -127,6 +128,12 @@ export class CompanyClawRuntime {
   private readonly ticketSecret: string;
   private readonly consumedNonces = new Set<string>();
   private readonly identity: IdentityBindingStore;
+  private browserPolicy: BrowserPolicy;
+  private browserConfig = {
+    allowedDomains: [] as string[],
+    allowDownloads: false,
+    allowUploads: false,
+  };
 
   constructor(private readonly deps: RuntimeDependencies) {
     this.now = deps.now ?? (() => new Date());
@@ -147,6 +154,59 @@ export class CompanyClawRuntime {
     });
     this.authorization = new RemoteAuthorization({ now: this.now });
     this.identity = new IdentityBindingStore(deps.paths.identityFile, io);
+    // Deny everything until the user configures an allow list: the browser path
+    // must not reach the intranet by default.
+    this.browserPolicy = new BrowserPolicy({
+      allowedDomains: [],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+  }
+
+  // ── Browser ──────────────────────────────────────────────────────────
+
+  /** Replaces the browser allow list and capability switches. */
+  configureBrowser(config: {
+    allowedDomains: readonly string[];
+    allowDownloads: boolean;
+    allowUploads: boolean;
+  }): void {
+    this.browserConfig = {
+      allowedDomains: [...config.allowedDomains],
+      allowDownloads: config.allowDownloads === true,
+      allowUploads: config.allowUploads === true,
+    };
+    this.browserPolicy = new BrowserPolicy(this.browserConfig);
+  }
+
+  describeBrowserPolicy(): {
+    allowedDomains: string[];
+    allowDownloads: boolean;
+    allowUploads: boolean;
+  } {
+    return { ...this.browserConfig, allowedDomains: [...this.browserConfig.allowedDomains] };
+  }
+
+  /**
+   * Authorizes one browser action.
+   *
+   * Two independent gates must both pass, and they fail for different reasons,
+   * so the outcome keeps them distinct:
+   *   * the browser policy (allowed domain + capability switches), and
+   *   * live remote authorization.
+   * A `write` or `high-risk` result means the caller must still obtain an
+   * approval before executing; this method only decides whether the action is
+   * admissible at all.
+   */
+  authorizeBrowserAction(input: { action: string; url: string }):
+    | { allowed: true; risk: "read" | "write" | "high-risk" }
+    | { allowed: false; reason: string } {
+    if (this.authorization.state() !== "enabled") {
+      return { allowed: false, reason: "remote-not-authorized" };
+    }
+    const authorization: BrowserAuthorization = this.browserPolicy.authorize(input);
+    if (!authorization.allowed) return { allowed: false, reason: authorization.reason };
+    return { allowed: true, risk: authorization.risk };
   }
 
   // ── Identity binding ─────────────────────────────────────────────────

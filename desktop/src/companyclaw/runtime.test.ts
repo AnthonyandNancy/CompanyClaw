@@ -561,3 +561,109 @@ describe("CompanyClawRuntime identity binding", () => {
     ).rejects.toThrow(/deviceId/);
   });
 });
+
+describe("CompanyClawRuntime browser policy", () => {
+  it("denies every domain until one is configured", () => {
+    const { runtime } = makeRuntime();
+    expect(runtime.describeBrowserPolicy()).toEqual({
+      allowedDomains: [],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    // Nothing is reachable before a domain is configured.
+    expect(
+      runtime.authorizeBrowserAction({ action: "navigate", url: "https://oa.example.com/" }),
+    ).toEqual({ allowed: false, reason: "remote-not-authorized" });
+  });
+
+  it("requires live remote authorization before any browser action", () => {
+    const { runtime } = makeRuntime();
+    runtime.configureBrowser({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    expect(runtime.authorizeBrowserAction({ action: "navigate", url: "https://oa.example.com/" })).toEqual(
+      { allowed: false, reason: "remote-not-authorized" },
+    );
+  });
+
+  it("allows a read on an approved domain once remote operation is live", () => {
+    const { runtime } = makeRuntime();
+    runtime.configureBrowser({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    expect(
+      runtime.authorizeBrowserAction({ action: "navigate", url: "https://oa.example.com/tickets" }),
+    ).toEqual({ allowed: true, risk: "read" });
+  });
+
+  it("reports a form submission as a write so an approval is required", () => {
+    const { runtime } = makeRuntime();
+    runtime.configureBrowser({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    expect(
+      runtime.authorizeBrowserAction({ action: "fill-form", url: "https://oa.example.com/tickets" }),
+    ).toEqual({ allowed: true, risk: "write" });
+  });
+
+  it("refuses a write on a domain outside the allow list", () => {
+    const { runtime } = makeRuntime();
+    runtime.configureBrowser({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    expect(
+      runtime.authorizeBrowserAction({ action: "navigate", url: "https://evil.net/" }),
+    ).toEqual({ allowed: false, reason: "domain-not-allowed" });
+  });
+
+  it("keeps downloads off until explicitly enabled", () => {
+    const { runtime } = makeRuntime();
+    runtime.configureBrowser({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: false,
+      allowUploads: false,
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    expect(
+      runtime.authorizeBrowserAction({
+        action: "download",
+        url: "https://oa.example.com/report.xlsx",
+      }),
+    ).toEqual({ allowed: false, reason: "downloads-disabled" });
+  });
+});
