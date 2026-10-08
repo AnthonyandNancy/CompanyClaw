@@ -1,6 +1,6 @@
-appId: ai.openclaw.microclaw
-productName: MicroClawDesktop
-copyright: Copyright © 2026 MicroClaw
+appId: com.companyclaw.desktop
+productName: CompanyClaw
+copyright: Copyright © 2026 CompanyClaw
 
 directories:
   output: release
@@ -25,12 +25,12 @@ win:
     - "!wxc-windows-sandbox-guest.exe"
 
 appx:
-  artifactName: MicroClawDesktop-${version}-${arch}.msix
-  identityName: MicroClaw.Test
-  publisher: CN=MicroClaw Test
-  publisherDisplayName: MicroClaw
-  applicationId: MicroClaw
-  displayName: MicroClaw
+  artifactName: CompanyClaw-${version}-${arch}.msix
+  identityName: CompanyClaw.Desktop
+  publisher: CN=CompanyClaw
+  publisherDisplayName: CompanyClaw
+  applicationId: CompanyClaw
+  displayName: CompanyClaw
   languages:
     - en-US
     - zh-CN
