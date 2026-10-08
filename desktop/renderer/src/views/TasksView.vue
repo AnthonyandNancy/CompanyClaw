@@ -1,84 +1,285 @@
 <template>
-  <div class="tasks-view">
+  <div class="cc-task-centre">
     <div class="view-header">
-      <h2>{{ t("tasks.title") }}</h2>
-      <p class="view-desc">{{ t("tasks.desc") }}</p>
-      <el-button
-        size="small"
-        :loading="taskStore.loading"
-        @click="taskStore.fetchTasks()"
-        style="margin-top: 8px"
-        >{{ t("tasks.refresh") }}</el-button
-      >
+      <h2>{{ t("cc.tasksTitle") }}</h2>
+      <p class="view-desc">{{ t("cc.tasksDesc") }}</p>
+      <el-button size="small" :loading="store.loading" @click="store.refresh()">
+        {{ t("cc.tasksRefresh") }}
+      </el-button>
     </div>
 
-    <div v-if="taskStore.error" class="empty-state">
-      <div class="empty-title">{{ t("tasks.loadFailed") }}</div>
-      <div class="empty-desc">{{ taskStore.error }}</div>
-    </div>
+    <!-- The security core registers its IPC handlers independently of startup;
+         when it is absent the feature reports itself unavailable instead of
+         showing an empty list that would read as "no tasks". -->
+    <el-alert v-if="!store.available" type="info" :closable="false" class="cc-alert">
+      {{ t("cc.remoteUnavailable") }}
+    </el-alert>
 
-    <div v-else-if="taskStore.loading" class="empty-state">
-      <div class="empty-title">{{ t("tasks.loading") }}</div>
-    </div>
+    <template v-else>
+      <el-alert v-if="store.error" type="error" :closable="false" class="cc-alert">
+        {{ store.error }}
+      </el-alert>
 
-    <div v-else-if="taskStore.tasks.length === 0" class="empty-state">
-      <div class="empty-title">{{ t("tasks.empty") }}</div>
-      <div class="empty-desc">
-        {{ t("tasks.emptyDesc") }}
-      </div>
-    </div>
+      <!-- Remote operation authorization -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div>
+            <div class="cc-card-title">{{ t("cc.remoteTitle") }}</div>
+            <div class="cc-card-desc">{{ t("cc.remoteDesc") }}</div>
+          </div>
+          <el-tag :type="remoteTagType" size="small">{{ remoteStateLabel }}</el-tag>
+        </div>
+        <div class="cc-card-body">
+          <div class="cc-row">
+            <span class="cc-label">{{ t("cc.remoteState") }}</span>
+            <span class="cc-value">{{ remoteStateLabel }}</span>
+          </div>
+          <div class="cc-row">
+            <span class="cc-label">{{ t("cc.remoteExpiresAt") }}</span>
+            <span class="cc-value">{{ formattedExpiry }}</span>
+          </div>
+          <div class="cc-actions">
+            <el-select v-model="ttlMinutes" size="small" :disabled="store.remoteEnabled">
+              <el-option :label="t('cc.remoteTtl15')" :value="15" />
+              <el-option :label="t('cc.remoteTtl60')" :value="60" />
+              <el-option :label="t('cc.remoteTtl480')" :value="480" />
+            </el-select>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="store.loading"
+              :disabled="store.remoteEnabled"
+              @click="store.enableRemoteOperation({ ttlMinutes })"
+            >
+              {{ t("cc.remoteEnable") }}
+            </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              :disabled="!store.remoteEnabled"
+              @click="store.revokeRemoteOperation()"
+            >
+              {{ t("cc.remoteRevoke") }}
+            </el-button>
+          </div>
+        </div>
+      </section>
 
-    <el-table
-      v-else
-      :data="taskStore.tasks"
-      style="width: 100%"
-      :header-cell-style="{ background: 'var(--bg-secondary)' }"
-    >
-      <el-table-column prop="name" :label="t('tasks.colName')" />
-      <el-table-column prop="cron" :label="t('tasks.colCron')" width="180" />
-      <el-table-column prop="agentId" :label="t('tasks.colAgent')" width="150" />
-      <el-table-column :label="t('tasks.colStatus')" width="100">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-            {{ row.enabled ? t("tasks.enabled") : t("tasks.disabled") }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('tasks.colLastRun')" width="160">
-        <template #default="{ row }">
-          <span v-if="row.lastRun">{{ new Date(row.lastRun).toLocaleString(locale) }}</span>
-          <span v-else class="text-muted">—</span>
-        </template>
-      </el-table-column>
-    </el-table>
+      <!-- Pending approvals come first: they block a running task. -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div class="cc-card-title">{{ t("cc.approvalsTitle") }}</div>
+          <span class="cc-count">{{ store.pendingApprovals.length }}</span>
+        </div>
+        <div class="cc-card-desc cc-card-desc--inset">{{ t("cc.approvalsDesc") }}</div>
+        <div v-if="store.pendingApprovals.length === 0" class="cc-empty">
+          {{ t("cc.approvalsEmpty") }}
+        </div>
+        <div v-else class="cc-approval-list">
+          <div
+            v-for="approval in store.pendingApprovals"
+            :key="approval.approvalId"
+            class="cc-approval"
+          >
+            <div class="cc-approval-grid">
+              <div>
+                <span class="cc-label">{{ t("cc.approvalTarget") }}</span>
+                <span class="cc-value">{{ approval.targetSystem || "—" }}</span>
+              </div>
+              <div>
+                <span class="cc-label">{{ t("cc.approvalRecord") }}</span>
+                <span class="cc-value">{{ approval.recordId || "—" }}</span>
+              </div>
+              <div>
+                <span class="cc-label">{{ t("cc.approvalField") }}</span>
+                <span class="cc-value">{{ approval.field || "—" }}</span>
+              </div>
+              <div>
+                <span class="cc-label">{{ t("cc.approvalChange") }}</span>
+                <span class="cc-value">
+                  {{ approval.oldValue ?? "—" }} → {{ approval.newValue ?? "—" }}
+                </span>
+              </div>
+              <div>
+                <span class="cc-label">{{ t("cc.approvalExpiresAt") }}</span>
+                <span class="cc-value">{{ formatTime(approval.expiresAt) }}</span>
+              </div>
+            </div>
+            <div class="cc-approval-actions">
+              <el-button
+                type="primary"
+                size="small"
+                @click="store.resolveApproval(approval.approvalId, 'approved')"
+              >
+                {{ t("cc.approvalApprove") }}
+              </el-button>
+              <el-button size="small" @click="store.resolveApproval(approval.approvalId, 'denied')">
+                {{ t("cc.approvalDeny") }}
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Task list -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div class="cc-card-title">{{ t("cc.tasksTitle") }}</div>
+          <span class="cc-count">{{ store.tasks.length }}</span>
+        </div>
+        <div v-if="store.loading && store.tasks.length === 0" class="cc-empty">
+          {{ t("cc.loading") }}
+        </div>
+        <div v-else-if="store.tasks.length === 0" class="cc-empty">
+          <div>{{ t("cc.tasksEmpty") }}</div>
+          <div class="cc-empty-desc">{{ t("cc.tasksEmptyDesc") }}</div>
+        </div>
+        <el-table v-else :data="store.tasks" style="width: 100%" size="small">
+          <el-table-column :label="t('cc.tasksColObjective')" min-width="240">
+            <template #default="{ row }">
+              <span class="cc-objective">{{ row.objective || "—" }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('cc.tasksColState')" width="140">
+            <template #default="{ row }">
+              <el-tag :type="stateTagType(row.state)" size="small">
+                {{ stateLabel(row.state) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('cc.tasksColChannel')" width="150">
+            <template #default="{ row }">{{ row.channel || "—" }}</template>
+          </el-table-column>
+          <el-table-column :label="t('cc.tasksColUpdated')" width="170">
+            <template #default="{ row }">{{ formatTime(row.updatedAt) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('cc.tasksColActions')" width="300">
+            <template #default="{ row }">
+              <span v-if="isTerminal(row.state)" class="cc-terminal">
+                {{ t("cc.tasksTerminal") }}
+              </span>
+              <template v-else>
+                <el-button
+                  v-if="row.state === 'PAUSED'"
+                  size="small"
+                  @click="store.controlTask(row.taskId, 'resume')"
+                >
+                  {{ t("cc.tasksResume") }}
+                </el-button>
+                <el-button
+                  v-else
+                  size="small"
+                  :disabled="row.state === 'PAUSE_REQUESTED'"
+                  @click="store.controlTask(row.taskId, 'pause')"
+                >
+                  {{ t("cc.tasksPause") }}
+                </el-button>
+                <el-button size="small" @click="store.controlTask(row.taskId, 'cancel')">
+                  {{ t("cc.tasksCancel") }}
+                </el-button>
+                <el-button
+                  type="danger"
+                  size="small"
+                  @click="store.controlTask(row.taskId, 'emergency-stop')"
+                >
+                  {{ t("cc.tasksStop") }}
+                </el-button>
+              </template>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onActivated, onMounted } from "vue";
-import { useTaskStore } from "@/stores/tasks";
-import { t, locale } from "@/i18n";
+import { computed, onActivated, onMounted, ref } from "vue";
+import { locale, t } from "@/i18n";
+import { useCompanyClawStore } from "@/stores/companyclaw";
 
-const taskStore = useTaskStore();
+const store = useCompanyClawStore();
+const ttlMinutes = ref(60);
+
+const TERMINAL_STATES = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "EXPIRED"]);
+
+function isTerminal(state: string): boolean {
+  return TERMINAL_STATES.has(state);
+}
+
+function stateLabel(state: string): string {
+  const key = `cc.state.${state}`;
+  const label = t(key);
+  return label === key ? state : label;
+}
+
+function stateTagType(state: string): "success" | "warning" | "danger" | "info" | "primary" {
+  if (state === "COMPLETED") return "success";
+  if (state === "FAILED" || state === "CANCELLED") return "danger";
+  if (state === "PARTIAL" || state === "EXPIRED") return "warning";
+  if (state === "AWAITING_APPROVAL" || state === "PAUSED" || state === "PAUSE_REQUESTED") {
+    return "warning";
+  }
+  if (state === "RUNNING" || state === "VERIFYING") return "primary";
+  return "info";
+}
+
+const remoteStateLabel = computed(() => {
+  switch (store.authorization?.state) {
+    case "enabled":
+      return t("cc.remoteStateEnabled");
+    case "expired":
+      return t("cc.remoteStateExpired");
+    case "revoked":
+      return t("cc.remoteStateRevoked");
+    default:
+      return t("cc.remoteStateDisabled");
+  }
+});
+
+const remoteTagType = computed<"success" | "warning" | "danger" | "info">(() => {
+  switch (store.authorization?.state) {
+    case "enabled":
+      return "success";
+    case "expired":
+      return "warning";
+    case "revoked":
+      return "danger";
+    default:
+      return "info";
+  }
+});
+
+const formattedExpiry = computed(() => {
+  const expiresAt = store.authorization?.expiresAt;
+  return expiresAt ? formatTime(expiresAt) : "—";
+});
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString(locale.value ?? undefined);
+}
 
 onMounted(() => {
-  taskStore.fetchTasks();
+  void store.refresh();
 });
 
 onActivated(() => {
-  taskStore.fetchTasks();
+  void store.refresh();
 });
 </script>
 
 <style scoped>
-.tasks-view {
+.cc-task-centre {
   height: 100%;
   overflow-y: auto;
   padding: 24px 32px;
 }
 
 .view-header {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .view-header h2 {
@@ -89,37 +290,118 @@ onActivated(() => {
 .view-desc {
   color: var(--text-secondary);
   font-size: 13px;
-  margin-top: 4px;
+  margin: 4px 0 8px;
 }
 
-.empty-state {
+.cc-alert {
+  margin-bottom: 16px;
+}
+
+.cc-card {
+  border: 1px solid var(--border-color, #e5e5ea);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: var(--bg-secondary, #fafafa);
+}
+
+.cc-card-head {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  color: var(--text-muted);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.empty-icon {
-  font-size: 48px;
+.cc-card-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cc-card-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  max-width: 620px;
+  line-height: 1.5;
+}
+
+.cc-card-desc--inset {
   margin-bottom: 12px;
 }
 
-.empty-title {
-  font-size: 16px;
-  font-weight: 500;
+.cc-card-body {
+  margin-top: 12px;
+}
+
+.cc-count {
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
-.empty-desc {
-  font-size: 13px;
-  margin-top: 8px;
-  text-align: center;
-  max-width: 300px;
+.cc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
 }
 
-.text-muted {
+.cc-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  min-width: 84px;
+  display: inline-block;
+}
+
+.cc-value {
+  font-size: 13px;
+}
+
+.cc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cc-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.cc-empty-desc {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.cc-approval {
+  border: 1px solid var(--border-color, #e5e5ea);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--bg-primary, #fff);
+}
+
+.cc-approval-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.cc-approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cc-objective {
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.cc-terminal {
+  font-size: 12px;
   color: var(--text-muted);
 }
 </style>

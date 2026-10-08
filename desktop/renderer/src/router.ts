@@ -34,6 +34,11 @@ const router = createRouter({
       component: () => import("@/views/ChatView.vue"),
     },
     {
+      path: "/tasks",
+      name: "companyclaw-tasks",
+      component: () => import("@/views/TasksView.vue"),
+    },
+    {
       path: "/settings/:section?",
       name: "settings",
       component: () => import("@/views/SettingsView.vue"),

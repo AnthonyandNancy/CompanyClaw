@@ -120,6 +120,28 @@
         </div>
       </div>
 
+      <!-- CompanyClaw task centre: remote tasks, approvals, remote-operation switch -->
+      <button
+        class="sp-menu-item"
+        :class="{ active: route.path.startsWith('/tasks') }"
+        @click="router.push('/tasks')"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M9 11l3 3L22 4" />
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+        <span>{{ t("sidebar.tasks") }}</span>
+      </button>
+
       <!-- Settings -->
       <button
         class="sp-menu-item"
