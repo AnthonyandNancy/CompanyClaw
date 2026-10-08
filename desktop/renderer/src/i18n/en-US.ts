@@ -699,6 +699,12 @@ export default {
   "cc.state.CANCELLED": "Cancelled",
   "cc.state.EXPIRED": "Expired",
 
+  "cc.brokerTitle": "Applications allowed to be automated",
+  "cc.brokerDesc":
+    "Only the applications listed here may be automated. Empty by default: while the list is empty, no application will be operated. Enter an executable base name (for example notepad, excel).",
+  "cc.brokerEmpty": "Empty — no application will be operated.",
+  "cc.brokerPlaceholder": "Executable name",
+  "cc.brokerAdd": "Add",
   "cc.approvalsTitle": "Operations awaiting approval",
   "cc.approvalsDesc": "These change business data and run only after you confirm them.",
   "cc.approvalsEmpty": "No pending approvals",

@@ -18,6 +18,7 @@ import {
 } from "./results/task-artifacts";
 import { IdentityBindingStore, type IdentityBinding } from "./remote/identity-binding";
 import { BrowserPolicy, type BrowserAuthorization } from "./policy/browser-policy";
+import { BrokerTargetsStore, type BrokerTargets } from "./broker-targets";
 import { RemoteAuthorization } from "./remote/remote-authorization";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
@@ -35,6 +36,8 @@ export interface RuntimePaths {
   artifactsRoot: string;
   /** File holding the WeChat identity -> device -> SID binding. */
   identityFile: string;
+  /** File holding the broker's application allow list. */
+  brokerTargetsFile: string;
 }
 
 export interface RuntimeDependencies {
@@ -134,6 +137,9 @@ export class CompanyClawRuntime {
     allowDownloads: false,
     allowUploads: false,
   };
+  private readonly brokerTargets: BrokerTargetsStore;
+  /** Applies a new allow list to the running broker, when one is present. */
+  private applyBrokerTargets: ((targets: BrokerTargets) => Promise<void>) | null = null;
 
   constructor(private readonly deps: RuntimeDependencies) {
     this.now = deps.now ?? (() => new Date());
@@ -161,6 +167,30 @@ export class CompanyClawRuntime {
       allowDownloads: false,
       allowUploads: false,
     });
+    this.brokerTargets = new BrokerTargetsStore(deps.paths.brokerTargetsFile, io);
+  }
+
+  /** Wires the broker client so allow-list changes reach the running process. */
+  setBrokerTargetsApplier(
+    apply: ((targets: BrokerTargets) => Promise<void>) | null,
+  ): void {
+    this.applyBrokerTargets = apply;
+  }
+
+  // ── Broker application allow list ───────────────────────────────────
+
+  /**
+   * The applications the broker may automate. Starts empty, which means the
+   * broker refuses every process operation until the user allows one.
+   */
+  getBrokerTargets(): BrokerTargets {
+    return this.brokerTargets.get();
+  }
+
+  async setBrokerTargets(targets: BrokerTargets): Promise<BrokerTargets> {
+    const saved = await this.brokerTargets.save(targets);
+    if (this.applyBrokerTargets) await this.applyBrokerTargets(saved);
+    return saved;
   }
 
   // ── Browser ──────────────────────────────────────────────────────────

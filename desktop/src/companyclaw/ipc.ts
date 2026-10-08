@@ -48,6 +48,7 @@ export function resolveCompanyClawPaths(userDataDir: string): RuntimePaths {
     approvalsFile: path.join(root, "approvals.json"),
     artifactsRoot: root,
     identityFile: path.join(root, "identity-binding.json"),
+    brokerTargetsFile: path.join(root, "broker-targets.json"),
   };
 }
 
@@ -97,6 +98,15 @@ export function createCompanyClawRuntime(
       await fs.promises.rename(temporary, filePath);
     },
   });
+  if (broker) {
+    // The allow list lives in the runtime; hand the broker its current value and
+    // let later changes restart it with the new list.
+    void runtime.setBrokerTargetsApplier(async (targets) => {
+      await broker.updateTargets(targets);
+    });
+    const current = runtime.getBrokerTargets();
+    broker.updateTargets(current).catch(() => undefined);
+  }
   return { runtime, broker };
 }
 
@@ -204,6 +214,19 @@ export function registerCompanyClawIpcHandlers(
         };
       }
     },
+  );
+
+  ipcMain.handle("companyclaw:broker:get-targets", () => runtime.getBrokerTargets());
+
+  ipcMain.handle(
+    "companyclaw:broker:set-targets",
+    (_event, input: { allowedProcesses?: string[]; allowedWindowTitles?: string[] }) =>
+      runtime.setBrokerTargets({
+        allowedProcesses: Array.isArray(input?.allowedProcesses) ? input.allowedProcesses : [],
+        allowedWindowTitles: Array.isArray(input?.allowedWindowTitles)
+          ? input.allowedWindowTitles
+          : [],
+      }),
   );
 
   ipcMain.handle("companyclaw:browser:get-policy", () => runtime.describeBrowserPolicy());

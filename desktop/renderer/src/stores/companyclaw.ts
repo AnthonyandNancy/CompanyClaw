@@ -51,6 +51,11 @@ export interface ControlResult {
   reason?: string;
 }
 
+export interface BrokerTargets {
+  allowedProcesses: string[];
+  allowedWindowTitles: string[];
+}
+
 interface CompanyClawBridge {
   getRemoteAuthorization: () => Promise<RemoteAuthorizationView>;
   setRemoteAuthorization: (input: {
@@ -70,6 +75,13 @@ interface CompanyClawBridge {
   approvals: {
     listPending: () => Promise<PendingApproval[]>;
     resolve: (input: { approvalId: string; decision: "approved" | "denied" }) => Promise<unknown>;
+  };
+  broker: {
+    getTargets: () => Promise<BrokerTargets>;
+    setTargets: (input: {
+      allowedProcesses?: string[];
+      allowedWindowTitles?: string[];
+    }) => Promise<BrokerTargets>;
   };
 }
 
@@ -98,6 +110,7 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
   const authorization = ref<RemoteAuthorizationView | null>(null);
   const tasks = ref<TaskSummary[]>([]);
   const pendingApprovals = ref<PendingApproval[]>([]);
+  const brokerTargets = ref<BrokerTargets>({ allowedProcesses: [], allowedWindowTitles: [] });
 
   const remoteEnabled = computed(() => authorization.value?.state === "enabled");
   const activeTasks = computed(() => tasks.value.filter((task) => ACTIVE_STATES.has(task.state)));
@@ -113,20 +126,23 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
       authorization.value = null;
       tasks.value = [];
       pendingApprovals.value = [];
+      brokerTargets.value = { allowedProcesses: [], allowedWindowTitles: [] };
       return;
     }
     available.value = true;
     loading.value = true;
     error.value = "";
     try {
-      const [auth, list, pending] = await Promise.all([
+      const [auth, list, pending, targets] = await Promise.all([
         api.getRemoteAuthorization(),
         api.tasks.list(),
         api.approvals.listPending(),
+        api.broker.getTargets(),
       ]);
       authorization.value = auth;
       tasks.value = list;
       pendingApprovals.value = pending;
+      brokerTargets.value = targets;
     } catch (err) {
       // Keep whatever was already loaded: a transient failure must not make the
       // UI pretend there are no tasks or no pending approvals.
@@ -210,6 +226,17 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     }
   }
 
+  async function setBrokerTargets(input: BrokerTargets): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    error.value = "";
+    try {
+      brokerTargets.value = await api.broker.setTargets(input);
+    } catch (err) {
+      error.value = messageOf(err);
+    }
+  }
+
   return {
     available,
     loading,
@@ -217,6 +244,8 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     authorization,
     tasks,
     pendingApprovals,
+    brokerTargets,
+    setBrokerTargets,
     remoteEnabled,
     activeTasks,
     refresh,

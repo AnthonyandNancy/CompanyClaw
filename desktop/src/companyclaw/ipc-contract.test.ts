@@ -28,6 +28,8 @@ const REQUIRED_CHANNELS = [
   "companyclaw:browser:get-policy",
   "companyclaw:browser:set-policy",
   "companyclaw:model:probe-capabilities",
+  "companyclaw:broker:get-targets",
+  "companyclaw:broker:set-targets",
 ] as const;
 
 describe("CompanyClaw IPC contract", () => {

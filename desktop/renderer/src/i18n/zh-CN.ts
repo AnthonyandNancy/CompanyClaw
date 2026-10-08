@@ -666,6 +666,12 @@ export default {
   "cc.state.CANCELLED": "已取消",
   "cc.state.EXPIRED": "已过期",
 
+  "cc.brokerTitle": "允许操作的应用",
+  "cc.brokerDesc":
+    "只有在此列出的应用才允许被自动化操作。默认为空：未列出时，任何应用都不会被操作。填写可执行文件名（如 notepad、excel）。",
+  "cc.brokerEmpty": "当前为空，任何应用都不会被操作。",
+  "cc.brokerPlaceholder": "可执行文件名",
+  "cc.brokerAdd": "添加",
   "cc.approvalsTitle": "待审批的操作",
   "cc.approvalsDesc": "以下操作会修改业务数据，需要你确认后才会执行。",
   "cc.approvalsEmpty": "暂无待审批操作",

@@ -65,6 +65,47 @@
         </div>
       </section>
 
+      <!-- Application allow list: the broker refuses every process until one
+           is allowed here, so this is the switch that makes automation possible
+           at all. -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div>
+            <div class="cc-card-title">{{ t("cc.brokerTitle") }}</div>
+            <div class="cc-card-desc">{{ t("cc.brokerDesc") }}</div>
+          </div>
+          <el-tag :type="store.brokerTargets.allowedProcesses.length > 0 ? 'success' : 'info'" size="small">
+            {{ store.brokerTargets.allowedProcesses.length }}
+          </el-tag>
+        </div>
+        <div class="cc-card-body">
+          <div v-if="store.brokerTargets.allowedProcesses.length === 0" class="cc-alert-inline">
+            {{ t("cc.brokerEmpty") }}
+          </div>
+          <div class="cc-tag-list">
+            <el-tag
+              v-for="name in store.brokerTargets.allowedProcesses"
+              :key="name"
+              closable
+              size="small"
+              @close="removeProcess(name)"
+            >
+              {{ name }}
+            </el-tag>
+          </div>
+          <div class="cc-actions">
+            <el-input
+              v-model="newProcess"
+              size="small"
+              :placeholder="t('cc.brokerPlaceholder')"
+              style="max-width: 220px"
+              @keyup.enter="addProcess"
+            />
+            <el-button size="small" @click="addProcess">{{ t("cc.brokerAdd") }}</el-button>
+          </div>
+        </div>
+      </section>
+
       <!-- Pending approvals come first: they block a running task. -->
       <section class="cc-card">
         <div class="cc-card-head">
@@ -200,6 +241,26 @@ import { useCompanyClawStore } from "@/stores/companyclaw";
 
 const store = useCompanyClawStore();
 const ttlMinutes = ref(60);
+const newProcess = ref("");
+
+/** Adds one executable base name to the allow list. */
+async function addProcess(): Promise<void> {
+  const candidate = newProcess.value.trim();
+  if (!candidate) return;
+  const next = [...new Set([...store.brokerTargets.allowedProcesses, candidate.toLowerCase().replace(/\.exe$/i, "")])];
+  newProcess.value = "";
+  await store.setBrokerTargets({
+    allowedProcesses: next,
+    allowedWindowTitles: store.brokerTargets.allowedWindowTitles,
+  });
+}
+
+async function removeProcess(name: string): Promise<void> {
+  await store.setBrokerTargets({
+    allowedProcesses: store.brokerTargets.allowedProcesses.filter((entry) => entry !== name),
+    allowedWindowTitles: store.brokerTargets.allowedWindowTitles,
+  });
+}
 
 const TERMINAL_STATES = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "EXPIRED"]);
 
@@ -373,6 +434,19 @@ onActivated(() => {
 .cc-empty-desc {
   margin-top: 6px;
   font-size: 12px;
+}
+
+.cc-alert-inline {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.cc-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 
 .cc-approval {

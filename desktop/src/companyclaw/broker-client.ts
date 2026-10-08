@@ -33,6 +33,9 @@ export interface BrokerClientOptions {
   now?: () => Date;
 }
 
+/** Mutable view of the options this client was built with. */
+type MutableBrokerOptions = BrokerClientOptions;
+
 export interface BrokerCallOptions {
   operation: BrokerOperation;
   taskId: string;
@@ -55,7 +58,7 @@ export class BrokerClient {
   private readonly token = createBrokerExecutionToken();
   private readonly now: () => Date;
 
-  constructor(private readonly options: BrokerClientOptions) {
+  constructor(private readonly options: MutableBrokerOptions) {
     this.now = options.now ?? (() => new Date());
   }
 
@@ -130,6 +133,22 @@ export class BrokerClient {
         reject(new Error(`broker exited during startup with code ${code}`));
       });
     });
+  }
+
+  /**
+   * Replaces the application allow list. The allow list is delivered through the
+   * broker's environment, so the running process cannot pick up a change: it is
+   * stopped and started again, and the next call uses the new list.
+   */
+  async updateTargets(targets: {
+    allowedProcesses: string[];
+    allowedWindowTitles: string[];
+  }): Promise<void> {
+    const wasRunning = this.isRunning();
+    this.options.allowedProcesses = [...targets.allowedProcesses];
+    this.options.allowedWindowTitles = [...targets.allowedWindowTitles];
+    if (!wasRunning) return;
+    await this.stop();
   }
 
   /** Stops the broker and waits for it to release its socket. */

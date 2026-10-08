@@ -54,6 +54,13 @@ function installApi(overrides: Record<string, unknown> = {}) {
       listPending: vi.fn(async () => []),
       resolve: vi.fn(async () => ({})),
     },
+    broker: {
+      getTargets: vi.fn(async () => ({ allowedProcesses: [], allowedWindowTitles: [] })),
+      setTargets: vi.fn(async (input: { allowedProcesses?: string[] }) => ({
+        allowedProcesses: input.allowedProcesses ?? [],
+        allowedWindowTitles: [],
+      })),
+    },
     ...overrides,
   };
   (window as unknown as { openclaw: { companyClaw: unknown } }).openclaw = {
@@ -178,6 +185,20 @@ describe("useCompanyClawStore", () => {
       decision: "approved",
     });
     expect(store.pendingApprovals).toEqual([]);
+  });
+
+  it("starts with an empty broker allow list", async () => {
+    installApi();
+    const store = useCompanyClawStore();
+    await store.refresh();
+    expect(store.brokerTargets.allowedProcesses).toEqual([]);
+  });
+
+  it("saves an allow list through the bridge", async () => {
+    installApi();
+    const store = useCompanyClawStore();
+    await store.setBrokerTargets({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+    expect(store.brokerTargets.allowedProcesses).toEqual(["notepad"]);
   });
 
   it("keeps the enabled state visible when the grant has an expiry", async () => {

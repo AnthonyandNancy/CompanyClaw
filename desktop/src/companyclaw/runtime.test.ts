@@ -23,6 +23,7 @@ function makeRuntime(paths?: Partial<RuntimePaths>) {
     approvalsFile: "C:/state/approvals.json",
     artifactsRoot: "C:/state",
     identityFile: "C:/state/identity-binding.json",
+    brokerTargetsFile: "C:/state/broker-targets.json",
     ...paths,
   };
   const runtime = new CompanyClawRuntime({
@@ -665,5 +666,45 @@ describe("CompanyClawRuntime browser policy", () => {
         url: "https://oa.example.com/report.xlsx",
       }),
     ).toEqual({ allowed: false, reason: "downloads-disabled" });
+  });
+});
+
+describe("CompanyClawRuntime broker targets", () => {
+  it("starts with an empty allow list so the broker denies everything", () => {
+    const { runtime } = makeRuntime();
+    expect(runtime.getBrokerTargets()).toEqual({
+      allowedProcesses: [],
+      allowedWindowTitles: [],
+    });
+  });
+
+  it("stores a normalized allow list", async () => {
+    const { runtime } = makeRuntime();
+    const saved = await runtime.setBrokerTargets({
+      allowedProcesses: ["Notepad.exe", "excel"],
+      allowedWindowTitles: ["工单"],
+    });
+    expect(saved.allowedProcesses).toEqual(["notepad", "excel"]);
+    expect(saved.allowedWindowTitles).toEqual(["工单"]);
+  });
+
+  it("pushes a change to the broker applier so it takes effect", async () => {
+    const { runtime } = makeRuntime();
+    const applied: unknown[] = [];
+    runtime.setBrokerTargetsApplier(async (targets) => {
+      applied.push(targets);
+    });
+    await runtime.setBrokerTargets({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+    });
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toEqual({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+  });
+
+  it("still stores the list when no broker is running", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.setBrokerTargets({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+    expect(runtime.getBrokerTargets().allowedProcesses).toEqual(["notepad"]);
   });
 });
