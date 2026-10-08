@@ -56,6 +56,20 @@ export interface BrokerTargets {
   allowedWindowTitles: string[];
 }
 
+export interface BrowserPolicyView {
+  allowedDomains: string[];
+  allowDownloads: boolean;
+  allowUploads: boolean;
+}
+
+export interface IdentityBindingView {
+  ownerSid: string;
+  deviceId: string;
+  channelType: string;
+  channelUserId: string;
+  boundAt: string;
+}
+
 interface CompanyClawBridge {
   getRemoteAuthorization: () => Promise<RemoteAuthorizationView>;
   setRemoteAuthorization: (input: {
@@ -82,6 +96,14 @@ interface CompanyClawBridge {
       allowedProcesses?: string[];
       allowedWindowTitles?: string[];
     }) => Promise<BrokerTargets>;
+  };
+  browser: {
+    getPolicy: () => Promise<BrowserPolicyView>;
+    setPolicy: (input: {
+      allowedDomains?: string[];
+      allowDownloads?: boolean;
+      allowUploads?: boolean;
+    }) => Promise<BrowserPolicyView>;
   };
 }
 
@@ -111,6 +133,11 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
   const tasks = ref<TaskSummary[]>([]);
   const pendingApprovals = ref<PendingApproval[]>([]);
   const brokerTargets = ref<BrokerTargets>({ allowedProcesses: [], allowedWindowTitles: [] });
+  const browserPolicy = ref<BrowserPolicyView>({
+    allowedDomains: [],
+    allowDownloads: false,
+    allowUploads: false,
+  });
 
   const remoteEnabled = computed(() => authorization.value?.state === "enabled");
   const activeTasks = computed(() => tasks.value.filter((task) => ACTIVE_STATES.has(task.state)));
@@ -127,22 +154,25 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
       tasks.value = [];
       pendingApprovals.value = [];
       brokerTargets.value = { allowedProcesses: [], allowedWindowTitles: [] };
+      browserPolicy.value = { allowedDomains: [], allowDownloads: false, allowUploads: false };
       return;
     }
     available.value = true;
     loading.value = true;
     error.value = "";
     try {
-      const [auth, list, pending, targets] = await Promise.all([
+      const [auth, list, pending, targets, browser] = await Promise.all([
         api.getRemoteAuthorization(),
         api.tasks.list(),
         api.approvals.listPending(),
         api.broker.getTargets(),
+        api.browser.getPolicy(),
       ]);
       authorization.value = auth;
       tasks.value = list;
       pendingApprovals.value = pending;
       brokerTargets.value = targets;
+      browserPolicy.value = browser;
     } catch (err) {
       // Keep whatever was already loaded: a transient failure must not make the
       // UI pretend there are no tasks or no pending approvals.
@@ -237,6 +267,17 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     }
   }
 
+  async function setBrowserPolicy(input: BrowserPolicyView): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    error.value = "";
+    try {
+      browserPolicy.value = await api.browser.setPolicy(input);
+    } catch (err) {
+      error.value = messageOf(err);
+    }
+  }
+
   return {
     available,
     loading,
@@ -245,7 +286,9 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     tasks,
     pendingApprovals,
     brokerTargets,
+    browserPolicy,
     setBrokerTargets,
+    setBrowserPolicy,
     remoteEnabled,
     activeTasks,
     refresh,

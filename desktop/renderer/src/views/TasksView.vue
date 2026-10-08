@@ -106,6 +106,54 @@
         </div>
       </section>
 
+      <!-- Browser allow list: reaching any site, including the intranet, is an
+           explicit per-domain decision. -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div>
+            <div class="cc-card-title">{{ t("cc.browserTitle") }}</div>
+            <div class="cc-card-desc">{{ t("cc.browserDesc") }}</div>
+          </div>
+          <el-tag :type="store.browserPolicy.allowedDomains.length > 0 ? 'success' : 'info'" size="small">
+            {{ store.browserPolicy.allowedDomains.length }}
+          </el-tag>
+        </div>
+        <div class="cc-card-body">
+          <div v-if="store.browserPolicy.allowedDomains.length === 0" class="cc-alert-inline">
+            {{ t("cc.browserEmpty") }}
+          </div>
+          <div class="cc-tag-list">
+            <el-tag
+              v-for="domain in store.browserPolicy.allowedDomains"
+              :key="domain"
+              closable
+              size="small"
+              @close="removeDomain(domain)"
+            >
+              {{ domain }}
+            </el-tag>
+          </div>
+          <div class="cc-actions">
+            <el-input
+              v-model="newDomain"
+              size="small"
+              :placeholder="t('cc.browserPlaceholder')"
+              style="max-width: 260px"
+              @keyup.enter="addDomain"
+            />
+            <el-button size="small" @click="addDomain">{{ t("cc.brokerAdd") }}</el-button>
+          </div>
+          <div class="cc-actions">
+            <el-checkbox v-model="allowDownloads" @change="saveBrowserPolicy">
+              {{ t("cc.browserDownloads") }}
+            </el-checkbox>
+            <el-checkbox v-model="allowUploads" @change="saveBrowserPolicy">
+              {{ t("cc.browserUploads") }}
+            </el-checkbox>
+          </div>
+        </div>
+      </section>
+
       <!-- Pending approvals come first: they block a running task. -->
       <section class="cc-card">
         <div class="cc-card-head">
@@ -235,13 +283,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref } from "vue";
+import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { locale, t } from "@/i18n";
 import { useCompanyClawStore } from "@/stores/companyclaw";
 
 const store = useCompanyClawStore();
 const ttlMinutes = ref(60);
 const newProcess = ref("");
+const newDomain = ref("");
+const allowDownloads = ref(false);
+const allowUploads = ref(false);
 
 /** Adds one executable base name to the allow list. */
 async function addProcess(): Promise<void> {
@@ -323,13 +374,56 @@ function formatTime(value: string | null | undefined): string {
   return parsed.toLocaleString(locale.value ?? undefined);
 }
 
-onMounted(() => {
-  void store.refresh();
+async function saveBrowserPolicy(): Promise<void> {
+  await store.setBrowserPolicy({
+    allowedDomains: store.browserPolicy.allowedDomains,
+    allowDownloads: allowDownloads.value,
+    allowUploads: allowUploads.value,
+  });
+}
+
+async function addDomain(): Promise<void> {
+  const candidate = newDomain.value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
+  if (!candidate) return;
+  newDomain.value = "";
+  await store.setBrowserPolicy({
+    allowedDomains: [...new Set([...store.browserPolicy.allowedDomains, candidate])],
+    allowDownloads: allowDownloads.value,
+    allowUploads: allowUploads.value,
+  });
+}
+
+async function removeDomain(domain: string): Promise<void> {
+  await store.setBrowserPolicy({
+    allowedDomains: store.browserPolicy.allowedDomains.filter((entry) => entry !== domain),
+    allowDownloads: allowDownloads.value,
+    allowUploads: allowUploads.value,
+  });
+}
+
+onMounted(async () => {
+  await store.refresh();
+  allowDownloads.value = store.browserPolicy.allowDownloads;
+  allowUploads.value = store.browserPolicy.allowUploads;
 });
 
 onActivated(() => {
   void store.refresh();
 });
+
+/** Keep the checkbox state in step with what the main process reports. */
+watch(
+  () => store.browserPolicy,
+  (policy) => {
+    allowDownloads.value = policy.allowDownloads;
+    allowUploads.value = policy.allowUploads;
+  },
+  { deep: true },
+);
 </script>
 
 <style scoped>

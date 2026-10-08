@@ -61,6 +61,24 @@ function installApi(overrides: Record<string, unknown> = {}) {
         allowedWindowTitles: [],
       })),
     },
+    browser: {
+      getPolicy: vi.fn(async () => ({
+        allowedDomains: [],
+        allowDownloads: false,
+        allowUploads: false,
+      })),
+      setPolicy: vi.fn(
+        async (input: {
+          allowedDomains?: string[];
+          allowDownloads?: boolean;
+          allowUploads?: boolean;
+        }) => ({
+          allowedDomains: input.allowedDomains ?? [],
+          allowDownloads: input.allowDownloads === true,
+          allowUploads: input.allowUploads === true,
+        }),
+      ),
+    },
     ...overrides,
   };
   (window as unknown as { openclaw: { companyClaw: unknown } }).openclaw = {
@@ -192,6 +210,26 @@ describe("useCompanyClawStore", () => {
     const store = useCompanyClawStore();
     await store.refresh();
     expect(store.brokerTargets.allowedProcesses).toEqual([]);
+  });
+
+  it("starts with no browser domains allowed", async () => {
+    installApi();
+    const store = useCompanyClawStore();
+    await store.refresh();
+    expect(store.browserPolicy.allowedDomains).toEqual([]);
+    expect(store.browserPolicy.allowDownloads).toBe(false);
+  });
+
+  it("saves a browser policy through the bridge", async () => {
+    installApi();
+    const store = useCompanyClawStore();
+    await store.setBrowserPolicy({
+      allowedDomains: ["oa.example.com"],
+      allowDownloads: true,
+      allowUploads: false,
+    });
+    expect(store.browserPolicy.allowedDomains).toEqual(["oa.example.com"]);
+    expect(store.browserPolicy.allowDownloads).toBe(true);
   });
 
   it("saves an allow list through the bridge", async () => {

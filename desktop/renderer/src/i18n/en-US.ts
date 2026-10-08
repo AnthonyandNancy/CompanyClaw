@@ -705,6 +705,13 @@ export default {
   "cc.brokerEmpty": "Empty — no application will be operated.",
   "cc.brokerPlaceholder": "Executable name",
   "cc.brokerAdd": "Add",
+  "cc.browserTitle": "Websites allowed",
+  "cc.browserDesc":
+    "Only the domains listed here may be visited, including the company intranet. Empty by default: while the list is empty no site will be visited.",
+  "cc.browserEmpty": "Empty — no website will be visited.",
+  "cc.browserPlaceholder": "Domain, e.g. oa.example.com",
+  "cc.browserDownloads": "Allow downloads",
+  "cc.browserUploads": "Allow uploads",
   "cc.approvalsTitle": "Operations awaiting approval",
   "cc.approvalsDesc": "These change business data and run only after you confirm them.",
   "cc.approvalsEmpty": "No pending approvals",

@@ -672,6 +672,13 @@ export default {
   "cc.brokerEmpty": "当前为空，任何应用都不会被操作。",
   "cc.brokerPlaceholder": "可执行文件名",
   "cc.brokerAdd": "添加",
+  "cc.browserTitle": "允许访问的网站",
+  "cc.browserDesc":
+    "只有在此列出的域名才允许访问，包括公司内网。默认为空：未列出时不会访问任何网站。",
+  "cc.browserEmpty": "当前为空，不会访问任何网站。",
+  "cc.browserPlaceholder": "域名，例如 oa.example.com",
+  "cc.browserDownloads": "允许下载文件",
+  "cc.browserUploads": "允许上传文件",
   "cc.approvalsTitle": "待审批的操作",
   "cc.approvalsDesc": "以下操作会修改业务数据，需要你确认后才会执行。",
   "cc.approvalsEmpty": "暂无待审批操作",
