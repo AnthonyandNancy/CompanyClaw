@@ -1,0 +1,95 @@
+# BLOCKERS
+
+上游基线：`6f080a07f43bd65b8b27ec6f859438fc038bb912`
+分支：`feat/companyclaw-foundation`
+最后更新：2026-10-08
+
+本文件记录**当前无法自行解决**的阻塞。每条包含：阻塞内容、复现/证据、影响范围、解除条件。
+未被本文件记录的项不得以"环境限制"为由跳过。
+
+---
+
+## B1｜无微信测试账号（阻塞核心验收）
+
+- **阻塞**：微信扫码绑定、消息收发、审批卡片、文件回传的**真实**验证。
+- **证据**：本机未绑定任何微信账号；`plugins/openclaw-weixin` 为 vendored 官方包，需真实扫码。
+- **影响**：E03、E04、E11、E14；裁决专项 S1、S6（微信侧）、S7；P3 实机部分；P7 微信审批闭环；"微信 → Gateway → Broker → UIA"整链路（P0-C V1）。
+- **解除条件**：提供可用于测试的微信账号（可扫码），或公司提供测试用微信身份。
+- **不得替代**：Mock 或模拟消息不得标记为 PASS；相关项只能记 `BLOCKED` 或 `UNVERIFIED`。
+
+## B2｜无内网业务系统与脱敏测试数据（阻塞核心验收）
+
+- **阻塞**：R2 业务写入路径、浏览器自主操作、回读验证的真实验证。
+- **证据**：无可访问的内网测试站点与脱敏数据。
+- **影响**：E05、E06、E07、E10；S2；P4 全部；R2 端到端。
+- **解除条件**：提供测试环境地址、测试账号、脱敏数据与可用于写入的测试记录。
+- **不得替代**：不得对生产系统做修改型测试。
+
+## B3｜无 GitHub 登录权限（阻塞 §10-1）
+
+- **阻塞**：公司专用 Fork 的建立与推送。
+- **证据**：`gh` 命令不存在（`gh: command not found`）；`git remote -v` 仍指向上游 `microsofthackathons/MicroClaw`。
+- **影响**：§10 第 1 项；上游同步与 PR 流程。
+- **解除条件**：提供 GitHub 凭据与建仓权限，或指明公司内部 Git 托管地址。
+- **当前处理**：按裁决 Q3 第 6 条，以本地克隆 + 分支 `feat/companyclaw-foundation` 继续，不中断本地工作。
+
+## B4｜无 .NET SDK（阻塞 MXC 构建与 .NET 方案 Broker）
+
+- **阻塞**：`appcontainer`（net9.0-windows）与 `windows-node-host`（net10.0-windows）的编译。
+- **证据**：`dotnet --list-sdks` 无输出；仅存在 runtime `8.0.27`；`dotnet --version` 报 "The application '--version' does not exist"。
+- **影响**：`windows-node-host` 无法构建 → MXC 路径无法回归验证（基线 A 相关项）；若 Broker 选 .NET 亦受阻。
+- **解除条件**：安装 .NET 9 与 .NET 10 SDK。
+- **规避**：Broker 采用 Node.js 实现可绕过此阻塞（Node v26.7.0 已具备）。
+
+## B5｜上游子模块未初始化
+
+- **阻塞**：`windows-node-host` 编译（依赖 `third_party/openclaw-windows-node/source`）。
+- **证据**：`git submodule status` → `-fc9add75eda78daf548d80a55ffb64e63b159961`（前缀 `-` 表示未 checkout）。
+- **影响**：MXC 路径构建与回归（基线 A）。
+- **解除条件**：`git submodule update --init --recursive`（需网络访问 github.com/openclaw/openclaw-windows-node）。
+
+## B6｜无代码签名证书（阻塞安装包交付）
+
+- **阻塞**：§10-2 要求的签名状态可核验。
+- **影响**：§10 第 2 项；P11 发布。
+- **解除条件**：提供公司代码签名证书，或明确接受"未签名 + SHA-256 + 构建配方"的交付形式。
+
+## B7｜非管理员会话（阻塞 Per-User 安装实测）
+
+- **阻塞**：安装器 Per-User 化后的真实安装/卸载验证；Defender 相关验证。
+- **证据**：当前进程 `IsAdmin=False`；系统为中文 Windows 11 专业版（`10.0.26100`）。
+- **影响**：E01、E19；S4、S8；P10 验收。
+- **解除条件**：提供普通员工账号的目标机（本机管理员权限可作对照）。
+- **注**：非管理员身份本身符合"最终验收必须使用普通用户账号"的要求，但安装器改写与卸载验证需要可控的测试环境。
+
+## B8｜本机无 OpenClaw 运行时（阻塞 dev 客户端完整运行）
+
+- **阻塞**：dev 模式下 Gateway 的启动与联调。
+- **证据**：`resolveOpenClawEntry()` 的全部候选路径均 missing（`~/.openclaw-node/...`、`%APPDATA%/npm/...`、`%ProgramFiles%/nodejs/...`、`%LOCALAPPDATA%/Programs/nodejs/...`）；PATH 中无 `openclaw`；`npm ls -g` 仅含 pi-coding-agent / npm / pnpm。
+- **影响**：dev 客户端可启动 UI，但无法连接 Gateway；所有依赖 Gateway 的功能不可用。
+- **解除条件**：`npm install openclaw@2026.9.3` 到 `~/.openclaw-node`（镜像可用，已确认该版本存在）。
+
+## B9｜无微信/内网环境下的 E01–E20 与 S1–S9
+
+- **阻塞**：实施书 §6 的 E01–E20 矩阵与裁决新增的 S1–S9 专项。
+- **影响**：§10 第 13 项；内部试点版门槛；正式交付版门槛。
+- **当前处理**：全部记 `BLOCKED` / `UNVERIFIED`，**不得**以逻辑层测试代替；`docs/companyclaw/evidence/` 在获得真实证据前保持为空。
+
+---
+
+## 阻塞汇总对交付的影响
+
+| §10 项 | 受影响阻塞 |
+|---|---|
+| 1 公司 Fork | B3 |
+| 2 安装包签名 | B6 |
+| 3 无依赖首次运行 | B7 |
+| 5 微信真实可用 | B1 |
+| 6 Browser 自主操作 | B2 |
+| 7 Windows UIA | B4（若用 .NET）、B2 |
+| 8 混合任务 | B1、B2 |
+| 10 异常提示 | B1、B2 |
+| 13 E01–E20 | B1、B2、B6、B7、B9 |
+| 14 手册 | 无（可离线完成） |
+
+**可离线完成、不受阻塞的项**：文档体系（§8）、冲突 2 的三项修复、P1 品牌化、安全内核接线、任务中心 UI、Broker 主体、冲突 3 的 UIA 执行器骨架。
