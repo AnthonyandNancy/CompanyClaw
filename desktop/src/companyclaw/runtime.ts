@@ -16,6 +16,7 @@ import {
   isPathInsideTaskDir,
   sanitizeArtifactFileName,
 } from "./results/task-artifacts";
+import { IdentityBindingStore, type IdentityBinding } from "./remote/identity-binding";
 import { RemoteAuthorization } from "./remote/remote-authorization";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
@@ -31,10 +32,14 @@ export interface RuntimePaths {
   approvalsFile: string;
   /** Root for per-task artifact directories (jobs/<taskId>/artifacts). */
   artifactsRoot: string;
+  /** File holding the WeChat identity -> device -> SID binding. */
+  identityFile: string;
 }
 
 export interface RuntimeDependencies {
   paths: RuntimePaths;
+  /** Windows user SID this installation serves. */
+  ownerSid: string;
   now?: () => Date;
   createId?: () => string;
   readFile: (filePath: string) => string;
@@ -121,6 +126,7 @@ export class CompanyClawRuntime {
   private readonly authorization: RemoteAuthorization;
   private readonly ticketSecret: string;
   private readonly consumedNonces = new Set<string>();
+  private readonly identity: IdentityBindingStore;
 
   constructor(private readonly deps: RuntimeDependencies) {
     this.now = deps.now ?? (() => new Date());
@@ -140,6 +146,48 @@ export class CompanyClawRuntime {
       secret: this.ticketSecret,
     });
     this.authorization = new RemoteAuthorization({ now: this.now });
+    this.identity = new IdentityBindingStore(deps.paths.identityFile, io);
+  }
+
+  // ── Identity binding ─────────────────────────────────────────────────
+
+  /** The currently bound WeChat identity, or null when unbound. */
+  getIdentityBinding(): IdentityBinding | null {
+    return this.identity.get();
+  }
+
+  /**
+   * Binds a WeChat identity to this device and Windows user.
+   *
+   * Binding establishes *who* may talk to this machine; it does not by itself
+   * grant tool access — that stays behind remote authorization.
+   */
+  async bindIdentity(input: {
+    channelType: string;
+    channelUserId: string;
+    deviceId: string;
+  }): Promise<IdentityBinding> {
+    if (!input.deviceId) throw new Error("deviceId is required");
+    return await this.identity.bind({
+      ownerSid: this.deps.ownerSid,
+      deviceId: input.deviceId,
+      channelType: input.channelType,
+      channelUserId: input.channelUserId,
+      boundAt: this.now().toISOString(),
+    });
+  }
+
+  async unbindIdentity(): Promise<void> {
+    await this.identity.unbind();
+  }
+
+  /**
+   * True only when the sender is the bound identity AND remote operation is
+   * currently authorized. Both must hold: being bound is not permission to act.
+   */
+  isRemoteCallerAuthorized(input: { channelType: string; channelUserId: string }): boolean {
+    if (!this.identity.isAuthorized(input.channelType, input.channelUserId)) return false;
+    return this.authorization.state() === "enabled";
   }
 
   // ── Remote authorization ─────────────────────────────────────────────

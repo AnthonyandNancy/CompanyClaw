@@ -42,6 +42,7 @@ export function resolveCompanyClawPaths(userDataDir: string): RuntimePaths {
     tasksFile: path.join(root, "tasks.json"),
     approvalsFile: path.join(root, "approvals.json"),
     artifactsRoot: root,
+    identityFile: path.join(root, "identity-binding.json"),
   };
 }
 
@@ -80,6 +81,7 @@ export function createCompanyClawRuntime(
     : null;
   const runtime = new CompanyClawRuntime({
     paths,
+    ownerSid: options.ownerSid,
     ticketSecret: options.ticketSecret,
     existsFile: (filePath) => fs.existsSync(filePath),
     readFile: (filePath) => fs.readFileSync(filePath, "utf-8"),
@@ -149,6 +151,20 @@ export function registerCompanyClawIpcHandlers(
   ipcMain.handle("companyclaw:approvals:list-pending", () =>
     runtime.listPendingApprovals(options.ownerSid),
   );
+
+  ipcMain.handle("companyclaw:identity:get", () => runtime.getIdentityBinding());
+
+  ipcMain.handle(
+    "companyclaw:identity:bind",
+    (_event, input: { channelType: string; channelUserId: string }) =>
+      runtime.bindIdentity({
+        channelType: input?.channelType ?? "",
+        channelUserId: input?.channelUserId ?? "",
+        deviceId: options.deviceId,
+      }),
+  );
+
+  ipcMain.handle("companyclaw:identity:unbind", () => runtime.unbindIdentity());
 
   ipcMain.handle(
     "companyclaw:artifacts:resolve",

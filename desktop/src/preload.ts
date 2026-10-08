@@ -532,5 +532,18 @@ contextBridge.exposeInMainWorld("openclaw", {
           { ok: true; dir: string } | { ok: false; reason: string }
         >,
     },
+    identity: {
+      get: () =>
+        ipcRenderer.invoke("companyclaw:identity:get") as Promise<{
+          ownerSid: string;
+          deviceId: string;
+          channelType: string;
+          channelUserId: string;
+          boundAt: string;
+        } | null>,
+      bind: (input: { channelType: string; channelUserId: string }) =>
+        ipcRenderer.invoke("companyclaw:identity:bind", input) as Promise<unknown>,
+      unbind: () => ipcRenderer.invoke("companyclaw:identity:unbind") as Promise<void>,
+    },
   },
 });

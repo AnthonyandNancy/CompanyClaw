@@ -22,10 +22,12 @@ function makeRuntime(paths?: Partial<RuntimePaths>) {
     tasksFile: "C:/state/tasks.json",
     approvalsFile: "C:/state/approvals.json",
     artifactsRoot: "C:/state",
+    identityFile: "C:/state/identity-binding.json",
     ...paths,
   };
   const runtime = new CompanyClawRuntime({
     paths: resolved,
+    ownerSid: "S-1",
     now: NOW,
     createId: (() => {
       let n = 0;
@@ -473,5 +475,89 @@ describe("CompanyClawRuntime artifacts", () => {
     expect(
       runtime.acceptArtifact({ taskId: task.taskId, ownerSid: "S-1", filePath: escaped }),
     ).toEqual({ ok: false, reason: "outside-task-directory" });
+  });
+});
+
+describe("CompanyClawRuntime identity binding", () => {
+  it("starts unbound and authorizes no remote caller", () => {
+    const { runtime } = makeRuntime();
+    expect(runtime.getIdentityBinding()).toBeNull();
+    expect(runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" })).toBe(
+      false,
+    );
+  });
+
+  it("binds the channel user to this device and SID", async () => {
+    const { runtime } = makeRuntime();
+    const bound = await runtime.bindIdentity({
+      channelType: "openclaw-weixin",
+      channelUserId: "wx-1",
+      deviceId: "device-a",
+    });
+    expect(bound).toMatchObject({ ownerSid: "S-1", deviceId: "device-a", channelUserId: "wx-1" });
+  });
+
+  it("still refuses tools while remote operation is off, even when bound", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.bindIdentity({
+      channelType: "openclaw-weixin",
+      channelUserId: "wx-1",
+      deviceId: "device-a",
+    });
+    // Being bound identifies the user; it is not permission to act.
+    expect(
+      runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" }),
+    ).toBe(false);
+  });
+
+  it("authorizes the bound caller once remote operation is enabled", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.bindIdentity({
+      channelType: "openclaw-weixin",
+      channelUserId: "wx-1",
+      deviceId: "device-a",
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    expect(
+      runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" }),
+    ).toBe(true);
+    // A different WeChat user is still refused.
+    expect(
+      runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-2" }),
+    ).toBe(false);
+  });
+
+  it("ends authority immediately on unbind", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.bindIdentity({
+      channelType: "openclaw-weixin",
+      channelUserId: "wx-1",
+      deviceId: "device-a",
+    });
+    runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channelUserId: "wx-1",
+      ttlMinutes: 60,
+    });
+    await runtime.unbindIdentity();
+    expect(runtime.getIdentityBinding()).toBeNull();
+    expect(
+      runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" }),
+    ).toBe(false);
+  });
+
+  it("refuses to bind without a device id", async () => {
+    const { runtime } = makeRuntime();
+    await expect(
+      runtime.bindIdentity({ channelType: "openclaw-weixin", channelUserId: "wx-1", deviceId: "" }),
+    ).rejects.toThrow(/deviceId/);
   });
 });
