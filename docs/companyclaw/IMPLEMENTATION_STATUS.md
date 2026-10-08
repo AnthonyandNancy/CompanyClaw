@@ -41,8 +41,26 @@
 | 送达状态机 | `results/delivery-status.ts` | `results/delivery-status.test.ts` | PASS 5/5 |
 | 远程授权 + 会话来源 | `remote/remote-authorization.ts` | `remote/remote-authorization.test.ts` | PASS 7/7 |
 | 组合链路验证 | — | `companyclaw-core.test.ts` | PASS 4/4 |
+| 需求级不变量（独立断言） | — | `requirement-invariants.test.ts` | PASS 20/20 |
 
-合计：**64 个测试通过**。
+合计：**84 个测试通过**（11 个测试文件）。
+
+### 独立验证证据
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 模块测试 | `npx vitest run src/companyclaw` | 11 文件 / **84 passed** |
+| 全量桌面回归 | `npx vitest run`（desktop） | 55 文件 / **1227 passed**, 2 skipped |
+| 全量渲染端回归 | `npx vitest run`（desktop/renderer） | 26 文件 / **304 passed** |
+| 类型检查 | `npx tsc --noEmit` | **PASS** |
+| 新增模块 lint | `npx eslint src/companyclaw` | **PASS**（0 error / 0 warning） |
+| 范围纪律 | `git diff --name-only main..HEAD` | `main.ts` **未改动**；`appcontainer/**`、`windows-node-host/**`、`plugins/**`、`skills/**`、`windows-node-mxc*.ts` **未改动** |
+
+### 上游既有问题（非本工作引入，已核实）
+
+- `npx eslint .` 报 2 个 error：`src/chat-attachments.ts:105`（`no-control-regex`）、`src/openclaw-upgrade-recovery.ts:235`（未使用的 `readJsonObject`）。
+- 证据：这两文件 `git diff main..HEAD` 为空（与上游完全一致），且上游 `main` 分支同样存在该源码。
+- 处理：**不在本计划范围内修改**（`desktop/src/startup-order.test.ts` 的同类上游遗留断言已单独修复并提交 `f497085`）。
 
 ---
 
