@@ -65,6 +65,42 @@
         </div>
       </section>
 
+      <!-- Identity binding: who may talk to this machine at all. Binding alone
+           grants nothing; the remote-operation switch above must also be on. -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div>
+            <div class="cc-card-title">{{ t("cc.identityTitle") }}</div>
+            <div class="cc-card-desc">{{ t("cc.identityDesc") }}</div>
+          </div>
+          <el-tag :type="store.identityBinding ? 'success' : 'info'" size="small">
+            {{ store.identityBinding ? t("cc.identityBound") : t("cc.identityUnbound") }}
+          </el-tag>
+        </div>
+        <div class="cc-card-body">
+          <template v-if="store.identityBinding">
+            <div class="cc-row">
+              <span class="cc-label">{{ t("cc.identityChannel") }}</span>
+              <span class="cc-value">{{ store.identityBinding.channelType }}</span>
+            </div>
+            <div class="cc-row">
+              <span class="cc-label">{{ t("cc.identityUser") }}</span>
+              <span class="cc-value">{{ store.identityBinding.channelUserId }}</span>
+            </div>
+            <div class="cc-row">
+              <span class="cc-label">{{ t("cc.identityBoundAt") }}</span>
+              <span class="cc-value">{{ formatTime(store.identityBinding.boundAt) }}</span>
+            </div>
+            <div class="cc-actions">
+              <el-button type="danger" size="small" @click="store.unbindIdentity()">
+                {{ t("cc.identityUnbind") }}
+              </el-button>
+            </div>
+          </template>
+          <div v-else class="cc-alert-inline">{{ t("cc.identityEmpty") }}</div>
+        </div>
+      </section>
+
       <!-- Application allow list: the broker refuses every process until one
            is allowed here, so this is the switch that makes automation possible
            at all. -->

@@ -61,6 +61,11 @@ function installApi(overrides: Record<string, unknown> = {}) {
         allowedWindowTitles: [],
       })),
     },
+    identity: {
+      get: vi.fn(async () => null),
+      bind: vi.fn(async () => ({})),
+      unbind: vi.fn(async () => undefined),
+    },
     browser: {
       getPolicy: vi.fn(async () => ({
         allowedDomains: [],
@@ -210,6 +215,35 @@ describe("useCompanyClawStore", () => {
     const store = useCompanyClawStore();
     await store.refresh();
     expect(store.brokerTargets.allowedProcesses).toEqual([]);
+  });
+
+  it("reports no identity binding on a fresh install", async () => {
+    installApi();
+    const store = useCompanyClawStore();
+    await store.refresh();
+    expect(store.identityBinding).toBeNull();
+  });
+
+  it("clears the binding after an unbind", async () => {
+    const api = installApi({
+      identity: {
+        get: vi.fn(async () => ({
+          ownerSid: "S-1",
+          deviceId: "d",
+          channelType: "openclaw-weixin",
+          channelUserId: "wx-1",
+          boundAt: "2026-10-09T00:00:00.000Z",
+        })),
+        bind: vi.fn(),
+        unbind: vi.fn(async () => undefined),
+      },
+    });
+    const store = useCompanyClawStore();
+    await store.refresh();
+    expect(store.identityBinding?.channelUserId).toBe("wx-1");
+    await store.unbindIdentity();
+    expect(store.identityBinding).toBeNull();
+    expect(api.identity.unbind).toHaveBeenCalled();
   });
 
   it("starts with no browser domains allowed", async () => {

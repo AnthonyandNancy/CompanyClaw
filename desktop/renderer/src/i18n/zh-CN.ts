@@ -672,6 +672,16 @@ export default {
   "cc.brokerEmpty": "当前为空，任何应用都不会被操作。",
   "cc.brokerPlaceholder": "可执行文件名",
   "cc.brokerAdd": "添加",
+  "cc.identityTitle": "微信身份绑定",
+  "cc.identityDesc":
+    "绑定后，只有这一个微信身份可以向本机下达指令。绑定本身不等于授权操作，仍需上方开启远程操作。",
+  "cc.identityBound": "已绑定",
+  "cc.identityUnbound": "未绑定",
+  "cc.identityChannel": "渠道",
+  "cc.identityUser": "微信用户",
+  "cc.identityBoundAt": "绑定时间",
+  "cc.identityUnbind": "解绑",
+  "cc.identityEmpty": "尚未绑定微信身份。请先在上方「微信连接」完成扫码绑定。",
   "cc.browserTitle": "允许访问的网站",
   "cc.browserDesc":
     "只有在此列出的域名才允许访问，包括公司内网。默认为空：未列出时不会访问任何网站。",

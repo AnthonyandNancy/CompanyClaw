@@ -705,6 +705,16 @@ export default {
   "cc.brokerEmpty": "Empty — no application will be operated.",
   "cc.brokerPlaceholder": "Executable name",
   "cc.brokerAdd": "Add",
+  "cc.identityTitle": "WeChat identity binding",
+  "cc.identityDesc":
+    "Once bound, only this one WeChat identity can send instructions to this machine. Binding alone grants nothing: remote operation must also be enabled above.",
+  "cc.identityBound": "Bound",
+  "cc.identityUnbound": "Not bound",
+  "cc.identityChannel": "Channel",
+  "cc.identityUser": "WeChat user",
+  "cc.identityBoundAt": "Bound at",
+  "cc.identityUnbind": "Unbind",
+  "cc.identityEmpty": "No WeChat identity is bound yet. Complete the scan-and-bind flow under WeChat connection first.",
   "cc.browserTitle": "Websites allowed",
   "cc.browserDesc":
     "Only the domains listed here may be visited, including the company intranet. Empty by default: while the list is empty no site will be visited.",

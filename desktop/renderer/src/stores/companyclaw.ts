@@ -97,6 +97,11 @@ interface CompanyClawBridge {
       allowedWindowTitles?: string[];
     }) => Promise<BrokerTargets>;
   };
+  identity: {
+    get: () => Promise<IdentityBindingView | null>;
+    bind: (input: { channelType: string; channelUserId: string }) => Promise<unknown>;
+    unbind: () => Promise<void>;
+  };
   browser: {
     getPolicy: () => Promise<BrowserPolicyView>;
     setPolicy: (input: {
@@ -138,6 +143,7 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     allowDownloads: false,
     allowUploads: false,
   });
+  const identityBinding = ref<IdentityBindingView | null>(null);
 
   const remoteEnabled = computed(() => authorization.value?.state === "enabled");
   const activeTasks = computed(() => tasks.value.filter((task) => ACTIVE_STATES.has(task.state)));
@@ -155,24 +161,27 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
       pendingApprovals.value = [];
       brokerTargets.value = { allowedProcesses: [], allowedWindowTitles: [] };
       browserPolicy.value = { allowedDomains: [], allowDownloads: false, allowUploads: false };
+      identityBinding.value = null;
       return;
     }
     available.value = true;
     loading.value = true;
     error.value = "";
     try {
-      const [auth, list, pending, targets, browser] = await Promise.all([
+      const [auth, list, pending, targets, browser, identity] = await Promise.all([
         api.getRemoteAuthorization(),
         api.tasks.list(),
         api.approvals.listPending(),
         api.broker.getTargets(),
         api.browser.getPolicy(),
+        api.identity.get(),
       ]);
       authorization.value = auth;
       tasks.value = list;
       pendingApprovals.value = pending;
       brokerTargets.value = targets;
       browserPolicy.value = browser;
+      identityBinding.value = identity;
     } catch (err) {
       // Keep whatever was already loaded: a transient failure must not make the
       // UI pretend there are no tasks or no pending approvals.
@@ -278,6 +287,18 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     }
   }
 
+  async function unbindIdentity(): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    error.value = "";
+    try {
+      await api.identity.unbind();
+      identityBinding.value = null;
+    } catch (err) {
+      error.value = messageOf(err);
+    }
+  }
+
   return {
     available,
     loading,
@@ -287,8 +308,10 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     pendingApprovals,
     brokerTargets,
     browserPolicy,
+    identityBinding,
     setBrokerTargets,
     setBrowserPolicy,
+    unbindIdentity,
     remoteEnabled,
     activeTasks,
     refresh,
