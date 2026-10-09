@@ -557,60 +557,76 @@ plugins/openclaw-weixin/src/messaging/process-message.ts:74 processOneMessage
 
 # 4. Changed Files Tracking
 
-执行过程中每修改一个文件都必须更新本表。
+**执行后据实填写**（基线 `41055e9` → 完成）。每一行都是实际改动；计划内但最终未改动的文件不在表中。
 
-| File | Action | Reason | Step | Status |
-|---|---|---|---|---|
-| `docs/companyclaw/v3/01-current-baseline.md` | Add | C00 基线要求 §1.4 | 1 | ☐ |
-| `docs/companyclaw/v3/02-impact-map.md` | Add | C00 影响面要求 | 1 | ☐ |
-| `desktop/scripts/prepare-production-resources.mjs` | Modify | 装配 plugin/skills/windows-node manifest | 2,3 | ☐ |
-| `desktop/electron-builder.yml` | Modify | extraResources 契约 | 4 | ☐ |
-| `desktop/src/companyclaw/extra-resources-contract.test.ts` | Modify | 来源分组同步 | 4 | ☐ |
-| `desktop/src/companyclaw/production-resources.test.ts` | Modify | 装配断言扩展 | 5 | ☐ |
-| `desktop/src/companyclaw/resource-pipeline.test.ts` | Add | 负向判据 | 5 | ☐ |
-| `desktop/src/companyclaw/broker-paths.ts` | Modify | 运行时路径解析器 | 6 | ☐ |
-| `desktop/src/companyclaw/broker-paths.test.ts` | Modify | 解析器用例 | 6 | ☐ |
-| `desktop/src/companyclaw/broker-client.ts` | Modify | 校验码 + 生命周期 + 重启上限 | 6,7 | ☐ |
-| `desktop/src/companyclaw/broker-client-spawn.test.ts` | Modify | 校验/生命周期用例 | 6,7 | ☐ |
-| `desktop/src/companyclaw/plugins/weixin-plugin-install.ts` | Add | 首启插件安装 | 8 | ☐ |
-| `desktop/src/companyclaw/plugins/weixin-plugin-install.test.ts` | Add | 安装用例 | 8 | ☐ |
-| `desktop/src/companyclaw/guardian.ts` | Add | 分项健康诊断 | 9 | ☐ |
-| `desktop/src/companyclaw/guardian.test.ts` | Add | 诊断用例 | 9 | ☐ |
-| `desktop/src/companyclaw/ipc.ts` | Modify | 新增 health / 安装入口通道 | 9,15 | ☐ |
-| `desktop/src/companyclaw/ipc-contract.test.ts` | Modify | 通道计数同步 | 9 | ☐ |
-| `desktop/src/preload.ts` | Modify | 新通道暴露 | 9,10 | ☐ |
-| `desktop/renderer/src/views/SetupWizard.vue` | Modify | 4 步向导 | 10 | ☐ |
-| `desktop/renderer/src/stores/companyclaw.ts` | Modify | health 状态与刷新 | 10 | ☐ |
-| `desktop/renderer/src/{views/TasksView.vue}` | Modify | 产物与结果状态展示 | 14 | ☐ |
-| `desktop/renderer/src/i18n/zh-CN.ts` | Modify | 新增 i18n 键 | 10 | ☐ |
-| `desktop/renderer/src/i18n/en-US.ts` | Modify | 新增 i18n 键 | 10 | ☐ |
-| `docs/companyclaw/ADR/0004-browser-execution-path.md` | Add | Browser 拦截结论 | 11 | ☐ |
-| `desktop/src/companyclaw/browser/browser-adapter.ts` | Add | 受控 Browser 入口 | 11 | ☐ |
-| `desktop/src/companyclaw/browser/browser-adapter.test.ts` | Add | Browser 用例 | 11 | ☐ |
-| `desktop/src/companyclaw/bridge/broker-transport.ts` | Add | 执行桥传输 | 12 | ☐ |
-| `desktop/src/companyclaw/bridge/broker-transport.test.ts` | Add | 传输用例 | 12 | ☐ |
-| `desktop/src/companyclaw/locks/desktop-execution-lock.ts` | Add | 桌面独占锁 | 12 | ☐ |
-| `broker/server.ts` | Modify | describe-element / wait-for-window（复用既有 uia.ts + 脚本） | 12 | ☐ |
-| `broker/server.test.ts` | Modify | 改写 `not-implemented` 两条用例 + 新增用例 | 12 | ☐ |
-| `desktop/src/companyclaw/locks/desktop-execution-lock.test.ts` | Add | 独占锁用例 | 12 | ☐ |
-| `desktop/src/companyclaw/remote/trusted-context.ts` | Add | 可信消息上下文 | 13 | ☐ |
-| `desktop/src/companyclaw/remote/trusted-context.test.ts` | Add | 上下文用例 | 13 | ☐ |
-| `desktop/src/main.ts` | Modify | 装配接线（仅分支内） | 8,9,13 | ☐ |
-| `plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` | Modify | 追加 messageId | 13 | ☐ |
-| `plugins/openclaw-weixin/src/messaging/process-message.ts` | Modify | 追加字段传递 | 13 | ☐ |
-| `plugins/openclaw-weixin/src/messaging/desktop-bridge.test.ts` | Modify | 桥接用例 | 13 | ☐ |
-| `desktop/src/companyclaw/runtime.ts` | Modify | 组合入口（不改既有裁决） | 13,14 | ☐ |
-| `desktop/src/companyclaw/tasks/task-orchestrator.ts` | Modify | AWAITING_APPROVAL 恢复入口 | 13 | ☐ |
-| `desktop/src/companyclaw/results/weixin-delivery.ts` | Add | 产物发送闭环 | 14 | ☐ |
-| `desktop/src/companyclaw/results/weixin-delivery.test.ts` | Add | 发送用例 | 14 | ☐ |
-| `desktop/src/companyclaw/upgrade/upgrade-guard.ts` | Add | 升级判定 | 15 | ☐ |
-| `desktop/src/companyclaw/upgrade/upgrade-guard.test.ts` | Add | 升级用例 | 15 | ☐ |
-| `docs/companyclaw/v3/03..07*.md` | Add | 发行与证据文档 | 16 | ☐ |
-| `docs/companyclaw/IMPLEMENTATION_STATUS.md` | Modify | 状态同步 | 16 | ☐ |
-| `BLOCKERS.md` | Modify | 阻塞同步 | 16 | ☐ |
-| `README.md` / `README.zh-CN.md` | Modify | 消除装 SDK 误导 | 16 | ☐ |
+| File | Action | Change |
+|---|---|---|
+| `docs/companyclaw/v3/01-current-baseline.md` | Add | C00 基线：HEAD、环境事实、G01–G08 现状与符号定位、4 处需求旧描述修订 |
+| `docs/companyclaw/v3/02-impact-map.md` | Add | 文件→入口→出口→修改点→测试→风险；含"无需修改"清单 |
+| `desktop/scripts/prepare-production-resources.mjs` | Modify | 新增插件/agent-skills/windows-node 装配与逐文件 manifest；插件离线编译与依赖安装；缺件即失败 |
+| `desktop/electron-builder.yml` | Modify | extraResources 改为引用流水线产物（插件、agent-skills），移除源码树直拷 |
+| `desktop/src/companyclaw/production-resources.test.ts` | Modify | 新增装配完整性、插件重编译、技能目录对齐断言 |
+| `desktop/src/companyclaw/resource-pipeline.test.ts` | Add | 缺件/篡改/重复三类 manifest 负向判据 + staging 卫生 |
+| `desktop/src/companyclaw/extra-resources-contract.test.ts` | Modify | 两个新来源归入"流水线产物"组 |
+| `desktop/src/companyclaw/product-identity.test.ts` | Modify | 技能落点断言改为经流水线（仍禁止源码树直拷） |
+| `desktop/src/agent-owned-skills.test.ts` | Modify | 同上（rednote-publisher 落点断言） |
+| `desktop/src/companyclaw/broker-paths.ts` | Modify | 新增 resolveBrokerRuntimePaths()（运行时+入口一并解析） |
+| `desktop/src/companyclaw/broker-client.ts` | Modify | 前置校验与错误码、常驻退出监听、重启上限、stop 收口 |
+| `desktop/src/companyclaw/broker-paths.test.ts` | Modify | 解析器用例（含中文/空格路径、override、无运行时） |
+| `desktop/src/companyclaw/broker-client-spawn.test.ts` | Modify | fixture 改为真实安装形状；新增校验与生命周期用例 |
+| `desktop/src/companyclaw/ipc.ts` | Modify | 新增 health / artifacts:deliver / approvals:notify 通道与选项 |
+| `desktop/src/companyclaw/ipc-contract.test.ts` | Modify | 通道清单同步（三处新增） |
+| `desktop/src/companyclaw/plugins/weixin-plugin-install.ts` | Add | 首启经 OpenClaw 安装插件 + 共享的启用规则 |
+| `desktop/src/companyclaw/plugins/weixin-plugin-install.test.ts` | Add | 安装/跳过/缺件/失败/启用规则用例 |
+| `desktop/src/companyclaw/guardian.ts` | Add | 按组件分别报告健康；未测项不计入 overall |
+| `desktop/src/companyclaw/guardian.test.ts` | Add | 各组件状态、未测语义、工具调用判定用例 |
+| `desktop/src/companyclaw/browser/browser-adapter.ts` | Add | 受控 Browser 唯一入口（授权→票据→执行→回读） |
+| `desktop/src/companyclaw/browser/browser-adapter.test.ts` | Add | 拒绝路径零调用、重定向复查、partial 语义 |
+| `docs/companyclaw/ADR/0004-browser-execution-path.md` | Add | 原生工具不可作拦截点的源码证据与备选路径决策 |
+| `desktop/src/companyclaw/bridge/broker-transport.ts` | Add | 动作映射到封闭操作集；票据透传；不可表达即拒绝 |
+| `desktop/src/companyclaw/bridge/broker-transport.test.ts` | Add | 映射、拒绝、票据、可用性区分用例 |
+| `desktop/src/companyclaw/locks/desktop-execution-lock.ts` | Add | 焦点敏感动作的桌面独占锁（占用即拒绝） |
+| `desktop/src/companyclaw/locks/desktop-execution-lock.test.ts` | Add | 独占、重入、释放、取消用例 |
+| `broker/server.ts` | Modify | describe-element（复用控件树、报告歧义）与 wait-for-window（专用 wait-timeout） |
+| `broker/server.test.ts` | Modify | 改写 not-implemented 两条；新增 5 条；fixture 补 processName |
+| `desktop/src/companyclaw/remote/trusted-context.ts` | Add | 可信消息上下文 + 有界去重器 |
+| `desktop/src/companyclaw/remote/trusted-context.test.ts` | Add | 未绑定/缺 id/不可自报/去重用例 |
+| `desktop/src/companyclaw/runtime.ts` | Modify | createTaskFromRemote()、resolveRemoteOwner()（不改既有裁决） |
+| `desktop/src/companyclaw/runtime.test.ts` | Modify | 远程建任务、幂等恢复、越权拒绝用例 |
+| `desktop/src/companyclaw/tasks/task-orchestrator.ts` | Modify | 每步之前复查远程授权（此前只在启动时检查） |
+| `desktop/src/companyclaw/tasks/task-orchestrator.test.ts` | Modify | 撤销后立即停派发用例 |
+| `desktop/src/companyclaw/results/weixin-delivery.ts` | Add | 产物校验→收件人锁定→经插件上传→按状态机落状态 |
+| `desktop/src/companyclaw/results/weixin-delivery.test.ts` | Add | 越权、越目录、空/魔数不符、UNKNOWN 语义用例 |
+| `desktop/src/companyclaw/results/plugin-file-send.ts` | Add | 桌面侧发送协议（超时记 indeterminate） |
+| `desktop/src/companyclaw/results/plugin-file-send.test.ts` | Add | 受理/拒绝/超时/异请求隔离用例 |
+| `desktop/src/companyclaw/upgrade/upgrade-guard.ts` | Add | 升级判定（复用各 store schema，不可读则拒绝） |
+| `desktop/src/companyclaw/upgrade/upgrade-guard.test.ts` | Add | 版本比较、manifest 契约、schema 降级拒绝用例 |
+| `desktop/src/main.ts` | Modify | 装配接线：插件安装、诊断探针、可信上下文、产物投递、审批卡回调 |
+| `desktop/src/preload.ts` | Modify | 暴露 health / artifacts.deliver / approvals.notify |
+| `plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` | Modify | 追加 messageId 字段；新增文件发送请求的分发入口（注入式） |
+| `plugins/openclaw-weixin/src/messaging/desktop-bridge.test.ts` | Modify | messageId 与文件发送分发用例 |
+| `plugins/openclaw-weixin/src/messaging/file-send.ts` | Add | 插件侧执行上传并应答（复用其 CDN 与账号数据） |
+| `plugins/openclaw-weixin/src/messaging/process-message.ts` | Modify | 追加 messageId 传递（一处可选字段） |
+| `plugins/openclaw-weixin/index.ts` | Modify | 注入文件发送 handler |
+| `desktop/renderer/src/views/SetupWizard.vue` | Modify | 四步向导（环境自检 / 模型 / 微信 / 远程操作，默认关闭） |
+| `desktop/renderer/src/views/SetupWizard.test.ts` | Add | 四步可见、无 CLI 字样、未绑定禁用、默认关闭用例 |
+| `desktop/renderer/src/stores/companyclaw.ts` | Modify | health 报告与产物投递类型 |
+| `desktop/renderer/src/views/TasksView.vue` | Modify | 产物与回传状态展示、待审批发送按钮 |
+| `desktop/renderer/src/i18n/zh-CN.ts` | Modify | 新增向导/产物/审批键 |
+| `desktop/renderer/src/i18n/en-US.ts` | Modify | 同上（英文） |
+| `desktop/renderer/env.d.ts` | Modify | 声明可选 companyClaw 命名空间（见 Adjustment 1） |
+| `docs/companyclaw/v3/03-packaging-guide.md` | Add | 唯一发行命令、构建前置、资源清单、兼容表、回滚 |
+| `docs/companyclaw/v3/04-employee-guide.md` | Add | 员工指南（安装/四步/日常/FAQ/解绑），无任何 CLI 步骤 |
+| `docs/companyclaw/v3/05-it-admin-guide.md` | Add | 分发、隔离、授权与白名单、日志、升级回滚、放行清单 |
+| `docs/companyclaw/v3/06-release-evidence.md` | Add | PKG-01–10 / E01–20 逐项真实状态（多数 BLOCKED/UNVERIFIED） |
+| `docs/companyclaw/v3/07-adr-upgrade-compat.md` | Add | OpenClaw patch 与插件补丁的升级耦合与必做清单 |
+| `docs/companyclaw/IMPLEMENTATION_STATUS.md` | Modify | 更新到本轮基线并追加 V3 收口模块表与缺陷清单 |
+| `BLOCKERS.md` | Modify | V3 后逐条复核；B5 标记已解除，其余未变化 |
+| `README.md / README.zh-CN.md` | Modify | 明确员工只需一个 EXE；标明尚未产出签名安装包 |
 
-**明确不在本表内（禁止修改）**：`appcontainer/**`、`windows-node-host/**`、`desktop/src/windows-node-mxc*.ts`、`skills/**`、`plugins/openclaw-weixin/src/{api,auth,cdn,config,media,monitor,storage,util}/**`、`deployer/**`、`installer/**`、`broker/policy.ts` 的既有判定语义。
+**明确未修改（计划要求保持不动，已核对）**：`appcontainer/**`、`windows-node-host/**`、`desktop/src/windows-node-mxc*.ts`、
+`skills/**`、`plugins/openclaw-weixin/src/{api,auth,cdn,config,media,monitor,storage,util}/**`、`deployer/**`、`installer/**`、
+`broker/policy.ts` 与 `broker/protocol.ts` 的既有判定语义。
 
 ---
 
@@ -682,3 +698,41 @@ plugins/openclaw-weixin/src/messaging/process-message.ts:74 processOneMessage
 
 执行期维护，每完成一个 Step 追加：`### Step N Completed`（Modified / Changes / Reason / Verification）。
 
+---
+
+## Execution Log（据实记录）
+
+| Step | 结果 | 提交 | 关键验证 |
+|---|---|---|---|
+| 1 | 完成 | `41055e9` | 基线实测：desktop 1451 / renderer 320 / broker 63 / plugin 12 |
+| 2–5 | 完成 | `4f76d18` | 探针实跑插件编译（826 文件 / 4.9MB，manifest 校验 216ms）与离线依赖（仅 zod + qrcode-terminal）；真实流水线在 `dotnet publish` 处失败且旧 `resources/` 完好、无 staging 残留 |
+| 6–7 | 完成 | `eb291ef` | 25 条 broker 用例（缺运行时/缺入口零 spawn、进程死后 not-running、重启上限、白名单改动不消耗预算） |
+| 8–10 | 完成 | `617982b` | 插件安装 10 条 + guardian 9 条 + 向导 6 条 |
+| 11 | 完成 | `b721e8f` | 适配器 13 条（拒绝路径零调用、重定向复查、partial） |
+| 12 | 完成 | `46f5f63` | broker 68 passed（连续 14 次全绿，修复一处抖动） |
+| 13 | 完成 | `9cc3da3` | 可信上下文 8 条 + runtime 6 条；插件 15 passed |
+| 14 | 完成 | `c2d086d` | 投递 10 条 + 协议 6 条 |
+| 15 | 完成 | `aa60430` | 升级判定 12 条 + 撤销停派发 1 条（用 stash 证明无修复即失败） |
+| 16 | 完成 | `56eb895`、`1846476`、`72ac449` | 交付物 9 项齐备；员工指南无 CLI 指令；lint 归零 error |
+
+## Plan Adjustment（执行期记录）
+
+1. **`desktop/renderer/env.d.ts` 需新增声明**（计划外文件）
+   - 原计划：TasksView 直接使用 `window.openclaw.companyClaw`。
+   - 新发现：`OpenClawAPI` 无该命名空间，`vue-tsc` 报错（此前向导用内联断言绕过）。
+   - 调整：声明为**可选**命名空间（它确实可能不存在），向导与任务中心共用。
+
+2. **新增 `desktop/renderer/src/views/SetupWizard.test.ts`**（计划外文件）
+   - 原因：四步语义、默认关闭、无 CLI 字样都需要可回归断言。
+
+3. **额外修改两处既有断言**（计划外文件）
+   - `product-identity.test.ts`、`agent-owned-skills.test.ts` 原断言 `from: ../skills/rednote-publisher/`。
+   - 原因：extraResources 已改为经流水线引用；改为断言最终落点并禁止源码树直拷（要求不降低）。
+
+4. **Step 14 插件侧方向修正**
+   - 最初误加"插件→桌面"请求助手（死代码），已删除；实现为"桌面请求→插件上传→插件应答"。
+   - 桌面无法 import 插件包，故协议两侧各自实现并各自单测。
+
+5. **guardian 能力判定词汇修正**
+   - 初版使用不存在的 `chat-capable`/`tool-capable`；改为真实的 `CapabilityVerdict`（supported/unsupported/unknown），
+     并以"工具调用"作为模型项唯一判据。
