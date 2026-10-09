@@ -539,6 +539,12 @@ export default {
   "setup.finishAndEnter": "保存并进入系统",
   "setup.enterApiKey": "请输入 API Key",
   "setup.saveFailed": "保存失败: {error}",
+  "setup.probeTitle": "连接与能力自检",
+  "setup.probeRunning": "正在检测模型能力…",
+  "setup.probeFailed": "能力自检未完成",
+  "setup.probeHint": "未验证项不可假定可用；若工具调用显示“不支持”，请改用兼容模型。",
+  "setup.bindWeixin": "绑定微信",
+  "setup.bindWeixinHint": "打开微信，用手机扫一扫完成绑定。",
 
   // ── ModelSetupDialog ──
   "modelSetup.title": "设置模型",

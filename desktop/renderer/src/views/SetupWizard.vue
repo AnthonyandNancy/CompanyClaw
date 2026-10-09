@@ -49,15 +49,29 @@
         <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
       </el-form>
 
+      <div v-if="probeSummary" class="probe-result">
+        <div class="probe-title">{{ t("setup.probeTitle") }}</div>
+        <pre class="probe-summary">{{ probeSummary }}</pre>
+        <div class="probe-hint">{{ t("setup.probeHint") }}</div>
+      </div>
+
       <el-button
         type="primary"
         size="large"
         class="save-btn"
-        @click="saveAndFinish"
         :loading="saving"
+        :disabled="probing"
+        @click="saveAndFinish"
       >
-        {{ t("setup.finishAndEnter") }}
+        {{ probing ? t("setup.probeRunning") : t("setup.finishAndEnter") }}
       </el-button>
+
+      <div class="bind-weixin">
+        <el-button link type="primary" @click="goToWeixinBinding">
+          {{ t("setup.bindWeixin") }}
+        </el-button>
+        <span class="bind-weixin-hint">{{ t("setup.bindWeixinHint") }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -70,6 +84,9 @@ import { t } from "@/i18n";
 const router = useRouter();
 const saving = ref(false);
 const errorMsg = ref("");
+/** Real capability measurement result; empty until a probe has run. */
+const probeSummary = ref("");
+const probing = ref(false);
 
 type ApiFormat = "openai-chat" | "openai-responses" | "anthropic";
 type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
@@ -203,6 +220,61 @@ onMounted(async () => {
   } catch {}
 });
 
+/**
+ * Opens the existing WeChat channel page, which already owns the QR login flow
+ * (plugin:weixin:login-qr-start / -wait). Nothing is reimplemented here.
+ */
+function goToWeixinBinding(): void {
+  router.push("/settings/channels");
+}
+
+/**
+ * Measures what the configured model can actually do.
+ *
+ * The probe exercises a real tool call rather than only checking that the
+ * endpoint answers. An unknown verdict is reported as not verified — never as
+ * a capability the model has.
+ */
+async function runCapabilityProbe(input: {
+  baseUrl: string;
+  modelName: string;
+}): Promise<void> {
+  const bridge = (window as unknown as {
+    openclaw?: {
+      companyClaw?: {
+        model?: {
+          probeCapabilities: (params: {
+            baseUrl: string;
+            model: string;
+            apiFormat: ApiFormat;
+            apiKey: string;
+          }) => Promise<{ summary: string }>;
+        };
+      };
+    };
+  }).openclaw?.companyClaw;
+  if (!bridge?.model?.probeCapabilities) return;
+  probing.value = true;
+  probeSummary.value = "";
+  try {
+    const result = await bridge.model.probeCapabilities({
+      baseUrl: input.baseUrl,
+      model: input.modelName,
+      apiFormat: form.apiFormat,
+      apiKey: form.apiKey,
+    });
+    probeSummary.value = result.summary;
+  } catch (error) {
+    // A probe failure is information, not a blocker: the model may still work
+    // for chat, but it must never be presented as verified.
+    probeSummary.value = `${t("setup.probeFailed")}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  } finally {
+    probing.value = false;
+  }
+}
+
 async function saveAndFinish() {
   errorMsg.value = "";
 
@@ -277,6 +349,10 @@ async function saveAndFinish() {
       };
     }
 
+    await runCapabilityProbe({
+      baseUrl: form.baseUrl.trim(),
+      modelName: modelId,
+    });
     await window.openclaw.config.write(existing);
     window.location.reload();
   } catch (err: any) {
@@ -288,6 +364,45 @@ async function saveAndFinish() {
 </script>
 
 <style scoped>
+.probe-result {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+}
+
+.probe-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.probe-summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+
+.probe-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.bind-weixin {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bind-weixin-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .setup-overlay {
   height: 100%;
   display: flex;

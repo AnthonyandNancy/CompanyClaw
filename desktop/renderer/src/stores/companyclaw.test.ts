@@ -66,6 +66,12 @@ function installApi(overrides: Record<string, unknown> = {}) {
       bind: vi.fn(async () => ({})),
       unbind: vi.fn(async () => undefined),
     },
+    model: {
+      probeCapabilities: vi.fn(async () => ({
+        capabilities: { toolCalls: "supported" },
+        summary: "tool calls supported",
+      })),
+    },
     browser: {
       getPolicy: vi.fn(async () => ({
         allowedDomains: [],

@@ -70,6 +70,18 @@ export interface IdentityBindingView {
   boundAt: string;
 }
 
+export interface CapabilityProbeInput {
+  baseUrl: string;
+  model: string;
+  apiFormat: "openai-chat" | "openai-responses" | "anthropic";
+  apiKey: string;
+}
+
+export interface CapabilityProbeView {
+  capabilities: Record<string, unknown>;
+  summary: string;
+}
+
 interface CompanyClawBridge {
   getRemoteAuthorization: () => Promise<RemoteAuthorizationView>;
   setRemoteAuthorization: (input: {
@@ -101,6 +113,9 @@ interface CompanyClawBridge {
     get: () => Promise<IdentityBindingView | null>;
     bind: (input: { channelType: string; channelUserId: string }) => Promise<unknown>;
     unbind: () => Promise<void>;
+  };
+  model: {
+    probeCapabilities: (input: CapabilityProbeInput) => Promise<CapabilityProbeView>;
   };
   browser: {
     getPolicy: () => Promise<BrowserPolicyView>;
@@ -299,6 +314,27 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     }
   }
 
+  /**
+   * Measures what the configured model can actually do.
+   *
+   * Returns null when the bridge is unavailable; a transport or HTTP failure
+   * comes back as `unknown` capabilities from the main process rather than a
+   * fabricated verdict, so the caller can show that it was not verified.
+   */
+  async function probeModelCapabilities(
+    input: CapabilityProbeInput,
+  ): Promise<CapabilityProbeView | null> {
+    const api = bridge();
+    if (!api?.model?.probeCapabilities) return null;
+    error.value = "";
+    try {
+      return await api.model.probeCapabilities(input);
+    } catch (err) {
+      error.value = messageOf(err);
+      return null;
+    }
+  }
+
   return {
     available,
     loading,
@@ -312,6 +348,7 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     setBrokerTargets,
     setBrowserPolicy,
     unbindIdentity,
+    probeModelCapabilities,
     remoteEnabled,
     activeTasks,
     refresh,

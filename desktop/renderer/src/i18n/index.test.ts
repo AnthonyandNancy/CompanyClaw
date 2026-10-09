@@ -42,6 +42,25 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("setup capability and WeChat keys exist in both locales", () => {
+    const keys = [
+      "setup.probeTitle",
+      "setup.probeRunning",
+      "setup.probeFailed",
+      "setup.probeHint",
+      "setup.bindWeixin",
+      "setup.bindWeixinHint",
+    ];
+    for (const key of keys) {
+      // A missing key returns the key name itself, which would leak into the UI.
+      expect(t(key), `missing en-US translation: ${key}`).not.toBe(key);
+      setLocale("zh-CN");
+      expect(t(key), `missing zh-CN translation: ${key}`).not.toBe(key);
+      setLocale("en-US");
+    }
+    setLocale("en-US"); // restore
+  });
+
   it("store.defaultAgent key exists in both locales", () => {
     setLocale("en-US");
     expect(t("store.defaultAgent")).toBe("MicroClaw");

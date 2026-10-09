@@ -568,6 +568,12 @@ export default {
   "setup.finishAndEnter": "Save & Enter",
   "setup.enterApiKey": "Please enter an API Key",
   "setup.saveFailed": "Save failed: {error}",
+  "setup.probeTitle": "Connection & capability check",
+  "setup.probeRunning": "Checking model capabilities…",
+  "setup.probeFailed": "Capability check did not complete",
+  "setup.probeHint": "Unverified capabilities are never assumed to work. If tool calling is unsupported, switch to a compatible model.",
+  "setup.bindWeixin": "Link WeChat",
+  "setup.bindWeixinHint": "Open WeChat and scan the code with your phone to link.",
 
   // ── ModelSetupDialog ──
   "modelSetup.title": "Set Up Model",
