@@ -773,6 +773,7 @@ export default {
   "cc.approvalsTitle": "Operations awaiting approval",
   "cc.approvalsDesc": "These change business data and run only after you confirm them.",
   "cc.approvalsEmpty": "No pending approvals",
+  "cc.approvalNotify": "Send pending approvals to my WeChat",
   "cc.approvalTarget": "Target system",
   "cc.approvalRecord": "Record",
   "cc.approvalField": "Field",

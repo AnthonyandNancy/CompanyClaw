@@ -575,8 +575,6 @@ const pendingPermissionRequests = new Map<
 >();
 /** Per-session deny list: apps denied by the user during this session. */
 const sessionDeniedApps = new Map<string, Set<string>>();
-/** True when the most recent inbound message was from a remote channel (WeChat). */
-let lastInputFromRemote = false;
 /**
  * Identity of the inbound message currently being handled.
  *
@@ -3394,16 +3392,14 @@ function notifyRemotePermissionNeeded(): void {
 }
 
 /**
- * Sends the pending-approval card for an owner to their bound WeChat chat.
+ * Sends an approval card to the owner's bound WeChat chat.
  *
- * The card is built by the security core, so what the owner sees is exactly the
- * change the approval describes. Sending without a bound chat or without a
- * pending item is skipped rather than reported as sent.
+ * Passed to the IPC layer so the card the owner reads is the one the security
+ * core built. Without a bound chat the send is skipped: an approval nobody can
+ * see must not look like one that was delivered.
  */
-function sendPendingApprovalCard(ownerSid: string): void {
-  if (!companyClawRuntime || !cachedRemoteSource) return;
-  const message = companyClawRuntime.runtime.buildApprovalMessage(ownerSid);
-  if (!message) return;
+async function sendPendingApprovalCard(message: string): Promise<void> {
+  if (!cachedRemoteSource) throw new Error("no-bound-chat");
   sendWeixinNotification(cachedRemoteSource, message);
 }
 
@@ -4483,10 +4479,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       const { source } = msg;
       if (source?.channelType) {
         cachedRemoteSource = source;
-        // The upstream permission-notification feature keys off this flag. It
-        // is a display hint only and never authorizes anything: identity comes
-        // from the trusted context below.
-        lastInputFromRemote = true;
         console.log(`[session] Remote source: channel=${source.channelType} user=${source.userId}`);
         handleTrustedRemoteMessage(source);
       }
@@ -5725,10 +5717,8 @@ function registerIpcHandlers(): void {
     "chat:send-message",
     async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
-      // Mark that the latest input is from the local desktop UI. The trusted
-      // remote context is cleared for the same reason: a later permission prompt
-      // must not be attributed to whoever spoke remotely last.
-      lastInputFromRemote = false;
+      // The trusted remote context is cleared: a later permission prompt must
+      // not be attributed to whoever spoke remotely last.
       activeTrustedContext = null;
       await gwClient.sendChat(
         params.sessionKey,
@@ -6727,7 +6717,8 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return;
     mainWindow.setResizable(true);
     const savedBounds = store.get("windowBounds") as
-      { width?: number; height?: number; x?: number; y?: number } | undefined;
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
     const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
     const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
     mainWindow.setSize(width, height);
@@ -8241,9 +8232,7 @@ function registerIpcHandlers(): void {
   try {
     const deviceIdentity = loadOrCreateDeviceIdentity();
     const companyClawUserDataDir = app.getPath("userData");
-    const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () =>
-      randomUUID(),
-    );
+    const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () => randomUUID());
     companyClawOwnerSid = resolveOwnerSid();
     // The broker must run on the bundled private Node runtime: in a packaged
     // build process.execPath is CompanyClaw.exe, which cannot execute the
@@ -8291,9 +8280,12 @@ function registerIpcHandlers(): void {
       companyClawRuntime.runtime,
       {
         ...companyClawOptions,
-        boundChannelUserId:
-          companyClawRuntime.runtime.getIdentityBinding()?.channelUserId ?? "",
+        boundChannelUserId: companyClawRuntime.runtime.getIdentityBinding()?.channelUserId ?? "",
         artifactDelivery,
+        notifyApprovals: sendPendingApprovalCard,
+        recordModelCapability: (verdict) => {
+          lastProbedModelCapability = verdict;
+        },
       },
       companyClawRuntime.broker,
       () => buildGuardianReport(collectGuardianProbes()),

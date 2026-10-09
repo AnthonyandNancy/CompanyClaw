@@ -737,6 +737,7 @@ export default {
   "cc.approvalsTitle": "待审批的操作",
   "cc.approvalsDesc": "以下操作会修改业务数据，需要你确认后才会执行。",
   "cc.approvalsEmpty": "暂无待审批操作",
+  "cc.approvalNotify": "把待审批发给我的微信",
   "cc.approvalTarget": "目标系统",
   "cc.approvalRecord": "记录",
   "cc.approvalField": "字段",

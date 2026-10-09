@@ -1,3 +1,5 @@
+import type { CapabilityVerdict } from "./model/capability-probe";
+
 /**
  * Per-component health report for the first-run wizard and the logs.
  *
@@ -65,7 +67,7 @@ export interface GuardianProbes {
   brokerFailureReason?: string | null;
   browserExecutable?: string | null;
   /** Result of the model probe, when one has been run. */
-  modelCapability?: "chat-capable" | "tool-capable" | "unsupported-or-unverified" | null;
+  modelCapability?: CapabilityVerdict | null;
 }
 
 const SEVERITY: Record<GuardianItemState, number> = {
@@ -216,15 +218,18 @@ function modelItem(probes: GuardianProbes): GuardianItem {
     // Not measured is not the same as broken: the probe needs an API key.
     return { id: "model-reply", state: "unknown", detail: "尚未检测模型能力" };
   }
+  // Only the tool-call verdict decides whether remote work can be delegated:
+  // a model that cannot call tools cannot drive the broker or the browser, no
+  // matter how well it chats. An unverified verdict is not a pass.
   return {
     id: "model-reply",
-    state: capability === "unsupported-or-unverified" ? "failed" : "ok",
+    state: capability === "supported" ? "ok" : capability === "unknown" ? "degraded" : "failed",
     detail:
-      capability === "tool-capable"
-        ? "模型可对话并支持工具调用"
-        : capability === "chat-capable"
-          ? "模型可对话，但工具调用未确认"
-          : "模型不可用或未验证",
+      capability === "supported"
+        ? "模型支持工具调用"
+        : capability === "unknown"
+          ? "模型工具调用能力未验证"
+          : "模型不支持工具调用",
   };
 }
 

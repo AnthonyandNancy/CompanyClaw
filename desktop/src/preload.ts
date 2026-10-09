@@ -509,6 +509,12 @@ contextBridge.exposeInMainWorld("openclaw", {
         }>,
     },
     approvals: {
+      /** Sends the pending-approval card to the owner's bound chat. */
+      notify: () =>
+        ipcRenderer.invoke("companyclaw:approvals:notify") as Promise<{
+          sent: boolean;
+          reason?: string;
+        }>,
       listPending: () =>
         ipcRenderer.invoke("companyclaw:approvals:list-pending") as Promise<
           Array<{

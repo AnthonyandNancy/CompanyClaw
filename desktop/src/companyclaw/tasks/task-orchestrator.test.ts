@@ -59,7 +59,12 @@ describe("TaskOrchestrator", () => {
 
   it("refuses a task that does not belong to the caller", async () => {
     const { orchestrator, tasks, authorization } = makeOrchestrator();
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     const task = await tasks.create({
       ownerSid: "S-1",
       deviceId: "d",
@@ -76,7 +81,12 @@ describe("TaskOrchestrator", () => {
 
   it("walks a successful task through to COMPLETED after a verified read-back", async () => {
     const { orchestrator, tasks, authorization, deps } = makeOrchestrator();
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     const task = await tasks.create({
       ownerSid: "S-1",
       deviceId: "d",
@@ -107,7 +117,12 @@ describe("TaskOrchestrator", () => {
       .mockResolvedValueOnce({ ok: true, detail: "first" })
       .mockResolvedValueOnce({ ok: false, reason: "element-not-found" });
     const { orchestrator, tasks, authorization } = makeOrchestrator({ executeStep });
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     const task = await tasks.create({
       ownerSid: "S-1",
       deviceId: "d",
@@ -134,7 +149,12 @@ describe("TaskOrchestrator", () => {
   it("reports PARTIAL when a step executed but its read-back did not match", async () => {
     const verifyStep = vi.fn().mockResolvedValue({ ok: false, reason: "value-mismatch" });
     const { orchestrator, tasks, authorization } = makeOrchestrator({ verifyStep });
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     const task = await tasks.create({
       ownerSid: "S-1",
       deviceId: "d",
@@ -166,7 +186,12 @@ describe("TaskOrchestrator", () => {
     });
     const { orchestrator, tasks, authorization } = makeOrchestrator({ executeStep });
     tasksRef.tasks = tasks;
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     await tasks.create({ ownerSid: "S-1", deviceId: "d", channel: "c", objective: "o" });
 
     const result = await orchestrator.run({
@@ -184,7 +209,12 @@ describe("TaskOrchestrator", () => {
 
   it("refuses to start a task that is already in a terminal state", async () => {
     const { orchestrator, tasks, authorization } = makeOrchestrator();
-    authorization.setEnabled({ ownerSid: "S-1", deviceId: "d", channelUserId: "wx", ttlMs: 60_000 });
+    authorization.setEnabled({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channelUserId: "wx",
+      ttlMs: 60_000,
+    });
     const task = await tasks.create({
       ownerSid: "S-1",
       deviceId: "d",
@@ -199,5 +229,44 @@ describe("TaskOrchestrator", () => {
       steps: [{ stepId: "step-1", executor: "b", expect: "x" }],
     });
     expect(result).toEqual({ ok: false, reason: "terminal-task", state: "CANCELLED" });
+  });
+});
+
+describe("authorization is re-checked between steps", () => {
+  it("stops dispatching when the owner revokes remote operation mid-task", async () => {
+    // Revoking must stop the *next* action: a task already running cannot keep
+    // driving the desktop after the owner switched it off.
+    let authorized = true;
+    const executed: string[] = [];
+    const { orchestrator, tasks } = makeOrchestrator({
+      authorization: () => (authorized ? "enabled" : "revoked"),
+      executeStep: async (step) => {
+        executed.push(step.stepId);
+        if (step.stepId === "step-1") authorized = false;
+        return { ok: true as const, detail: "done" };
+      },
+    });
+    const task = await tasks.create({
+      ownerSid: "S-1",
+      deviceId: "d",
+      channel: "openclaw-weixin",
+      objective: "o",
+    });
+
+    const result = await orchestrator.run({
+      taskId: task.taskId,
+      ownerSid: "S-1",
+      steps: [
+        { stepId: "step-1", executor: "windows-broker", expect: "matched" },
+        { stepId: "step-2", executor: "windows-broker", expect: "matched" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "remote-not-authorized",
+      completedSteps: 1,
+    });
+    expect(executed).toEqual(["step-1"]);
   });
 });

@@ -88,19 +88,17 @@ describe("guardian report", () => {
     expect(item(report, "broker-runtime").detail).toContain("BROKER_RUNTIME_NOT_FOUND");
   });
 
-  it("reports a tool-incapable model as failed but a chat-only one as usable", () => {
+  it("requires a model that can actually call tools", () => {
     expect(
-      item(buildGuardianReport({ ...healthy, modelCapability: "tool-capable" }), "model-reply")
-        .state,
+      item(buildGuardianReport({ ...healthy, modelCapability: "supported" }), "model-reply").state,
     ).toBe("ok");
-    const chatOnly = buildGuardianReport({ ...healthy, modelCapability: "chat-capable" });
-    expect(item(chatOnly, "model-reply").state).toBe("ok");
-    expect(item(chatOnly, "model-reply").detail).toContain("工具调用未确认");
+    // A model that cannot call tools cannot drive the broker or the browser,
+    // however well it chats.
+    const unverified = buildGuardianReport({ ...healthy, modelCapability: "unknown" });
+    expect(item(unverified, "model-reply").state).toBe("degraded");
+    expect(item(unverified, "model-reply").detail).toContain("未验证");
 
-    const unusable = buildGuardianReport({
-      ...healthy,
-      modelCapability: "unsupported-or-unverified",
-    });
+    const unusable = buildGuardianReport({ ...healthy, modelCapability: "unsupported" });
     expect(item(unusable, "model-reply").state).toBe("failed");
   });
 

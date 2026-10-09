@@ -222,6 +222,13 @@
         <div v-if="store.pendingApprovals.length === 0" class="cc-empty">
           {{ t("cc.approvalsEmpty") }}
         </div>
+        <div v-else class="cc-approval-actions">
+          <!-- The card is built by the security core, so what the owner reads
+               is exactly the change the approval describes. -->
+          <el-button size="small" :loading="notifyingApprovals" @click="notifyApprovals">
+            {{ t("cc.approvalNotify") }}
+          </el-button>
+        </div>
         <div v-else class="cc-approval-list">
           <div
             v-for="approval in store.pendingApprovals"
@@ -459,6 +466,18 @@ async function deliverArtifact(): Promise<void> {
           : t("cc.artifactFailed", { reason: result.reason ?? "" });
   } finally {
     delivering.value = false;
+  }
+}
+
+/** Sends the pending-approval card to the owner's bound chat. */
+const notifyingApprovals = ref(false);
+
+async function notifyApprovals(): Promise<void> {
+  notifyingApprovals.value = true;
+  try {
+    await window.openclaw?.companyClaw?.approvals?.notify?.();
+  } finally {
+    notifyingApprovals.value = false;
   }
 }
 

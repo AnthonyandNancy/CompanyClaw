@@ -99,6 +99,12 @@ export class TaskOrchestrator {
       if (isTerminalState(current.state)) {
         return { ok: false, reason: "task-cancelled", state: current.state, completedSteps };
       }
+      // Re-check the authorization too, not only at the start: revoking remote
+      // operation must stop the *next* action, so a task that is queued or
+      // waiting cannot keep dispatching after the owner switches it off.
+      if (this.deps.authorization() !== "enabled") {
+        return { ok: false, reason: "remote-not-authorized", completedSteps };
+      }
 
       const executed = await this.deps.executeStep({
         taskId: input.taskId,
@@ -136,11 +142,7 @@ export class TaskOrchestrator {
     return { ok: true, state: finalRecord.state, completedSteps };
   }
 
-  private async advanceTo(
-    taskId: string,
-    to: TaskState,
-    stepId?: string,
-  ): Promise<void> {
+  private async advanceTo(taskId: string, to: TaskState, stepId?: string): Promise<void> {
     const current = this.deps.tasks.get(taskId);
     if (!current || current.state === to) return;
     if (!this.canReach(current.state, to)) return;

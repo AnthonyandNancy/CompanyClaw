@@ -39,6 +39,13 @@ interface CompanyClawIpcOptions {
   nodePath?: string;
   /** Chat bound to this installation's owner; artifact sends target it. */
   boundChannelUserId?: string;
+  /**
+   * Records the model probe verdict so the health report can reflect it; the
+   * probe itself is stateless and returns its result to the renderer.
+   */
+  recordModelCapability?: (verdict: string) => void;
+  /** Sends an approval card to the owner; owned by main.ts for the same reason. */
+  notifyApprovals?: (message: string) => Promise<void>;
   /** Sends a validated artifact; owned by main.ts so it can reach the plugin. */
   artifactDelivery?: {
     deliver(input: {
@@ -134,6 +141,8 @@ export function registerCompanyClawIpcHandlers(
   healthReport: () => GuardianReport = () => buildGuardianReport({}),
 ): void {
   const artifactDelivery = options.artifactDelivery ?? null;
+  const notifyApprovals = options.notifyApprovals ?? null;
+  const recordModelCapability = options.recordModelCapability ?? null;
   // Without a broker the honest answer is "not running", never "fine".
   const brokerStatus = (): BrokerClientStatus =>
     broker?.getStatus() ?? {
@@ -230,10 +239,14 @@ export function registerCompanyClawIpcHandlers(
         });
         const body = await response.text();
         const capabilities = interpretCapabilityProbe({ status: response.status, body });
+        recordModelCapability?.(capabilities.toolCalls);
         return { capabilities, summary: summarizeCapabilities(capabilities) };
       } catch (error) {
         // A transport failure tells us nothing about the model.
         const capabilities = interpretCapabilityProbe({ status: 0, body: "" });
+        // A transport failure says nothing about the model, so the verdict is
+        // recorded as unknown rather than as unsupported.
+        recordModelCapability?.(capabilities.toolCalls);
         return {
           capabilities: {
             ...capabilities,
@@ -325,6 +338,17 @@ export function registerCompanyClawIpcHandlers(
       });
     },
   );
+
+  // Sends the pending-approval card to the owner's bound chat. The card text is
+  // built by the security core, so what the owner reads is exactly the change
+  // the approval describes.
+  ipcMain.handle("companyclaw:approvals:notify", async () => {
+    if (!notifyApprovals) return { sent: false, reason: "notify-unavailable" };
+    const message = runtime.buildApprovalMessage(options.ownerSid);
+    if (!message) return { sent: false, reason: "nothing-pending" };
+    await notifyApprovals(message);
+    return { sent: true };
+  });
 
   ipcMain.handle(
     "companyclaw:approvals:resolve",

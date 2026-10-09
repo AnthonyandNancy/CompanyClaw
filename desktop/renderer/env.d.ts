@@ -279,6 +279,9 @@ interface OpenClawAPI {
    */
   companyClaw?: {
     getRemoteAuthorization(): Promise<{ state: string }>;
+    approvals: {
+      notify(): Promise<{ sent: boolean; reason?: string }>;
+    };
     artifacts: {
       resolve(input: { taskId: string }):
         | { ok: true; dir: string }
