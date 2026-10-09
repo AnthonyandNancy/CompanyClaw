@@ -1,0 +1,8613 @@
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog } from "electron";
+import * as path from "path";
+import * as fs from "fs";
+import * as http from "http";
+import * as net from "net";
+import * as os from "os";
+import { pathToFileURL } from "node:url";
+import { createHash, randomUUID } from "crypto";
+import { ChildProcess, execFileSync, spawn } from "child_process";
+import { GatewayClient, type ChatEventPayload } from "./gateway-client";
+import {
+  applyAgentRosterReload,
+  hardRestartGateway,
+  isApplicationServiceReadyState,
+  shouldRetryGatewayStartup,
+  requiresExternalGatewayStop,
+} from "./gateway-lifecycle";
+import { createTray, destroyTray, updateTrayMenu } from "./tray";
+import { minimizeWindow, sendToWindow, showAndFocusWindow } from "./window-lifecycle";
+import Store from "electron-store";
+import {
+  verifySkillIntegrity,
+  acceptManagedSkillIntegrityChanges,
+  generateAndSignSnapshot,
+  captureSkillIntegritySnapshotState,
+  getSkillSourceDirs,
+  isManagedSkillTrustedBySnapshot,
+  migrateLegacySkillIntegritySnapshot,
+  restoreSkillIntegritySnapshotState,
+  type IntegrityResult,
+} from "./skill-integrity";
+import { ToolSandbox } from "./tool-sandbox";
+import { shieldIfNeeded, unshieldIfNeeded } from "./sensitive-shield";
+import { resolveSupportedLocale, t as mainT } from "./i18n";
+import { checkForUpdates } from "./update-checker";
+import { getUsdToCnyRate } from "./exchange-rate";
+import {
+  prepareChatAttachments,
+  prepareClipboardImageAttachments,
+  validateChatAttachments,
+} from "./chat-attachments";
+import { prepareAttachmentForOpen } from "./attachment-open";
+import {
+  createCompanyClawRuntime,
+  loadOrCreateTicketSecret,
+  registerCompanyClawIpcHandlers,
+  type CompanyClawRuntimeHandle,
+} from "./companyclaw/ipc";
+import { resolveBrokerRuntimePaths } from "./companyclaw/broker-paths";
+import { resolveOwnerSid } from "./companyclaw/owner-sid";
+import {
+  findEdgeExecutable,
+  planBrowserConfig,
+  planFirstRunConfig,
+} from "./companyclaw/first-run-init";
+import { RUNTIME_MANIFEST_FILE, verifyRuntimeManifest } from "./companyclaw/runtime-manifest";
+import { ArtifactDelivery } from "./companyclaw/results/weixin-delivery";
+import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
+import {
+  ensureWeixinPluginInstalled,
+  planWeixinPluginEnable,
+} from "./companyclaw/plugins/weixin-plugin-install";
+import { buildGuardianReport, type GuardianProbes } from "./companyclaw/guardian";
+import {
+  buildTrustedRemoteContext,
+  RemoteMessageDeduplicator,
+  type TrustedRemoteContext,
+} from "./companyclaw/remote/trusted-context";
+import { loadOrCreateDeviceIdentity } from "./device-identity";
+import {
+  recoverInterruptedOpenClawUpgrade,
+  UpgradeInProgressError,
+  validateInstallerOwnedUpgrade,
+} from "./openclaw-upgrade-recovery";
+import {
+  getOpenClawStateDir,
+  loadGatewayEnvironment,
+  loadStateDirEnv,
+  resolveBuiltinSkillsDir,
+  resolveNodePath,
+  resolveOpenClawEntry,
+  resolveOpenClawPackageDir,
+} from "./path-resolver";
+import {
+  type GatewayStatus,
+  CREATE_NO_WINDOW,
+  COMPILE_CACHE_SUBDIR,
+  DEFAULT_PORT,
+  DEFAULT_WINDOW_WIDTH,
+  DEFAULT_WINDOW_HEIGHT,
+  GATEWAY_READY_TIMEOUT_MS,
+  HEALTH_CHECK_INTERVAL_MS,
+  HEALTH_CHECK_HTTP_TIMEOUT_MS,
+  HEALTH_CHECK_FAILURE_THRESHOLD,
+  HEALTH_CHECK_BUSY_GRACE_MS,
+  LOADING_WINDOW_WIDTH,
+  LOADING_WINDOW_HEIGHT,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
+  SETUP_WINDOW_WIDTH,
+  SETUP_WINDOW_HEIGHT,
+  MIN_WINDOW_WIDTH,
+  MIN_WINDOW_HEIGHT,
+  WEIXIN_LOGIN_TIMEOUT_MS,
+  SKILLS_STATUS_TIMEOUT_MS,
+  USAGE_QUERY_DAYS,
+  UPDATE_MANIFEST_URL,
+} from "./constants";
+import {
+  appendModelEndpoint,
+  prepareModelBaseUrl,
+  requestModelEndpoint,
+  resolveModelApiKey,
+} from "./model-connection";
+import { hasConfiguredModel } from "./model-setup";
+import {
+  disconnectGitHubCopilot,
+  getGitHubCopilotAuthStatus,
+  GitHubCopilotAuthManager,
+  type GitHubCopilotAuthRuntime,
+  invalidateGitHubCopilotAuthStatusCache,
+  listGitHubCopilotModels,
+  parseGitHubCopilotGatewayModels,
+} from "./github-copilot-auth";
+import {
+  ensureGitHubCopilotProviderPlugin,
+  ensureSelectedModelProviderPlugins,
+} from "./model-provider-plugins";
+import {
+  AGENT_PERSONAS,
+  DEFAULT_AGENT_PERSONAS,
+  ensureAgentPersonasConfig,
+  getAgentPersona,
+  listConfiguredAgents,
+  MAIN_PLATFORM_IDENTITY_SECTION,
+  removeConfiguredAgent,
+  resolveAgentPersonaWorkspace,
+  seedAgentPersonaWorkspace,
+  seedAgentPersonaWorkspaces,
+  type AgentPersona,
+  type AgentRosterConfig,
+} from "./agent-personas";
+import { assertConfigWriteAllowed } from "./config-write-policy";
+import {
+  AGENT_CATALOG,
+  isAgentOwnedSkillId,
+  LEGACY_AGENT_ID_ALIASES,
+  sanitizeAgentSkillIds,
+} from "./agent-catalog";
+import {
+  agentOwnedSkillInstallChanged,
+  agentOwnedSkillMatchNames,
+  commitAgentOwnedSkillInstalls,
+  commitAgentOwnedSkillRemovals,
+  disableUnreferencedAgentOwnedSkills,
+  installAgentOwnedSkills,
+  inspectConfiguredAgentOwnedSkills,
+  prepareUnusedAgentOwnedSkillRemoval,
+  reconcileConfiguredAgentOwnedSkills,
+  resolveAgentOwnedSkillBundleRoot,
+  rollbackAgentOwnedSkillInstalls,
+  rollbackAgentOwnedSkillRemovals,
+  setAgentOwnedSkillsEnabled,
+} from "./agent-owned-skills";
+import { shouldDisableHardwareAcceleration } from "./hardware-acceleration";
+import { cleanupStoppedGatewayWarmupSession } from "./warmup-session-cleanup";
+import { requiresPostSpawnChannelCheck, waitForPostSpawnChannels } from "./post-spawn-restart";
+import { createGatewayLogExportFilename, formatGatewayLogExport } from "./gateway-log-export";
+import {
+  applyAgentSkillsToConfig,
+  applyGlobalSkillChange,
+  type GlobalSkillChange,
+} from "./skill-config";
+import {
+  WINDOWS_NODE_MXC_MODE,
+  WINDOWS_NODE_MXC_NODE_COMMANDS,
+  applyWindowsNodeMxcGatewayPolicy,
+  assertWindowsNodeMxcFolderPolicyMutable,
+  getWindowsNodeMxcGatewayPolicyState,
+  isWindowsNodeMxcFolderConfigured,
+  isWindowsNodeMxcIngressReleased,
+  migrateWindowsNodeMxcToolBackupAliases,
+  normalizeWindowsNodeMxcGatewayApproval,
+  normalizeWindowsNodeMxcFolderPolicy,
+  planWindowsNodeMxcFolderUpsert,
+  restoreWindowsNodeMxcGatewayPolicy,
+  selectWindowsNodeMxcGatewayStartPolicy,
+  validateWindowsNodeMxcFolderPath,
+  validateWindowsNodeMxcGatewayPolicy,
+  type WindowsNodeMxcApprovalDecision,
+  type WindowsNodeMxcGatewayApproval,
+} from "./windows-node-mxc";
+import {
+  commitWindowsNodeMxcFolderPolicyAtomically,
+  runWindowsNodeMxcFolderPolicyTransaction,
+  type WindowsNodeMxcFolderPolicy,
+  type WindowsNodeMxcFolderTransactionPhase,
+} from "./windows-node-mxc-folder-transaction";
+import { runWindowsNodeMxcAutomaticTransition } from "./windows-node-mxc-auto-transition";
+import {
+  WindowsNodeMxcDurableApprovalStore,
+  consumeExactDurableApproval,
+  durableApprovalIdentityFromGateway,
+  type WindowsNodeMxcDurableApprovalInspection,
+} from "./windows-node-mxc-durable-approvals";
+import {
+  inspectWindowsNodeMxc,
+  isCurrentBundledWindowsNodeApprovalCallback,
+  runWindowsNodeMxcSmoke,
+  shouldStopManagedGatewayForWindowsNodeMxc,
+  type StoredWindowsNodeMxcSmoke,
+  type WindowsNodeMxcRuntimeStatus,
+} from "./windows-node-mxc-service";
+import {
+  BundledWindowsNodeHost,
+  sensitiveWindowsRoots,
+  type BundledApprovalRequest,
+  type BundledWindowsNodeApprovalProofContext,
+  type BundledWindowsNodeFolder,
+} from "./bundled-windows-node-host";
+
+/**
+ * Normalize a directory path for comparison/storage.
+ * Strips trailing slashes EXCEPT for drive roots (e.g. "C:\") where
+ * stripping the backslash produces "C:" which is a relative path on Windows.
+ */
+function normalizeDirPath(dir: string): string {
+  let d = dir.replace(/[/\\]+$/, "");
+  // If result is a bare drive letter like "C:", add backslash to make it a root
+  if (/^[a-zA-Z]:$/.test(d)) d += "\\";
+  return d;
+}
+
+/**
+ * Check if childDir is a proper subdirectory of parentDir (case-insensitive).
+ * Returns false if the paths are the same directory.
+ */
+function isSubdirectoryOf(parentDir: string, childDir: string): boolean {
+  const normalParent = path.resolve(parentDir).toLowerCase();
+  const normalChild = path.resolve(childDir).toLowerCase();
+  if (normalParent === normalChild) return false;
+  const parentWithSep = normalParent.endsWith(path.sep) ? normalParent : normalParent + path.sep;
+  return normalChild.startsWith(parentWithSep);
+}
+
+// Chromium selects an appropriate rendering backend, including on RDP. Force software rendering
+// only for environments where GPU startup is known to be incompatible.
+if (shouldDisableHardwareAcceleration(process.env, process.platform, os.release())) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+}
+
+// Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE") {
+    // Log to file instead of crashing — stdout/stderr pipe is broken
+    const logPath = path.join(
+      process.env.OPENCLAW_STATE_DIR || path.join(process.env.APPDATA || "", "openclaw"),
+      "epipe.log",
+    );
+    try {
+      fs.appendFileSync(logPath, `[${new Date().toISOString()}] EPIPE: ${err.stack}\n`);
+    } catch {
+      /* best-effort */
+    }
+    return;
+  }
+  throw err;
+});
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const store = new Store<{ windowBounds: Electron.Rectangle | null }>({
+  defaults: { windowBounds: null },
+});
+
+const settingsStore = new Store<{
+  language?: string;
+  autoStart: boolean;
+  minimizeToTray: boolean;
+  themeMode: string;
+  accentColor: string;
+  /** Apps that bypass AppContainer sandbox (need COM/RPC/named-pipes). */
+  sandboxExternalApps: string[];
+  /** Whether the sandbox is enabled. */
+  sandboxEnabled: boolean;
+  /** AppContainer capabilities (e.g. internetClient, privateNetworkClientServer). */
+  sandboxCapabilities: string[];
+  /** User-added directories with read-write access inside AppContainer. */
+  sandboxUserDirsRW: string[];
+  /** User-added directories with read-only access inside AppContainer. */
+  sandboxUserDirsRO: string[];
+  /** All directories we've ever granted AC ACL to. Used to detect stale ACLs on startup. */
+  sandboxGrantHistory: string[];
+  /** Mutually exclusive active sandbox route. */
+  securityMode: "appcontainer" | "windows-node-mxc";
+  /** Stable paired node ID selected for the experimental Windows Node route. */
+  windowsNodeMxcNodeId: string;
+  /** Original per-agent tool policies restored when the experimental mode is disabled. */
+  windowsNodeMxcToolBackups: Record<string, unknown | null>;
+  /** AppContainer preference captured before entering the experimental mode. */
+  windowsNodeMxcPreviousSandboxEnabled: boolean;
+  /** Last contained hostname + PowerShell readiness proof. */
+  windowsNodeMxcSmoke?: StoredWindowsNodeMxcSmoke;
+  /** Recoverable policy state retained across a failed apply/reactivate transaction. */
+  windowsNodeMxcFolderPolicyRecovery?: {
+    previous: WindowsNodeMxcFolderPolicy;
+    draft: WindowsNodeMxcFolderPolicy;
+    updatedAt: string;
+    lastError: string | null;
+  };
+  /** Privacy protection level. */
+  privacyLevel: "basic" | "strict";
+  /** Per-control privacy preferences. Missing fields use mode-specific defaults. */
+  privacyControls?: {
+    phone: boolean;
+    idCard: boolean;
+    bankCard: boolean;
+    email: boolean;
+    apiKey: boolean;
+  };
+}>({
+  name: "settings",
+  defaults: {
+    autoStart: false,
+    minimizeToTray: false,
+    themeMode: "light",
+    accentColor: "#1e1f25",
+    sandboxExternalApps: [
+      "outlook",
+      "excel",
+      "winword",
+      "powerpnt",
+      "chrome",
+      "msedge",
+      "firefox",
+      "code",
+    ],
+    sandboxEnabled: true,
+    sandboxCapabilities: [],
+    sandboxUserDirsRW: [],
+    sandboxUserDirsRO: [],
+    sandboxGrantHistory: [],
+    securityMode: "appcontainer",
+    windowsNodeMxcNodeId: "",
+    windowsNodeMxcToolBackups: {},
+    windowsNodeMxcPreviousSandboxEnabled: true,
+    privacyLevel: "basic",
+  },
+});
+const RENDERER_WRITABLE_SETTING_KEYS = new Set([
+  "accentColor",
+  "autoStart",
+  "language",
+  "minimizeToTray",
+  "privacyControls",
+  "privacyLevel",
+  "themeMode",
+]);
+
+let mainWindow: BrowserWindow | null = null;
+let gatewayProcess: ChildProcess | null = null;
+let gwClient: GatewayClient | null = null;
+let gatewayModelCatalogRequest: Promise<unknown> | null = null;
+let gatewayPort = 0;
+let gatewayToken = "";
+/** CompanyClaw security core handle; null until registration succeeds. */
+let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
+/** Windows user SID this installation serves; set with the security core. */
+let companyClawOwnerSid = "";
+const bundledWindowsNodeHost = new BundledWindowsNodeHost();
+let bundledWindowsNodeStartup: Promise<void> | null = null;
+let bundledWindowsNodeGeneration = 0;
+let gatewayGenerationId = "";
+let windowsNodeMxcApprovalProofContext: BundledWindowsNodeApprovalProofContext | null = null;
+let windowsNodeMxcIngressGeneration: string | null = null;
+let windowsNodeMxcActivationInProgress = false;
+let windowsNodeMxcGatewayStartPolicyOverride: "active" | "locked" | null = null;
+let windowsNodeMxcSecurityTransitionInProgress = false;
+let windowsNodeMxcReadinessTransitionId: string | null = null;
+let windowsNodeMxcFolderPolicyMutationInProgress = false;
+let windowsNodeMxcLifecycleState: WindowsNodeMxcFolderTransactionPhase = "idle";
+let windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
+let windowsNodeMxcLifecycleDetail: string | null = null;
+let pendingWindowsNodeMxcGatewayApproval: {
+  request: WindowsNodeMxcGatewayApproval;
+  gatewayGeneration: string;
+} | null = null;
+let windowsNodeMxcFailClosedPromise: Promise<void> | null = null;
+let windowsNodeMxcDurableApprovalStore: WindowsNodeMxcDurableApprovalStore | null = null;
+let windowsNodeMxcDurableApprovalOperation: Promise<void> = Promise.resolve();
+let windowsNodeMxcApprovalResolutionInProgress = false;
+let windowsNodeMxcApprovalResolutionCompletion: Promise<void> | null = null;
+type WindowsNodeMxcFolderPolicyRecovery = {
+  previous: WindowsNodeMxcFolderPolicy;
+  draft: WindowsNodeMxcFolderPolicy;
+  updatedAt: string;
+  lastError: string | null;
+};
+
+async function withWindowsNodeMxcDurableApprovalLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = windowsNodeMxcDurableApprovalOperation;
+  let release!: () => void;
+  windowsNodeMxcDurableApprovalOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+// This gate covers MicroClaw-owned ingress. Independently configured upstream Gateway ingress is
+// outside this experimental mode's accepted boundary and must not share the app-owned Gateway.
+let gatewayStatus: GatewayStatus = "stopped";
+
+function beginWindowsNodeMxcLifecycleOperation(): void {
+  if (windowsNodeMxcFailClosedPromise) {
+    throw new Error("Wait for the current Windows Node + MXC fail-closed recovery to finish");
+  }
+  if (windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Another Windows Node + MXC lifecycle operation is already in progress");
+  }
+  if (gatewayRestarting || gatewayRestartPromise || gatewayStartInProgress) {
+    throw new Error("Wait for the managed Gateway startup or restart to finish");
+  }
+  if (windowsNodeMxcFolderPolicyMutationInProgress) {
+    throw new Error("Wait for the approved folder policy change to finish");
+  }
+  if (windowsNodeMxcApprovalResolutionInProgress) {
+    throw new Error("Wait for the current Windows Node + MXC approval response to finish");
+  }
+  windowsNodeMxcSecurityTransitionInProgress = true;
+  windowsNodeMxcReadinessTransitionId = randomUUID();
+}
+
+function endWindowsNodeMxcLifecycleOperation(): void {
+  windowsNodeMxcSecurityTransitionInProgress = false;
+  windowsNodeMxcReadinessTransitionId = null;
+}
+
+async function withWindowsNodeMxcApprovalResolution<T>(operation: () => Promise<T>): Promise<T> {
+  if (windowsNodeMxcFailClosedPromise || windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Approval responses are blocked during an MXC lifecycle transition");
+  }
+  if (windowsNodeMxcApprovalResolutionInProgress) {
+    throw new Error("Another Windows Node + MXC approval response is already in progress");
+  }
+  windowsNodeMxcApprovalResolutionInProgress = true;
+  let completeApprovalResolution!: () => void;
+  const approvalResolution = new Promise<void>((resolve) => {
+    completeApprovalResolution = resolve;
+  });
+  windowsNodeMxcApprovalResolutionCompletion = approvalResolution;
+  try {
+    return await operation();
+  } finally {
+    windowsNodeMxcApprovalResolutionInProgress = false;
+    completeApprovalResolution();
+    if (windowsNodeMxcApprovalResolutionCompletion === approvalResolution) {
+      windowsNodeMxcApprovalResolutionCompletion = null;
+    }
+  }
+}
+
+function setWindowsNodeMxcLifecycleState(
+  state: WindowsNodeMxcFolderTransactionPhase,
+  detail: string | null = null,
+): void {
+  windowsNodeMxcLifecycleState = state;
+  windowsNodeMxcLifecycleDetail = detail;
+  windowsNodeMxcLifecycleUpdatedAt = new Date().toISOString();
+  sendToWindow(mainWindow, "windows-node-mxc:lifecycle-state", {
+    phase: state,
+    detail,
+    updatedAt: windowsNodeMxcLifecycleUpdatedAt,
+  });
+}
+const appStartupStartedAt = Date.now();
+
+function stopBundledWindowsNodeHost(requireTreeTermination = false): void {
+  bundledWindowsNodeGeneration++;
+  bundledWindowsNodeStartup = null;
+  bundledWindowsNodeHost.stop(requireTreeTermination);
+}
+
+function logStartupTiming(phase: string): void {
+  console.log(`[startup-timing] ${phase} +${Date.now() - appStartupStartedAt}ms`);
+}
+
+function setGatewayStatus(status: GatewayStatus): void {
+  gatewayStatus = status;
+  updateTrayMenu(status, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("gateway:status", status);
+  }
+}
+let weixinLoginProcess: ChildProcess | null = null;
+let pendingIntegrityResult: IntegrityResult | null = null;
+/** Problems found by the last bundled-resource check (empty when it passed). */
+let runtimeManifestProblems: string[] = [];
+/** Entries verified by the last bundled-resource check; null when not run. */
+let runtimeManifestChecked: number | null = null;
+/** Startup stage that failed last, e.g. "resolve-runtime"; null once healthy. */
+let gatewayFailureStage: string | null = null;
+/** Human-readable cause for that stage, in the same order the user sees it. */
+let gatewayFailureReason: string | null = null;
+
+/**
+ * Reports one failed startup stage, cause first.
+ *
+ * The loading screen shows only the last log line, so the stage tag and the
+ * reason travel on the same line instead of being split across a hint.
+ */
+function reportGatewayFailure(stage: string, reason: string, hint?: string): void {
+  gatewayFailureStage = stage;
+  gatewayFailureReason = reason;
+  const line = `[error][stage=${stage}] ${reason}`;
+  console.error(line);
+  mainWindow?.webContents.send("gateway:log", line);
+  if (hint) mainWindow?.webContents.send("gateway:log", `[hint] ${hint}`);
+  setGatewayStatus("failed");
+}
+/** Last model capability verdict, recorded when the wizard runs its probe. */
+let lastProbedModelCapability: string | null = null;
+let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+let gatewayRestarting = false;
+let gatewayRestartPromise: Promise<void> | null = null;
+/** OpenClaw entry this installation spawns; null before it is first resolved. */
+let managedGatewayEntryPath: string | null = null;
+/** Number of pending sync permission requests that block the gateway process.
+ *  While > 0, the health-monitor skips checks to avoid killing the gateway. */
+let pendingSyncPermissionRequests = 0;
+/** True when we spawned the gateway ourselves (vs. connecting to an existing one). */
+let gatewaySpawnedByUs = false;
+let agentRosterChangeInProgress = false;
+/** Tracks completion of the first-spawn channel check and optional recovery. */
+let postSpawnRestartDone = false;
+let postSpawnRestartRequired = false;
+let postSpawnRestartScheduled = false;
+let postSpawnChannelCheck: symbol | null = null;
+const postInstallTransactionIndex = process.argv.indexOf("--post-install-transaction");
+const postInstallTransactionId =
+  postInstallTransactionIndex >= 0 ? process.argv[postInstallTransactionIndex + 1] : undefined;
+let postInstallReadySignaled = false;
+
+function signalPostInstallReady(): void {
+  if (!postInstallTransactionId || postInstallReadySignaled) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  const temporary = `${readyPath}.${process.pid}.tmp`;
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    temporary,
+    JSON.stringify({ transactionId: postInstallTransactionId, pid: process.pid }),
+    "utf-8",
+  );
+  fs.renameSync(temporary, readyPath);
+  postInstallReadySignaled = true;
+  logStartupTiming("post-install-ready");
+}
+
+function signalPostInstallFailure(error: unknown): void {
+  if (!postInstallTransactionId) return;
+  const readyDir = path.join(app.getPath("home"), ".microclaw", "upgrade");
+  const readyPath = path.join(readyDir, `desktop-ready-${postInstallTransactionId}.json`);
+  fs.mkdirSync(readyDir, { recursive: true });
+  fs.writeFileSync(
+    readyPath,
+    JSON.stringify({
+      transactionId: postInstallTransactionId,
+      pid: process.pid,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+    "utf-8",
+  );
+}
+/** Tool execution sandbox (runs AI agent commands inside AppContainer). */
+let toolSandbox: ToolSandbox | null = null;
+const githubCopilotAuthManager = new GitHubCopilotAuthManager(
+  (event) => {
+    mainWindow?.webContents.send("model:github-copilot:login-event", event);
+    if (event.status === "success") void refreshGatewayGitHubCopilotAuthStatus();
+  },
+  (url) => shell.openExternal(url),
+);
+/** Per-session random key for HMAC-signing the external apps whitelist file. */
+const sandboxHmacKey = require("crypto").randomBytes(32).toString("hex");
+/** Current active chat session key (tracked via chat events). */
+let activeChatSession = "";
+/** Pending in-app permission requests (renderer UI replaces native dialogs). */
+const pendingPermissionRequests = new Map<
+  string,
+  { type: "file" | "shell" | "shell-async" | "app-approval"; msg: any }
+>();
+/** Per-session deny list: apps denied by the user during this session. */
+const sessionDeniedApps = new Map<string, Set<string>>();
+/**
+ * Identity of the inbound message currently being handled.
+ *
+ * Replaced per message; `null` when nothing remote is in flight. Read by the
+ * permission-notification path, which must not treat a stale context as current.
+ */
+let activeTrustedContext: TrustedRemoteContext | null = null;
+/** Drops a channel redelivery so one message cannot create two tasks. */
+const remoteMessageDedup = new RemoteMessageDeduplicator();
+/** Cached remote source info, set by session-source IPC from WeChat plugin. */
+let cachedRemoteSource: {
+  channelType: string;
+  userId: string;
+  accountId: string;
+  baseUrl: string;
+  token?: string;
+  contextToken?: string;
+} | null = null;
+
+// ---------------------------------------------------------------------------
+// Skill file watcher — detects mid-session tampering
+// ---------------------------------------------------------------------------
+let skillWatchers: fs.FSWatcher[] = [];
+let watcherDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startSkillFileWatcher(): void {
+  // Clean up any existing watchers
+  for (const w of skillWatchers) {
+    try {
+      w.close();
+    } catch {}
+  }
+  skillWatchers = [];
+
+  for (const { baseDir } of getSkillSourceDirs()) {
+    if (!fs.existsSync(baseDir)) continue;
+    try {
+      const watcher = fs.watch(baseDir, { recursive: true }, () => {
+        // Debounce — multiple FS events fire for a single change
+        if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer);
+        watcherDebounceTimer = setTimeout(() => {
+          console.log("Skill file change detected — running integrity check...");
+          const result = verifySkillIntegrity();
+          if (!result.valid && mainWindow) {
+            mainWindow.webContents.send("skills:integrity-alert", result);
+          }
+        }, 2000);
+      });
+      skillWatchers.push(watcher);
+      console.log(`Watching skill directory: ${baseDir}`);
+    } catch (err) {
+      console.warn(`Failed to watch ${baseDir}:`, err);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
+function getConfigPath(): string {
+  return path.join(getOpenClawStateDir(), "openclaw.json");
+}
+
+// ---------------------------------------------------------------------------
+// Workspace seed — create default files before the gateway generates its own
+// ---------------------------------------------------------------------------
+const DEFAULT_SOUL_MD = `# SOUL.md - Who You Are
+
+_You're not a chatbot. You're becoming someone._
+
+${MAIN_PLATFORM_IDENTITY_SECTION}
+
+## Core Truths
+
+**Be genuinely helpful, not performatively helpful.** Skip the "Great question!" and "I'd be happy to help!" — just help. Actions speak louder than filler words.
+
+**Have opinions.** You're allowed to disagree, prefer things, find stuff amusing or boring. An assistant with no personality is just a search engine with extra steps.
+
+**Be resourceful before asking.** Try to figure it out. Read the file. Check the context. Search for it. _Then_ ask if you're stuck. The goal is to come back with answers, not questions.
+
+**Earn trust through competence.** Your human gave you access to their stuff. Don't make them regret it. Be careful with external actions (emails, tweets, anything public). Be bold with internal ones (reading, organizing, learning).
+
+**Remember you're a guest.** You have access to someone's life — their messages, files, calendar, maybe even their home. That's intimacy. Treat it with respect.
+
+## Boundaries
+
+- Private things stay private. Period.
+- When in doubt, ask before acting externally.
+- Never send half-baked replies to messaging surfaces.
+- You're not the user's voice — be careful in group chats.
+
+## File Operations
+
+**Respect the user's requested path — always.** When the user asks you to save, write, or download a file to a specific location (e.g. their Downloads folder, Desktop, or any explicit path), you **must** attempt that exact path. If the operation fails (e.g. due to sandbox restrictions or permission errors), report the failure clearly and let the user decide what to do next. **Never** silently fall back to the workspace or any other directory. The user chose that path for a reason.
+
+## Pre-declaring File System Access
+
+Before **any** shell command (exec tool) that reads or writes files outside the workspace, pre-declare which directories you'll need by adding a \`[declare-access]\` tag at the beginning of the command:
+
+\`\`\`
+# [declare-access]<access>:<path>[;<access>:<path>]...[/declare-access]
+<your actual command here>
+\`\`\`
+
+Where \`<access>\` is \`rw\` (read-write) or \`ro\` (read-only).
+
+Examples:
+\`\`\`
+# [declare-access]ro:C:\\Users\\alice\\Desktop[/declare-access]
+Get-ChildItem -Force C:\\Users\\alice\\Desktop
+\`\`\`
+
+\`\`\`
+# [declare-access]rw:C:\\Users\\alice\\Desktop;rw:C:\\Users\\alice\\Documents[/declare-access]
+Move-Item C:\\Users\\alice\\Desktop\\report.xlsx C:\\Users\\alice\\Documents\\
+\`\`\`
+
+\`\`\`
+# [declare-access]rw:$env:USERPROFILE\\Downloads[/declare-access]
+python download_script.py
+\`\`\`
+
+Multiple paths are separated by \`;\` inside the tags. Each path needs its own \`ro:\` or \`rw:\` prefix.
+
+**Important:** The \`[declare-access]...[/declare-access]\` tags must be in a **comment line in the shell command** (using \`#\`), NOT in a script file. Place it on the **first line**, followed by a newline, then the actual command. The system extracts the declaration, strips the tag line, and executes the rest.
+
+**Rules:**
+- **Always** do this for any exec command that touches directories outside the workspace — whether it's a simple one-liner or a complex script.
+- Use \`ro:\` when you only need to read. Use \`rw:\` when you need to create, modify, or delete files.
+- List **only** the specific directories the operation actually needs. Never declare broad paths like \`C:\\\` or \`C:\\Users\`. Don't request rw access if you only need ro.
+- Paths must be **Windows file system paths** (e.g. \`C:\\Users\\alice\\Desktop\`). Do not declare URLs, network URIs, or Linux-style paths.
+- You may combine multiple paths in a single call, separated by \`;\`.
+
+You can also use \`[declare-access]...[/declare-access]\` as a standalone command if you need to check permissions before deciding what to do.
+
+## Vibe
+
+Be the assistant you'd actually want to talk to. Concise when needed, thorough when it matters. Not a corporate drone. Not a sycophant. Just... good.
+
+## Continuity
+
+Each session, you wake up fresh. These files _are_ your memory. Read them. Update them. They're how you persist.
+
+If you change this file, tell the user — it's your soul, and they should know.
+
+---
+
+_This file is yours to evolve. As you learn who you are, update it._
+`;
+
+/**
+ * Standalone declare-access section, appended to existing SOUL.md files
+ * that were created before this section existed.
+ */
+const DECLARE_ACCESS_SECTION = `## Pre-declaring File System Access
+
+Before **any** shell command (exec tool) that reads or writes files outside the workspace, pre-declare which directories you'll need by adding a \`[declare-access]\` tag at the beginning of the command:
+
+\`\`\`
+# [declare-access]<access>:<path>[;<access>:<path>]...[/declare-access]
+<your actual command here>
+\`\`\`
+
+Where \`<access>\` is \`rw\` (read-write) or \`ro\` (read-only).
+
+Examples:
+\`\`\`
+# [declare-access]ro:C:\\Users\\alice\\Desktop[/declare-access]
+Get-ChildItem -Force C:\\Users\\alice\\Desktop
+\`\`\`
+
+\`\`\`
+# [declare-access]rw:C:\\Users\\alice\\Desktop;rw:C:\\Users\\alice\\Documents[/declare-access]
+Move-Item C:\\Users\\alice\\Desktop\\report.xlsx C:\\Users\\alice\\Documents\\
+\`\`\`
+
+\`\`\`
+# [declare-access]rw:$env:USERPROFILE\\Downloads[/declare-access]
+python download_script.py
+\`\`\`
+
+Multiple paths are separated by \`;\` inside the tags. Each path needs its own \`ro:\` or \`rw:\` prefix.
+
+**Important:** The \`[declare-access]...[/declare-access]\` tags must be in a **comment line in the shell command** (using \`#\`), NOT in a script file. Place it on the **first line**, followed by a newline, then the actual command. The system extracts the declaration, strips the tag line, and executes the rest.
+
+**Rules:**
+- **Always** do this for any exec command that touches directories outside the workspace — whether it's a simple one-liner or a complex script.
+- Use \`ro:\` when you only need to read. Use \`rw:\` when you need to create, modify, or delete files.
+- List **only** the specific directories the operation actually needs. Never declare broad paths like \`C:\\\` or \`C:\\Users\`. Don't request rw access if you only need ro.
+- Paths must be **Windows file system paths** (e.g. \`C:\\Users\\alice\\Desktop\`). Do not declare URLs, network URIs, or Linux-style paths.
+- You may combine multiple paths in a single call, separated by \`;\`.
+
+You can also use \`[declare-access]...[/declare-access]\` as a standalone command if you need to check permissions before deciding what to do.
+`;
+
+/**
+ * Seed default workspace files if they don't already exist.
+ * Called before the gateway starts so that OpenClaw finds our customised
+ * SOUL.md instead of generating a generic one on first conversation.
+ */
+function seedWorkspaceFiles(stateDir: string): void {
+  const workspaceDir = path.join(stateDir, "workspace");
+  const soulPath = path.join(workspaceDir, "SOUL.md");
+
+  if (fs.existsSync(soulPath)) {
+    // SOUL.md exists — ensure the declare-access section is present.
+    // This patches existing SOUL.md files from older versions that lack it.
+    try {
+      const existing = fs.readFileSync(soulPath, "utf-8");
+      if (!existing.includes("## Pre-declaring File System Access")) {
+        fs.appendFileSync(soulPath, "\n" + DECLARE_ACCESS_SECTION, "utf-8");
+        console.log("[seed] Patched SOUL.md with Pre-declaring File System Access section");
+      }
+    } catch (err) {
+      console.warn("[seed] Failed to patch SOUL.md:", err);
+    }
+  } else {
+    try {
+      if (!fs.existsSync(workspaceDir)) {
+        fs.mkdirSync(workspaceDir, { recursive: true });
+      }
+      fs.writeFileSync(soulPath, DEFAULT_SOUL_MD, "utf-8");
+      console.log(`[seed] Created default SOUL.md at ${soulPath}`);
+    } catch (err) {
+      console.warn("[seed] Failed to create SOUL.md:", err);
+    }
+  }
+
+  // Remove BOOTSTRAP.md to skip the OpenClaw first-run wizard (OOBE).
+  // Our SOUL.md seed replaces the need for the bootstrap flow.
+  for (const bootstrapDir of [workspaceDir, path.join(stateDir, "agents", "default")]) {
+    const bootstrapPath = path.join(bootstrapDir, "BOOTSTRAP.md");
+    try {
+      if (fs.existsSync(bootstrapPath)) {
+        fs.unlinkSync(bootstrapPath);
+        console.log(`[seed] Removed ${bootstrapPath} to skip OOBE`);
+      }
+    } catch {}
+  }
+}
+
+/**
+ * Write the external apps whitelist to a signed JSON file.
+ * sandbox-preload.js reads this file on each spawn check, so changes
+ * take effect immediately without restarting the gateway.
+ *
+ * Security: The file contains an HMAC signature computed with a per-session
+ * random key. The key is passed to the gateway process via env var at startup.
+ * Even if a sandboxed process can write to the file, it cannot forge a valid
+ * HMAC because it doesn't know the key (env vars are inherited read-only and
+ * the key is generated fresh each app launch).
+ */
+function writeExternalAppsFile(apps: string[]): void {
+  try {
+    const dir = path.join(app.getPath("appData"), "microclaw");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const crypto = require("crypto");
+    const payload = JSON.stringify(apps);
+    const hmac = crypto.createHmac("sha256", sandboxHmacKey).update(payload).digest("hex");
+    const filePath = path.join(dir, "sandbox-external-apps.json");
+    fs.writeFileSync(filePath, JSON.stringify({ apps, hmac }), "utf-8");
+    // Set explicit DENY Write ACE for the AppContainer SID on this file.
+    // This prevents AC processes from modifying it even if a parent directory
+    // has been granted RW access (explicit DENY overrides inherited ALLOW).
+    denyAppContainerWrite(filePath);
+  } catch (err: any) {
+    console.error("[sandbox] Failed to write external apps file:", err.message);
+  }
+}
+
+/** Cache for AppContainer SID string. */
+let _appContainerSid: string | null = null;
+
+/**
+ * Set an explicit DENY Write ACE on a file for the MicroClaw AppContainer SID.
+ * This ensures sandboxed processes cannot modify the file even if a parent
+ * directory has inherited Allow RW permissions.
+ */
+function denyAppContainerWrite(filePath: string): void {
+  try {
+    // Get the SID from the launcher (cached across calls)
+    if (!_appContainerSid) {
+      const launcherPath = resolveAppContainerLauncher();
+      if (!launcherPath || !fs.existsSync(launcherPath)) return;
+      const { execFileSync } = require("child_process");
+      _appContainerSid = execFileSync(launcherPath, ["sid", "--name", "MicroClaw"], {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: "utf-8",
+      }).trim();
+    }
+    if (!_appContainerSid) return;
+    // icacls: /deny SID:(W) — explicit deny write
+    const { execSync } = require("child_process");
+    execSync(`icacls "${filePath}" /deny "${_appContainerSid}:(W)"`, {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: "ignore",
+    });
+  } catch {
+    // Best-effort hardening — HMAC signature is the primary protection.
+    // May fail if ACE already exists or insufficient privileges.
+  }
+}
+
+/**
+ * Set explicit DENY Read+Write ACEs on a file or directory for the
+ * MicroClaw AppContainer SID. Used to shield credential / private files
+ * inside ~/.openclaw whose parent directory is granted RW to the AppContainer
+ * (sandboxed skill subprocesses must NOT be able to read MODEL_API_KEY,
+ * device-identity.json, chat sessions, etc.). Explicit DENY overrides
+ * inherited ALLOW, so this works even though `.openclaw` itself is on the
+ * AppContainer's grant list.
+ *
+ * For directories, applies recursively + inherit so newly created files
+ * inside also get denied.
+ */
+function denyAppContainerReadWrite(targetPath: string, isDir: boolean): void {
+  try {
+    if (!_appContainerSid) {
+      const launcherPath = resolveAppContainerLauncher();
+      if (!launcherPath || !fs.existsSync(launcherPath)) return;
+      const { execFileSync } = require("child_process");
+      _appContainerSid = execFileSync(launcherPath, ["sid", "--name", "MicroClaw"], {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: "utf-8",
+      }).trim();
+    }
+    if (!_appContainerSid) return;
+    const { execSync } = require("child_process");
+    // (R,W) covers Read + Write; (OI)(CI) makes the deny propagate to children
+    // so files added later (new chat sessions, rotated keys) are also denied.
+    const perm = isDir ? "(OI)(CI)(R,W,DE,X)" : "(R,W,DE)";
+    execSync(`icacls "${targetPath}" /deny "${_appContainerSid}:${perm}"`, {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: "ignore",
+    });
+  } catch {
+    // Best-effort. Logged only at debug level to avoid noise on rerun
+    // (icacls returns non-zero when an identical ACE already exists).
+  }
+}
+
+/**
+ * Harden the OpenClaw state directory against the sandboxed AppContainer.
+ *
+ * The AppContainer is granted rw on the entire ~/.openclaw tree (skills
+ * legitimately need to write logs, scratch files, plugin state, etc.), but
+ * the following entries hold credentials / private user data that no
+ * sandboxed skill should ever read or write:
+ *   * .env                  — MODEL_API_KEY, BRAVE_API_KEY, third-party tokens
+ *   * openclaw.json         — provider config (may embed literal API keys)
+ *   * device-identity.json  — Ed25519 PRIVATE key for gateway authentication
+ *   * sessions/             — full chat history with the model
+ *   * conversations/        — alternate naming used by some builds
+ *   * keys/                 — any future key material
+ *
+ * This applies explicit DENY ACEs at the kernel ACL level so the
+ * AppContainer SID is blocked regardless of the parent directory's grant.
+ * Re-applied on every gateway start to cover files created after the
+ * initial provisioning step.
+ */
+function hardenOpenClawStateDir(): void {
+  try {
+    const stateDir = getOpenClawStateDir();
+    const SENSITIVE_FILES = [".env", "openclaw.json", "device-identity.json"];
+    const SENSITIVE_DIRS = ["sessions", "conversations", "keys"];
+    for (const name of SENSITIVE_FILES) {
+      const p = path.join(stateDir, name);
+      if (fs.existsSync(p)) denyAppContainerReadWrite(p, false);
+    }
+    for (const name of SENSITIVE_DIRS) {
+      const p = path.join(stateDir, name);
+      if (fs.existsSync(p)) denyAppContainerReadWrite(p, true);
+    }
+  } catch (err: any) {
+    console.warn("[sandbox] hardenOpenClawStateDir failed:", err?.message);
+  }
+}
+
+function readConfig(): any {
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function isWindowsNodeMxcDesired(): boolean {
+  return settingsStore.get("securityMode") === WINDOWS_NODE_MXC_MODE;
+}
+
+function isApplicationIngressReady(): boolean {
+  return (
+    !windowsNodeMxcSecurityTransitionInProgress &&
+    isWindowsNodeMxcIngressReleased(
+      isWindowsNodeMxcDesired(),
+      gatewayGenerationId,
+      windowsNodeMxcIngressGeneration,
+      windowsNodeMxcActivationInProgress,
+    )
+  );
+}
+
+function isApplicationServiceReady(): boolean {
+  return isApplicationServiceReadyState(
+    gwClient?.connected ?? false,
+    postSpawnRestartDone && !postSpawnRestartScheduled,
+    windowsNodeMxcSecurityTransitionInProgress,
+    isApplicationIngressReady(),
+  );
+}
+
+function notifyRendererApplicationReady(): void {
+  if (!isApplicationServiceReady()) return;
+  sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
+  sendToWindow(mainWindow, "gateway:service-ready");
+  signalPostInstallReady();
+}
+
+function getWindowsNodeMxcDurableApprovalStore(): WindowsNodeMxcDurableApprovalStore {
+  windowsNodeMxcDurableApprovalStore ??= new WindowsNodeMxcDurableApprovalStore(
+    path.join(app.getPath("userData"), "windows-node", "durable-approvals.json"),
+  );
+  return windowsNodeMxcDurableApprovalStore;
+}
+
+async function getWindowsNodeMxcStatus(): Promise<
+  WindowsNodeMxcRuntimeStatus & {
+    lifecycleState: {
+      phase: WindowsNodeMxcFolderTransactionPhase;
+      detail: string | null;
+      updatedAt: string;
+    };
+    folderPolicyRecovery: WindowsNodeMxcFolderPolicyRecovery | null;
+    durableApprovals: WindowsNodeMxcDurableApprovalInspection;
+  }
+> {
+  const bundledFolders = getBundledWindowsNodeFolders();
+  const status = await inspectWindowsNodeMxc({
+    desiredEnabled: isWindowsNodeMxcDesired(),
+    selectedNodeId: settingsStore.get("windowsNodeMxcNodeId"),
+    config: readConfig(),
+    gateway: gwClient,
+    managedGateway: gatewaySpawnedByUs && isManagedGatewayProcessAlive(),
+    gatewayGeneration: gatewayGenerationId,
+    storedSmoke: settingsStore.get("windowsNodeMxcSmoke") ?? null,
+    bundledHost: bundledWindowsNodeHost.status(),
+    bundledFolders,
+  });
+  const durable = getWindowsNodeMxcDurableApprovalStore().inspect();
+  const lifecyclePhase = windowsNodeMxcSecurityTransitionInProgress
+    ? windowsNodeMxcLifecycleState
+    : status.effectiveEnabled
+      ? "active"
+      : status.desiredEnabled
+        ? "locked"
+        : "idle";
+  return {
+    ...status,
+    lifecycleState: {
+      phase: lifecyclePhase,
+      detail: windowsNodeMxcLifecycleDetail,
+      updatedAt: windowsNodeMxcLifecycleUpdatedAt,
+    },
+    folderPolicyRecovery: settingsStore.get("windowsNodeMxcFolderPolicyRecovery") ?? null,
+    durableApprovals: durable,
+  };
+}
+
+function getBundledWindowsNodeFolders(): BundledWindowsNodeFolder[] {
+  return [
+    ...settingsStore.get("sandboxUserDirsRO").map((folderPath) => ({
+      path: folderPath,
+      access: "ro" as const,
+    })),
+    ...settingsStore.get("sandboxUserDirsRW").map((folderPath) => ({
+      path: folderPath,
+      access: "rw" as const,
+    })),
+  ];
+}
+
+async function requireEffectiveWindowsNodeMxc(deferRelock = false): Promise<void> {
+  if (windowsNodeMxcSecurityTransitionInProgress) {
+    throw new Error("Chat ingress is locked during the security-mode transition");
+  }
+  if (!isWindowsNodeMxcDesired()) return;
+  const relock = async (reason: string) => {
+    const operation = failClosedWindowsNodeMxc(reason);
+    if (deferRelock) {
+      void operation.catch((error) =>
+        console.error("[windows-node-mxc] Deferred relock failed:", error),
+      );
+      return;
+    }
+    await operation;
+  };
+  if (
+    !isWindowsNodeMxcIngressReleased(
+      true,
+      gatewayGenerationId,
+      windowsNodeMxcIngressGeneration,
+      windowsNodeMxcActivationInProgress,
+    )
+  ) {
+    throw new Error("Windows Node + MXC ingress is locked pending current-generation attestation");
+  }
+  let status: WindowsNodeMxcRuntimeStatus;
+  try {
+    status = await getWindowsNodeMxcStatus();
+  } catch (error) {
+    await relock(
+      `Runtime attestation failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    throw error;
+  }
+  if (!status.effectiveEnabled) {
+    const detail = status.blockers.join("; ") || "readiness proof failed";
+    await relock(`Runtime attestation drifted: ${detail}`);
+    throw new Error(`Windows Node + MXC execution is blocked: ${detail}`);
+  }
+  try {
+    await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+  } catch (error) {
+    await relock(
+      `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    throw error;
+  }
+}
+
+async function handleWindowsNodeMxcGatewayApproval(
+  approval: WindowsNodeMxcGatewayApproval,
+  approvalGeneration: string,
+): Promise<void> {
+  const proofContext = windowsNodeMxcApprovalProofContext;
+  const identity = proofContext
+    ? durableApprovalIdentityFromGateway(approval, proofContext.policyFingerprint)
+    : null;
+  const durable = identity ? getWindowsNodeMxcDurableApprovalStore().findExact(identity) : null;
+  if (durable) {
+    try {
+      const consumed = await withWindowsNodeMxcApprovalResolution(async () => {
+        await requireEffectiveWindowsNodeMxc(true);
+        return withWindowsNodeMxcDurableApprovalLock(async () => {
+          if (!identity) return false;
+          return consumeExactDurableApproval(
+            getWindowsNodeMxcDurableApprovalStore(),
+            identity,
+            durable.id,
+            async () => {
+              if (
+                approvalGeneration !== gatewayGenerationId ||
+                proofContext !== windowsNodeMxcApprovalProofContext ||
+                windowsNodeMxcSecurityTransitionInProgress ||
+                !isWindowsNodeMxcIngressReleased(
+                  true,
+                  gatewayGenerationId,
+                  windowsNodeMxcIngressGeneration,
+                  windowsNodeMxcActivationInProgress,
+                ) ||
+                !gwClient?.connected
+              ) {
+                throw new Error("The Gateway approval belongs to a stale security generation");
+              }
+              await gwClient.request("exec.approval.resolve", {
+                id: approval.id,
+                decision: "allow-once",
+              });
+            },
+            (error) =>
+              console.error("[windows-node-mxc] Could not update durable approval usage:", error),
+          );
+        });
+      });
+      if (consumed) return;
+    } catch (error) {
+      console.error("[windows-node-mxc] Exact durable approval could not be consumed:", error);
+    }
+  }
+
+  if (
+    approvalGeneration !== gatewayGenerationId ||
+    !isWindowsNodeMxcIngressReleased(
+      true,
+      gatewayGenerationId,
+      windowsNodeMxcIngressGeneration,
+      windowsNodeMxcActivationInProgress,
+    )
+  ) {
+    if (gwClient?.connected) {
+      await gwClient
+        .request("exec.approval.resolve", { id: approval.id, decision: "deny" })
+        .catch((error) =>
+          console.error("[windows-node-mxc] Could not deny a stale Gateway approval:", error),
+        );
+    }
+    return;
+  }
+  pendingWindowsNodeMxcGatewayApproval = {
+    request: approval,
+    gatewayGeneration: approvalGeneration,
+  };
+  sendToWindow(mainWindow, "windows-node-mxc:approval-request", {
+    ...approval,
+    commandText: approval.command,
+    approvalLayer: "gateway",
+  });
+}
+
+function getPendingWindowsNodeMxcApprovalForRenderer() {
+  if (pendingWindowsNodeMxcGatewayApproval) {
+    const approval = pendingWindowsNodeMxcGatewayApproval.request;
+    return {
+      ...approval,
+      commandText: approval.command,
+      approvalLayer: "gateway" as const,
+    };
+  }
+  const approval = bundledWindowsNodeHost.status().pendingApproval;
+  return approval
+    ? {
+        ...approval,
+        approvalLayer: "node" as const,
+        allowedDecisions: ["deny", "allow-once"] as const,
+      }
+    : null;
+}
+
+function assertWindowsNodeMxcConfigurationMutable(): void {
+  if (isWindowsNodeMxcDesired()) {
+    throw new Error(
+      "This Gateway configuration is locked while Windows Node + MXC mode is enabled",
+    );
+  }
+}
+
+function assertWindowsNodeMxcBaseReady(
+  status: WindowsNodeMxcRuntimeStatus,
+  expectedPolicy: "locked" | "active",
+  requireSmoke: boolean,
+): void {
+  const failures: string[] = [];
+  if (!status.desiredEnabled) failures.push("Windows Node + MXC mode is not enabled");
+  if (!gatewayGenerationId || status.gatewayGeneration !== gatewayGenerationId) {
+    failures.push("Gateway generation changed during attestation");
+  }
+  if (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive() || !gwClient?.connected) {
+    failures.push("MicroClaw's managed Gateway is not connected");
+  }
+  if (!status.selectedNode?.connected || !status.selectedNode.paired) {
+    failures.push("The app-owned Windows node is not paired and connected");
+  }
+  if (
+    status.selectedNode?.id !== status.selectedNodeId ||
+    [...(status.selectedNode?.commands ?? [])].sort().join("\n") !==
+      [...WINDOWS_NODE_MXC_NODE_COMMANDS].sort().join("\n")
+  ) {
+    failures.push("The exact bundled node identity or command declaration changed");
+  }
+  if (!status.cwdAttestationReady) failures.push("The exact CWD/activation attestation failed");
+  if (!status.strictFallbackEffective)
+    failures.push("Strict MXC no-host-fallback is not effective");
+  if (!status.allowWindowsUiEffective)
+    failures.push("PowerShell compatibility policy is not effective");
+  if (status.probe.outcome !== "supported" || !status.probe.tier) {
+    failures.push(status.probe.reason ?? "MXC did not report a supported containment tier");
+  }
+  if (!status.settingsFingerprint) failures.push("The bundled node security policy is unavailable");
+  if (!status.gatewayPolicyReady || status.gatewayPolicyState !== expectedPolicy) {
+    failures.push(`Gateway policy is not exactly ${expectedPolicy}`);
+  }
+  if (!status.effectiveToolsReady || status.effectiveToolsState !== "verified") {
+    failures.push("The effective Gateway tool inventory was not verified");
+  }
+  if (status.durableApprovalsPresent === null) {
+    failures.push("Bundled-node durable approval state could not be attested");
+  }
+  if (
+    requireSmoke &&
+    (!status.smoke ||
+      status.smoke.gatewayGeneration !== gatewayGenerationId ||
+      status.smoke.deniedOutsideRoot.outcome !== "passed" ||
+      status.smoke.hostname.outcome !== "passed" ||
+      status.smoke.powershell.outcome !== "passed")
+  ) {
+    failures.push("Current-generation denied-CWD, hostname, and PowerShell smokes must pass");
+  }
+  if (failures.length > 0) {
+    throw new Error(`Windows Node + MXC activation blocked: ${failures.join("; ")}`);
+  }
+}
+
+async function waitForWindowsNodeMxcBaseReady(
+  expectedGeneration: string,
+  expectedPolicy: "locked" | "active",
+  requireSmoke: boolean,
+  timeoutMs = 120_000,
+): Promise<WindowsNodeMxcRuntimeStatus> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown = new Error("Windows Node + MXC readiness has not completed");
+  while (Date.now() < deadline) {
+    if (gatewayGenerationId !== expectedGeneration) {
+      throw new Error("Managed Gateway generation changed during activation readiness");
+    }
+    if (!gwClient?.connected || !isManagedGatewayProcessAlive()) {
+      lastError = new Error("MicroClaw's managed Gateway is not connected");
+    } else {
+      try {
+        const status = await getWindowsNodeMxcStatus();
+        assertWindowsNodeMxcBaseReady(status, expectedPolicy, requireSmoke);
+        return status;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    `Timed out waiting for current-generation MXC readiness: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+  );
+}
+
+async function waitForBundledWindowsNodeGeneration(
+  expectedGeneration: string,
+  timeoutMs = 90_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (gatewayGenerationId !== expectedGeneration) {
+      throw new Error("Managed Gateway generation changed during bundled-node startup");
+    }
+    if (!gwClient?.connected || !isManagedGatewayProcessAlive()) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      continue;
+    }
+    const startup = bundledWindowsNodeStartup;
+    if (startup) await startup;
+    if (bundledWindowsNodeHost.status().processRunning) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Timed out waiting for the bundled Windows node to pair with this Gateway");
+}
+
+async function waitForManagedGatewayConnection(timeoutMs = 120_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (
+      gwClient?.connected &&
+      isManagedGatewayProcessAlive() &&
+      !postSpawnRestartScheduled &&
+      !gatewayRestarting
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Timed out waiting for the managed Gateway WebSocket connection");
+}
+
+async function runCurrentWindowsNodeMxcSmoke(
+  status: WindowsNodeMxcRuntimeStatus,
+): Promise<StoredWindowsNodeMxcSmoke> {
+  if (!gwClient?.connected) throw new Error("MicroClaw managed Gateway is not connected");
+  if (!status.settingsFingerprint || !status.probe.tier) {
+    throw new Error("Current MXC settings and containment tier are required");
+  }
+  const expectedGeneration = gatewayGenerationId;
+  const transitionId = windowsNodeMxcReadinessTransitionId;
+  const proofContext = windowsNodeMxcApprovalProofContext;
+  if (
+    !windowsNodeMxcSecurityTransitionInProgress ||
+    !transitionId ||
+    !proofContext ||
+    proofContext.gatewayGeneration !== expectedGeneration ||
+    proofContext.readinessTransitionId !== transitionId
+  ) {
+    throw new Error("Internal MXC readiness authorization is unavailable for this transition");
+  }
+  await bundledWindowsNodeHost.setActivationLease("diagnostic", 120_000);
+  try {
+    const smoke = await runWindowsNodeMxcSmoke(
+      gwClient,
+      expectedGeneration,
+      status.selectedNodeId,
+      status.settingsFingerprint,
+      status.probe.tier,
+      { transitionId, proofContext },
+    );
+    if (gatewayGenerationId !== expectedGeneration || !gwClient.connected) {
+      throw new Error("Managed Gateway generation changed during contained smokes");
+    }
+    settingsStore.set("windowsNodeMxcSmoke", smoke);
+    return smoke;
+  } finally {
+    bundledWindowsNodeHost.revokeActivationLease();
+  }
+}
+
+function assertWindowsNodeMxcSmokePassed(
+  smoke: StoredWindowsNodeMxcSmoke,
+  generation: "Locked" | "Active",
+): void {
+  if (
+    smoke.deniedOutsideRoot.outcome !== "passed" ||
+    smoke.hostname.outcome !== "passed" ||
+    smoke.powershell.outcome !== "passed"
+  ) {
+    throw new Error(
+      `${generation}-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+    );
+  }
+}
+
+async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRuntimeStatus> {
+  if (windowsNodeMxcActivationInProgress) {
+    throw new Error("Windows Node + MXC activation is already in progress");
+  }
+  let activeGeneration = "";
+  return runWindowsNodeMxcAutomaticTransition({
+    setPhase: setWindowsNodeMxcLifecycleState,
+    closeIngress: () => {
+      windowsNodeMxcActivationInProgress = true;
+      windowsNodeMxcIngressGeneration = null;
+      bundledWindowsNodeHost.revokeActivationLease();
+      settingsStore.delete("windowsNodeMxcSmoke");
+      sendToWindow(mainWindow, "gateway:ws-disconnected", "MXC readiness attestation");
+      sendToWindow(mainWindow, "gateway:service-loading");
+    },
+    startLockedGeneration: async () => {
+      await startGatewayWithWindowsNodeMxcPolicy("locked");
+      const lockedGeneration = gatewayGenerationId;
+      await waitForBundledWindowsNodeGeneration(lockedGeneration);
+      return waitForWindowsNodeMxcBaseReady(lockedGeneration, "locked", false);
+    },
+    smokeLockedGeneration: async (lockedStatus) => {
+      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(lockedStatus), "Locked");
+    },
+    startActiveGeneration: async () => {
+      const config = readConfig();
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error("OpenClaw configuration is unavailable");
+      }
+      const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+      const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+      const activePolicy = applyWindowsNodeMxcGatewayPolicy(
+        config,
+        nodeId,
+        settingsStore.get("windowsNodeMxcToolBackups"),
+        "active",
+      );
+      await stopGatewayForSecurityTransition(configuredPort);
+      settingsStore.delete("windowsNodeMxcSmoke");
+      settingsStore.set("windowsNodeMxcToolBackups", activePolicy.backups);
+      writeConfigTextAtomically(JSON.stringify(activePolicy.config, null, 2));
+      await startGatewayWithWindowsNodeMxcPolicy("active");
+      activeGeneration = gatewayGenerationId;
+      await waitForBundledWindowsNodeGeneration(activeGeneration);
+      return waitForWindowsNodeMxcBaseReady(activeGeneration, "active", false);
+    },
+    smokeActiveGeneration: async (activeStatus) => {
+      assertWindowsNodeMxcSmokePassed(await runCurrentWindowsNodeMxcSmoke(activeStatus), "Active");
+    },
+    mintActivationLease: async () => {
+      await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+    },
+    verifyActiveGeneration: async () => {
+      const finalStatus = await getWindowsNodeMxcStatus();
+      if (!finalStatus.effectiveEnabled) {
+        throw new Error(
+          `Final activation attestation failed: ${finalStatus.blockers.join("; ") || "unknown failure"}`,
+        );
+      }
+      if (gatewayGenerationId !== activeGeneration) {
+        throw new Error("Managed Gateway generation changed before ingress release");
+      }
+      return finalStatus;
+    },
+    releaseIngress: () => {
+      windowsNodeMxcIngressGeneration = activeGeneration;
+      windowsNodeMxcActivationInProgress = false;
+    },
+    lockAfterFailure: async (error) => {
+      windowsNodeMxcActivationInProgress = false;
+      await failClosedWindowsNodeMxc(
+        `Automatic readiness failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
+  });
+}
+
+/**
+ * Writes the configuration the packaged app needs before the Gateway starts.
+ *
+ * The NSIS package ships no pre-generated `openclaw.json`; without this step
+ * the Gateway would start with an empty auth token, and browser automation
+ * would have no executable configured. Both used to be written by the legacy
+ * Python installer.
+ *
+ * Only the default (non-MXC) security mode is handled here: the Windows Node +
+ * MXC path pins and validates `openclaw.json` itself, and rewriting the file
+ * underneath it would fight that policy.
+ */
+function ensureCompanyClawFirstRunConfiguration(): void {
+  if (isWindowsNodeMxcDesired()) return;
+  const configPath = getConfigPath();
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (error) {
+    console.error("[companyclaw] Cannot create the OpenClaw state directory:", error);
+    return;
+  }
+  const existing = readConfig();
+  const planned = planFirstRunConfig({
+    existing,
+    // Two UUIDs give a 64-hex-character token without adding a dependency; the
+    // legacy installer used secrets.token_hex(24) for the same purpose.
+    createToken: () => `${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`,
+  });
+  const withBrowser = planBrowserConfig(
+    planned.config,
+    findEdgeExecutable(process.env, (candidate) => fs.existsSync(candidate)),
+  );
+  const changed = [...planned.changed, ...withBrowser.changed];
+  if (changed.length === 0) return;
+  try {
+    assertConfigWriteAllowed(withBrowser.config, existing);
+    writeConfigTextAtomically(JSON.stringify(withBrowser.config, null, 2));
+    console.log(`[companyclaw] First-run configuration written: ${changed.join(", ")}`);
+  } catch (error) {
+    // A failure here must not take the app down; the Gateway reports the
+    // missing token through the existing gateway log instead.
+    console.error("[companyclaw] First-run configuration failed:", error);
+  }
+}
+
+/**
+ * Reports missing or altered bundled resources in plain Chinese.
+ *
+ * Runs only in a packaged build: a source checkout has no manifest and is not
+ * an employee installation.
+ */
+function reportRuntimeIntegrity(): void {
+  if (!app.isPackaged) return;
+  const manifestPath = path.join(process.resourcesPath, RUNTIME_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[warn] 安装资源清单缺失（${RUNTIME_MANIFEST_FILE}）。请重新运行 CompanyClaw 安装包修复安装。`,
+    );
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  } catch (error) {
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[warn] 安装资源清单无法读取：${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  const verification = verifyRuntimeManifest(parsed, process.resourcesPath);
+  runtimeManifestProblems = verification.ok ? [] : verification.problems;
+  runtimeManifestChecked = verification.ok ? verification.checked : 0;
+  if (verification.ok) {
+    console.log(`[companyclaw] Runtime manifest verified (${verification.checked} entries)`);
+    return;
+  }
+  mainWindow?.webContents.send(
+    "gateway:log",
+    `[warn] 运行资源校验未通过：${verification.problems.join("; ")}。` +
+      "请重新运行 CompanyClaw 安装包修复安装（无需手动安装任何组件）。",
+  );
+}
+
+/**
+ * Makes the bundled WeChat plugin available to the Gateway.
+ *
+ * The plugin ships inside the installer but OpenClaw only loads plugins from
+ * `<stateDir>/extensions/`, so without this step the channel status reads
+ * "not installed" and no QR code can ever appear. Failures are reported in
+ * plain Chinese through the existing gateway log rather than silently leaving
+ * the user with a dead button.
+ */
+function ensureWeixinPluginAvailable(): void {
+  if (isWindowsNodeMxcDesired()) return;
+  let nodePath: string | null = null;
+  let openClawEntry: string | null = null;
+  try {
+    nodePath = resolveNodePath();
+    openClawEntry = resolveOpenClawEntry();
+  } catch (error) {
+    console.warn("[companyclaw] Cannot resolve the OpenClaw runtime for the plugin:", error);
+  }
+  let outcome;
+  try {
+    outcome = ensureWeixinPluginInstalled({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      nodePath,
+      openClawEntry,
+      stateDir: getOpenClawStateDir(),
+    });
+  } catch (error) {
+    outcome = {
+      ok: false as const,
+      reason: "PLUGIN_INSTALL_FAILED",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (outcome.ok) {
+    if (outcome.state === "installed") {
+      console.log("[companyclaw] WeChat plugin installed from the bundled payload");
+    }
+    return;
+  }
+  const message =
+    outcome.reason === "PLUGIN_RESOURCE_MISSING"
+      ? `微信插件资源缺失（${outcome.detail ?? ""}）。请重新运行 CompanyClaw 安装包修复安装。`
+      : `微信插件未能安装：${outcome.detail ?? outcome.reason}。可在任务中心重新尝试，或重新运行安装包修复安装。`;
+  console.error(`[companyclaw] ${message}`);
+  mainWindow?.webContents.send("gateway:log", `[warn] ${message}`);
+}
+
+/**
+ * Reads the WeChat plugin's installation, enablement and login state.
+ *
+ * Shared by the channel status IPC, the first-run health report and the plugin
+ * installer so all three agree on what "installed" means.
+ */
+function readWeixinPluginStatus(): {
+  enabled: boolean;
+  installed: boolean;
+  loggedIn: boolean;
+  loginInProgress: boolean;
+} {
+  const config = readConfig();
+  const enabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
+  const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
+  // Check if plugin is installed, enabled, AND has saved login accounts
+  let loggedIn = false;
+  if (installed && enabled) {
+    try {
+      const accountsPath = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts.json");
+      if (fs.existsSync(accountsPath)) {
+        const accounts = JSON.parse(fs.readFileSync(accountsPath, "utf-8"));
+        if (Array.isArray(accounts) && accounts.length > 0) {
+          // Verify at least one account has a token file
+          const accountsDir = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts");
+          loggedIn = accounts.some((id: string) => {
+            const tokenFile = path.join(accountsDir, `${id}.json`);
+            return fs.existsSync(tokenFile);
+          });
+        }
+      }
+    } catch {}
+  }
+  return { enabled, installed, loggedIn, loginInProgress: !!weixinLoginProcess };
+}
+
+/**
+ * Collects the per-component health of this installation.
+ *
+ * Every value comes from an existing source (the gateway status, the broker
+ * client, the manifest check); nothing here re-derives a decision the security
+ * core already owns.
+ */
+function collectGuardianProbes(): GuardianProbes {
+  const config = readConfig();
+  const weixin = readWeixinPluginStatus();
+  const brokerStatus = companyClawRuntime?.broker?.getStatus() ?? null;
+  const browserSection =
+    config && typeof config.browser === "object" && config.browser !== null
+      ? (config.browser as { executablePath?: unknown })
+      : null;
+  const configuredModel =
+    config && typeof config.model === "object" && config.model !== null
+      ? (config.model as { name?: unknown }).name
+      : undefined;
+  return {
+    gatewayStatus,
+    gatewayConnected: gwClient?.connected ?? false,
+    gatewayFailureStage,
+    gatewayFailureReason,
+    manifestProblems: runtimeManifestProblems,
+    manifestChecked: runtimeManifestChecked,
+    pluginInstalled: weixin.installed,
+    pluginEnabled: weixin.enabled,
+    pluginLoggedIn: weixin.loggedIn,
+    brokerNodePath: brokerStatus ? brokerStatus.nodePath : null,
+    brokerRunning: brokerStatus?.running ?? false,
+    brokerFailureReason: brokerStatus?.lastFailureReason ?? null,
+    browserExecutable:
+      typeof browserSection?.executablePath === "string" &&
+      browserSection.executablePath.length > 0
+        ? browserSection.executablePath
+        : null,
+    // The probe result only means something once a model is configured;
+    // without one the item stays "unknown" instead of "failed".
+    modelCapability:
+      typeof configuredModel === "string" && configuredModel.length > 0
+        ? (lastProbedModelCapability as GuardianProbes["modelCapability"])
+        : null,
+  };
+}
+
+async function startApplicationServices(): Promise<void> {
+  ensureCompanyClawFirstRunConfiguration();
+  reportRuntimeIntegrity();
+  ensureWeixinPluginAvailable();
+  if (!isWindowsNodeMxcDesired()) {
+    await startGateway();
+    return;
+  }
+
+  beginWindowsNodeMxcLifecycleOperation();
+  try {
+    await runAutomaticWindowsNodeMxcReadiness();
+  } finally {
+    endWindowsNodeMxcLifecycleOperation();
+  }
+  notifyRendererApplicationReady();
+}
+
+function resolveGitHubCopilotAuthRuntime(): GitHubCopilotAuthRuntime {
+  const entryPath = resolveOpenClawEntry();
+  const stateDir = getOpenClawStateDir();
+  const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+  fs.mkdirSync(compileCacheDir, { recursive: true });
+  return {
+    nodePath: resolveNodePath(),
+    entryPath,
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, "github-copilot-auth-worker.js")
+      : path.join(__dirname, "github-copilot-auth-worker.js"),
+    openClawPackageDir: resolveOpenClawPackageDir(entryPath),
+    stateDir,
+    compileCacheDir,
+  };
+}
+
+/**
+ * Verify that an AppContainer ACL grant has propagated by checking icacls output.
+ * Polls every 100ms until the SID appears with the correct permission level, max 2s.
+ * @param access - "rw" requires (M) or (F); "r" requires any SID presence.
+ * Returns true if verified, false on timeout.
+ */
+async function verifyAclPropagation(dir: string, access: "rw" | "r" = "r"): Promise<boolean> {
+  if (!_appContainerSid) {
+    console.warn("[sandbox:verify] no SID cached — adding 500ms safety delay");
+    await new Promise((r) => setTimeout(r, 500));
+    return true;
+  }
+  const sid = _appContainerSid;
+  const maxWait = 15000;
+  const interval = 200;
+  const start = Date.now();
+  let iteration = 0;
+  let icaclsPassCount = 0;
+  let acTestCount = 0;
+  let ancestorRepairAttempted = false;
+
+  while (Date.now() - start < maxWait) {
+    iteration++;
+    const elapsed = Date.now() - start;
+    try {
+      const { execSync } = require("child_process");
+      const output = execSync(`icacls "${dir}"`, {
+        windowsHide: true,
+        timeout: 3000,
+        encoding: "utf-8",
+      }) as string;
+      const sidIdx = output.indexOf(sid);
+      if (sidIdx >= 0) {
+        // Check ALL occurrences of the SID in icacls output.
+        // When a parent dir has RO (inherited) and this dir has explicit RW,
+        // icacls may show the inherited (RX) entry before the explicit (M).
+        let rwMatch = false;
+        let searchPos = 0;
+        while (searchPos < output.length) {
+          const idx = output.indexOf(sid, searchPos);
+          if (idx < 0) break;
+          const afterSid = output.substring(idx + sid.length, idx + sid.length + 50);
+          if (/\(M\)|\(F\)/.test(afterSid)) {
+            rwMatch = true;
+            break;
+          }
+          searchPos = idx + sid.length;
+        }
+        if (access === "rw" && !rwMatch) {
+          if (iteration % 10 === 1) {
+            const firstAfter = output.substring(sidIdx + sid.length, sidIdx + sid.length + 50);
+            console.log(
+              `[sandbox:verify] [+${elapsed}ms] iter=${iteration} icacls SID found but no (M)/(F): ${firstAfter.trim()}`,
+            );
+          }
+          await new Promise((r) => setTimeout(r, interval));
+          continue;
+        }
+        icaclsPassCount++;
+        console.log(
+          `[sandbox:verify] [+${elapsed}ms] iter=${iteration} icacls PASS (${access === "rw" ? "RW" : "RO"}) — starting AC test #${acTestCount + 1}`,
+        );
+
+        acTestCount++;
+        const acOk = await verifyAclFromAppContainer(dir);
+        const acElapsed = Date.now() - start;
+
+        if (acOk) {
+          console.log(
+            `[sandbox:verify] [+${acElapsed}ms] AC test PASS — verified (icacls_passes=${icaclsPassCount} ac_tests=${acTestCount})`,
+          );
+          return true;
+        }
+
+        console.log(
+          `[sandbox:verify] [+${acElapsed}ms] AC test FAIL #${acTestCount} (icacls passed but AC can't access — likely ancestor traverse issue)`,
+        );
+
+        // After first AC failure: attempt ancestor traverse repair via elevated grant
+        if (!ancestorRepairAttempted && toolSandbox) {
+          ancestorRepairAttempted = true;
+          console.log(
+            `[sandbox:verify] [+${acElapsed}ms] attempting ancestor traverse repair (elevated)`,
+          );
+          try {
+            await toolSandbox.grantDirElevated(dir, access, false);
+            console.log(
+              `[sandbox:verify] [+${Date.now() - start}ms] ancestor traverse repair done — will retry AC test`,
+            );
+          } catch (err: any) {
+            console.warn(`[sandbox:verify] ancestor traverse repair failed: ${err.message}`);
+          }
+        }
+      } else {
+        if (iteration % 10 === 1) {
+          console.log(
+            `[sandbox:verify] [+${elapsed}ms] iter=${iteration} icacls: SID not found yet`,
+          );
+        }
+      }
+    } catch (err: any) {
+      if (iteration === 1) {
+        console.warn(`[sandbox:verify] [+${elapsed}ms] icacls error: ${err.message}`);
+      }
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+
+  const totalElapsed = Date.now() - start;
+  console.warn(
+    `[sandbox:verify] TIMEOUT after ${totalElapsed}ms — iterations=${iteration} icacls_passes=${icaclsPassCount} ac_tests=${acTestCount} ancestor_repair=${ancestorRepairAttempted}`,
+  );
+  return false;
+}
+
+/**
+ * Test directory access from inside an AppContainer process.
+ * This ensures the ACL has actually taken effect in the AC token cache,
+ * not just in the NTFS metadata (which icacls checks from outside).
+ */
+async function verifyAclFromAppContainer(dir: string): Promise<boolean> {
+  if (!toolSandbox?.isAvailable()) return true; // no sandbox = skip
+  const cleanDir = normalizeDirPath(dir);
+  const t0 = Date.now();
+  try {
+    const result = await toolSandbox.execShell("dir .", {
+      timeout: 8000,
+      skipSetup: true,
+      cwd: cleanDir,
+    });
+    const elapsed = Date.now() - t0;
+    if (result.exitCode === 0) {
+      console.log(`[sandbox:ac-test] PASS in ${elapsed}ms for: ${cleanDir}`);
+      return true;
+    }
+    console.log(
+      `[sandbox:ac-test] FAIL in ${elapsed}ms exit=${result.exitCode} for: ${cleanDir} stderr=${result.stderr?.substring(0, 300)}`,
+    );
+    return false;
+  } catch (err: any) {
+    console.log(`[sandbox:ac-test] ERROR in ${Date.now() - t0}ms for: ${cleanDir}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Heuristic: check if a directory likely needs admin elevation for ACL changes.
+ * Avoids the slow non-elevated attempt + failure + retry cycle for common cases.
+ */
+function likelyNeedsElevation(dir: string): boolean {
+  const norm = path.resolve(dir).toLowerCase();
+  const parts = norm.split(path.sep).filter(Boolean);
+  // Drive root (e.g. "C:\") — always needs admin
+  if (parts.length <= 1) return true;
+  // Top-level system directories (C:\Users, C:\Windows, C:\Program Files, etc.)
+  const topDir = parts[1];
+  const systemDirs = ["users", "windows", "program files", "program files (x86)", "programdata"];
+  if (parts.length === 2 && systemDirs.includes(topDir)) return true;
+  // User profile directories (C:\Users\<username>) — inheritance is protected
+  if (parts.length === 3 && topDir === "users") return true;
+  return false;
+}
+
+/**
+ * Grant ACL for a directory with verification and retry.
+ * Ensures the ACL is actually effective before returning.
+ */
+type AclGrantResult = "verified" | "grant-ok-verify-timeout" | "failed";
+
+async function grantAndVerifyAcl(dir: string, access: "rw" | "r"): Promise<AclGrantResult> {
+  if (!toolSandbox) return "failed";
+  const t0 = Date.now();
+  const log = (msg: string) => console.log(`[sandbox:grant] [+${Date.now() - t0}ms] ${msg}`);
+
+  // If the path doesn't exist, skip ACL grant entirely — there's nothing to
+  // set an ACL on, and attempting it would fail and trigger a UAC prompt.
+  // The path is still added to settings so the sandbox allows the agent to
+  // discover on its own that the path doesn't exist.
+  if (!fs.existsSync(dir)) {
+    log(`skip — path does not exist: ${dir}`);
+    return "verified";
+  }
+
+  // Heuristic: paths likely to need admin privileges for ACL modification.
+  // Skip the non-elevated attempt to avoid a slow failure + retry cycle.
+  const needsAdmin = likelyNeedsElevation(dir);
+  log(`start dir=${dir} access=${access} needsAdmin=${needsAdmin}`);
+
+  // First attempt: normal grant (skip if likely needs admin)
+  if (!needsAdmin) {
+    log(`grantDirAsync start (non-elevated)`);
+    const ok = await toolSandbox.grantDirAsync(dir, access, true);
+    log(`grantDirAsync result=${ok}`);
+    if (ok) {
+      // Shield sensitive subdirs (.ssh/.azure etc.) before verifying —
+      // must complete before the permission response file is written.
+      const launcherPath = toolSandbox.getStatus().launcherPath;
+      if (launcherPath) {
+        log(`shieldIfNeeded start`);
+        const shielded = await shieldIfNeeded(launcherPath, "MicroClaw", dir).catch((e: any) => {
+          log(`shieldIfNeeded error: ${e.message}`);
+          return [] as string[];
+        });
+        log(`shieldIfNeeded done: ${shielded.length} dirs shielded`);
+      }
+      log(`verifyAclPropagation start`);
+      const verified = await verifyAclPropagation(dir, access);
+      log(`verifyAclPropagation result=${verified}`);
+      if (verified) return "verified";
+      // Grant call returned success but verification timed out.
+      // ACL is on disk — proceed optimistically.
+      log(`grant OK but verify timed out — proceeding optimistically`);
+      return "grant-ok-verify-timeout";
+    }
+    log(`non-elevated grant failed — trying elevated`);
+  }
+
+  // Second attempt (or first if needsAdmin): elevated (UAC) grant
+  log(`grantDirElevated start`);
+  const ok = await toolSandbox.grantDirElevated(dir, access, true);
+  log(`grantDirElevated result=${ok}`);
+  if (ok) {
+    // Shield sensitive subdirs after elevated grant too
+    const launcherPath = toolSandbox.getStatus().launcherPath;
+    if (launcherPath) {
+      log(`shieldIfNeeded start (post-elevated)`);
+      const shielded = await shieldIfNeeded(launcherPath, "MicroClaw", dir).catch((e: any) => {
+        log(`shieldIfNeeded error: ${e.message}`);
+        return [] as string[];
+      });
+      log(`shieldIfNeeded done: ${shielded.length} dirs shielded`);
+    }
+    log(`verifyAclPropagation start (post-elevated)`);
+    const verified = await verifyAclPropagation(dir, access);
+    log(`verifyAclPropagation result=${verified}`);
+    if (verified) return "verified";
+    // Elevated grant returned success but verification timed out.
+    log(`elevated grant OK but verify timed out — proceeding optimistically`);
+    return "grant-ok-verify-timeout";
+  }
+
+  log(`ALL grant attempts failed`);
+  return "failed";
+}
+
+/**
+ * Revoke ACL for a directory, with unshield of sensitive subdirs beforehand.
+ *
+ * ALL revoke operations should go through this function to ensure
+ * sensitive subdirs (.ssh, .azure, etc.) have their inheritance restored
+ * before the parent ACE is removed.
+ */
+async function revokeWithUnshield(dir: string): Promise<boolean> {
+  if (!toolSandbox) return false;
+  // Unshield sensitive subdirs first (restore inheritance)
+  const launcherPath = toolSandbox.getStatus().launcherPath;
+  if (launcherPath) {
+    await unshieldIfNeeded(launcherPath, "MicroClaw", dir).catch(() => {});
+  }
+  let ok = await toolSandbox.revokeDirAsync(dir);
+  if (!ok) ok = await toolSandbox.revokeDirElevated(dir);
+  return ok;
+}
+
+/**
+ * Check if an icacls output contains any EXPLICIT (non-inherited) ACE for the SID.
+ * icacls marks inherited entries with (I). An ACE line without (I) is explicit.
+ */
+function hasExplicitSidAce(icaclsOutput: string, sid: string): boolean {
+  const lines = icaclsOutput.split(/\r?\n/);
+  for (const line of lines) {
+    const sidIdx = line.indexOf(sid);
+    if (sidIdx < 0) continue;
+    const afterSid = line.substring(sidIdx + sid.length);
+    // Inherited ACEs contain (I) — if this line doesn't, it's explicit
+    if (!/\(I\)/.test(afterSid)) return true;
+  }
+  return false;
+}
+
+/**
+ * After revoking a directory, re-grant ACLs for any child dirs still in settings.
+ * Revoking a parent removes inherited ACEs from children and may also remove
+ * explicit ACEs from protected children (via RevokeProtectedChildren).
+ */
+async function regrantChildDirsInSettings(revokedDir: string): Promise<void> {
+  if (!toolSandbox) return;
+  const rwDirs = settingsStore.get("sandboxUserDirsRW");
+  const roDirs = settingsStore.get("sandboxUserDirsRO");
+
+  for (const dir of rwDirs) {
+    if (isSubdirectoryOf(revokedDir, dir) && fs.existsSync(dir)) {
+      console.log(`[sandbox] Re-granting child RW dir after parent revoke: ${dir}`);
+      await grantAndVerifyAcl(normalizeDirPath(dir), "rw");
+    }
+  }
+  for (const dir of roDirs) {
+    if (isSubdirectoryOf(revokedDir, dir) && fs.existsSync(dir)) {
+      console.log(`[sandbox] Re-granting child RO dir after parent revoke: ${dir}`);
+      await grantAndVerifyAcl(normalizeDirPath(dir), "r");
+    }
+  }
+}
+
+/**
+ * Silently remove child dirs from settings that are now redundant because
+ * a parent dir was just granted.  Used by runtime permission responses
+ * (where we don't want a UI prompt — the grant is already approved).
+ *
+ * Rules:
+ *   parent RW → remove child RW (covered) + child RO (inherited RW > RO)
+ *   parent RO → remove child RO (covered), keep child RW (higher access)
+ */
+async function silentCleanupRedundantChildren(
+  parentDir: string,
+  parentAccess: "rw" | "ro",
+): Promise<void> {
+  const rwDirs = settingsStore.get("sandboxUserDirsRW");
+  const roDirs = settingsStore.get("sandboxUserDirsRO");
+  let changed = false;
+
+  if (parentAccess === "rw") {
+    const childRW = rwDirs.filter((d: string) => d !== parentDir && isSubdirectoryOf(parentDir, d));
+    const childRO = roDirs.filter((d: string) => isSubdirectoryOf(parentDir, d));
+    for (const child of [...childRW, ...childRO]) {
+      if (toolSandbox) {
+        await revokeWithUnshield(child).catch(() => {});
+        if (childRW.includes(child)) toolSandbox.removeDirRW(child);
+        else toolSandbox.removeDirRO(child);
+      }
+      removeFromGrantHistory(child);
+    }
+    if (childRW.length > 0) {
+      settingsStore.set(
+        "sandboxUserDirsRW",
+        rwDirs.filter((d: string) => !childRW.includes(d)),
+      );
+      changed = true;
+    }
+    if (childRO.length > 0) {
+      settingsStore.set(
+        "sandboxUserDirsRO",
+        roDirs.filter((d: string) => !childRO.includes(d)),
+      );
+      changed = true;
+    }
+    if (childRW.length + childRO.length > 0) {
+      console.log(
+        `[sandbox] Silent cleanup: removed ${childRW.length + childRO.length} child dir(s) covered by parent RW "${parentDir}"`,
+      );
+    }
+  } else {
+    const childRO = roDirs.filter((d: string) => d !== parentDir && isSubdirectoryOf(parentDir, d));
+    for (const child of childRO) {
+      if (toolSandbox) {
+        await revokeWithUnshield(child).catch(() => {});
+        toolSandbox.removeDirRO(child);
+      }
+      removeFromGrantHistory(child);
+    }
+    if (childRO.length > 0) {
+      settingsStore.set(
+        "sandboxUserDirsRO",
+        roDirs.filter((d: string) => !childRO.includes(d)),
+      );
+      changed = true;
+      console.log(
+        `[sandbox] Silent cleanup: removed ${childRO.length} child RO dir(s) covered by parent RO "${parentDir}"`,
+      );
+    }
+
+    // Re-grant child RW dirs so their explicit ACE takes precedence
+    // over the parent's inherited RO ACE.
+    const childRW = rwDirs.filter((d: string) => isSubdirectoryOf(parentDir, d));
+    if (toolSandbox) {
+      for (const childDir of childRW) {
+        if (fs.existsSync(childDir)) {
+          console.log(`[sandbox] Re-granting child RW dir after parent RO grant: ${childDir}`);
+          await grantAndVerifyAcl(normalizeDirPath(childDir), "rw");
+        }
+      }
+    }
+  }
+
+  if (changed) notifySandboxDirsChanged();
+}
+
+function isConfigured(): boolean {
+  const config = readConfig();
+  return !!config?.gateway;
+}
+
+/**
+ * Check if the user still needs to configure a model provider.
+ * Returns true when there is no explicit custom provider, selected GitHub
+ * Copilot model, or MODEL_API_KEY in .env.
+ *
+ * When MODEL_API_KEY IS present in .env but openclaw.json has no provider,
+ * auto-configures the provider from .env values before returning false.
+ */
+function needsSetup(): boolean {
+  const config = readConfig();
+  if (hasConfiguredModel(config)) return false;
+  // Also check .env for MODEL_API_KEY
+  const env = loadStateDirEnv();
+  if (env.MODEL_API_KEY || env.OPENCLAW_MODEL_API_KEY) {
+    // .env has API key but openclaw.json has no provider — auto-configure
+    autoConfigureModelFromEnv(config || {}, env);
+    return false;
+  }
+  return true;
+}
+
+type AutoConfigApiFormat = "openai-chat" | "openai-responses" | "anthropic";
+type AutoConfigReasoningEffort =
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+
+function normalizeEnvApiFormat(value: string | undefined): AutoConfigApiFormat {
+  const normalized = (value || "").trim().toLowerCase();
+  if (normalized === "anthropic" || normalized === "anthropic-messages") return "anthropic";
+  if (normalized === "openai-responses" || normalized === "responses" || normalized === "response")
+    return "openai-responses";
+  return "openai-chat";
+}
+
+function normalizeEnvReasoningEffort(
+  value: string | undefined,
+): AutoConfigReasoningEffort | undefined {
+  const normalized = (value || "").trim().toLowerCase();
+  if (
+    normalized === "off" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh" ||
+    normalized === "adaptive"
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
+/**
+ * Auto-write a model provider to openclaw.json from .env values.
+ * Called when .env has MODEL_API_KEY but openclaw.json has no providers section.
+ * Supports optional MODEL_API_FORMAT / OPENCLAW_MODEL_API_FORMAT and
+ * MODEL_REASONING_EFFORT / OPENCLAW_MODEL_REASONING_EFFORT.
+ */
+function autoConfigureModelFromEnv(config: any, env: Record<string, string>): void {
+  try {
+    const baseUrl = env.MODEL_BASE_URL || "";
+    const modelName = env.MODEL_NAME || "gpt-4o";
+    const bareModel = modelName.includes("/") ? modelName.split("/").pop()! : modelName;
+    const apiFormat = normalizeEnvApiFormat(env.OPENCLAW_MODEL_API_FORMAT || env.MODEL_API_FORMAT);
+    const configuredReasoning = normalizeEnvReasoningEffort(
+      env.OPENCLAW_MODEL_REASONING_EFFORT ||
+        env.MODEL_REASONING_EFFORT ||
+        env.OPENCLAW_MODEL_THINKING ||
+        env.MODEL_THINKING,
+    );
+    const reasoningEffort =
+      configuredReasoning ?? (apiFormat === "openai-responses" ? "low" : undefined);
+    const providerId = apiFormat === "anthropic" ? "anthropic" : "custom";
+    const modelRef = `${providerId}/${bareModel}`;
+
+    // Determine API key env var name — prefer OPENCLAW_MODEL_API_KEY for consistency
+    const apiKeyRef = env.OPENCLAW_MODEL_API_KEY ? "${OPENCLAW_MODEL_API_KEY}" : "${MODEL_API_KEY}";
+
+    const reasoningEnabled =
+      apiFormat === "openai-responses" ||
+      (reasoningEffort !== undefined && reasoningEffort !== "off");
+    const providerApi =
+      apiFormat === "anthropic"
+        ? "anthropic-messages"
+        : apiFormat === "openai-responses"
+          ? "openai-responses"
+          : "openai-completions";
+
+    const providerEntry: Record<string, any> = {
+      apiKey: apiKeyRef,
+      api: providerApi,
+      models: [
+        {
+          id: bareModel,
+          name: bareModel,
+          ...(reasoningEnabled ? { reasoning: true } : {}),
+          ...(apiFormat !== "anthropic" ? { input: ["text", "image"] } : {}),
+        },
+      ],
+    };
+    if (baseUrl) {
+      let apiUrl = baseUrl.replace(/\/+$/, "");
+      if (!apiUrl.endsWith("/v1")) apiUrl += "/v1";
+      providerEntry.baseUrl = apiUrl;
+    }
+
+    if (!config.models) config.models = { mode: "merge", providers: {} };
+    if (!config.models.providers) config.models.providers = {};
+    config.models.providers[providerId] = providerEntry;
+
+    if (!config.agents) config.agents = { defaults: {} };
+    if (!config.agents.defaults) config.agents.defaults = {};
+    if (!config.agents.defaults.model) config.agents.defaults.model = {};
+    config.agents.defaults.model.primary = modelRef;
+    if (apiFormat === "openai-responses" || reasoningEffort !== undefined) {
+      if (!config.agents.defaults.models) config.agents.defaults.models = {};
+      const existingModelConfig =
+        typeof config.agents.defaults.models[modelRef] === "object" &&
+        config.agents.defaults.models[modelRef]
+          ? config.agents.defaults.models[modelRef]
+          : {};
+      config.agents.defaults.models[modelRef] = {
+        ...existingModelConfig,
+        params: {
+          ...(existingModelConfig.params ?? {}),
+          thinking: reasoningEffort ?? "off",
+        },
+      };
+    }
+
+    // Write OPENCLAW_MODEL_API_KEY to .env if only MODEL_API_KEY exists
+    if (env.MODEL_API_KEY && !env.OPENCLAW_MODEL_API_KEY) {
+      const envPath = path.join(getOpenClawStateDir(), ".env");
+      try {
+        let content = fs.readFileSync(envPath, "utf-8");
+        if (!content.includes("OPENCLAW_MODEL_API_KEY")) {
+          content += `\nOPENCLAW_MODEL_API_KEY=${env.MODEL_API_KEY}\n`;
+          fs.writeFileSync(envPath, content, "utf-8");
+        }
+      } catch {}
+    }
+
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    console.log(`[config] Auto-configured model from .env: ${modelRef} (${providerApi})`);
+  } catch (err: any) {
+    console.error(`[config] Failed to auto-configure model from .env: ${err.message}`);
+  }
+}
+
+/**
+ * Enable plugins required by the selected model and keep enabled plugin entries
+ * in plugins.allow so the gateway loads them synchronously at startup.
+ */
+function ensurePluginsAllow(): void {
+  try {
+    if (isWindowsNodeMxcDesired()) return;
+    const config = readConfig();
+    if (!config) return;
+    let changed = ensureSelectedModelProviderPlugins(config);
+    if (!config?.plugins?.entries) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
+    const entries = config.plugins.entries as Record<string, { enabled?: boolean }>;
+    const enabledIds = Object.keys(entries).filter((id) => entries[id].enabled);
+    if (enabledIds.length === 0) {
+      if (changed) fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      return;
+    }
+
+    if (!Array.isArray(config.plugins.allow)) {
+      config.plugins.allow = [];
+      changed = true;
+    }
+    for (const id of enabledIds) {
+      if (!config.plugins.allow.includes(id)) {
+        config.plugins.allow.push(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      console.log(`[config] Updated plugins.allow: ${config.plugins.allow.join(", ")}`);
+    }
+  } catch (err) {
+    console.error("[config] Failed to update plugins.allow:", err);
+  }
+}
+
+/**
+ * Ensure the default MicroClaw persona exists in the OpenClaw roster.
+ * Preserve OpenClaw 2026.8.2's keyed roster and explicit ownership after doctor
+ * migration, while retaining support for legacy input. Entries are preserved by
+ * id and the config is only rewritten when something changes.
+ */
+function prepareAgentPersonas(
+  stateDir: string,
+): { config: AgentRosterConfig; changed: boolean } | null {
+  const config = readConfig();
+  if (!config) return null;
+  const result = ensureAgentPersonasConfig(config, stateDir);
+  return { config, changed: result.changed };
+}
+
+function persistAgentPersonas(config: AgentRosterConfig): void {
+  writeConfigTextAtomically(JSON.stringify(config, null, 2));
+  console.log(
+    `[config] Registered agent personas: ${listConfiguredAgents(config)
+      .map((agent) => agent.id)
+      .join(", ")}`,
+  );
+}
+
+function writeConfigTextAtomically(contents: string): void {
+  const configPath = getConfigPath();
+  const temporaryPath = `${configPath}.microclaw-${process.pid}-${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, contents, "utf-8");
+  try {
+    fs.renameSync(temporaryPath, configPath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
+}
+
+function failForExternalGateway(port: number): never {
+  const message =
+    `Agent or owned-skill state requires reconciliation, but Gateway port ${port} ` +
+    "is owned by another process. Stop that Gateway and retry so MicroClaw can apply it safely.";
+  setGatewayStatus("failed");
+  mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+  throw new Error(message);
+}
+
+function seedSpecialistAgentWorkspaces(
+  config: AgentRosterConfig,
+  stateDir: string,
+  entryPath: string,
+  gatewayEnvironment: Record<string, string>,
+): string[] {
+  const seededFiles = seedAgentPersonaWorkspaces(
+    config,
+    stateDir,
+    DECLARE_ACCESS_SECTION,
+    gatewayEnvironment,
+    os.homedir(),
+    path.dirname(entryPath),
+  );
+  if (seededFiles.length > 0) {
+    console.log(`[seed] Created specialist agent workspace files: ${seededFiles.join(", ")}`);
+  }
+  return seededFiles;
+}
+
+interface WorkspaceSnapshot {
+  directory: string;
+  directoryExisted: boolean;
+  files: Array<{ path: string; contents: string | null }>;
+}
+
+function captureAgentWorkspace(
+  config: AgentRosterConfig,
+  stateDir: string,
+  persona: AgentPersona,
+  gatewayEnvironment: Record<string, string>,
+  entryPath: string,
+): WorkspaceSnapshot | null {
+  if (!persona.workspaceFiles) return null;
+  const directory = resolveAgentPersonaWorkspace(
+    config,
+    stateDir,
+    persona,
+    gatewayEnvironment,
+    os.homedir(),
+    path.dirname(entryPath),
+  );
+  return {
+    directory,
+    directoryExisted: fs.existsSync(directory),
+    files: Object.keys(persona.workspaceFiles).map((filename) => {
+      const filePath = path.join(directory, filename);
+      return {
+        path: filePath,
+        contents: fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : null,
+      };
+    }),
+  };
+}
+
+function restoreAgentWorkspace(snapshot: WorkspaceSnapshot | null): void {
+  if (!snapshot) return;
+  for (const file of snapshot.files) {
+    if (file.contents === null) {
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } else {
+      fs.writeFileSync(file.path, file.contents, "utf-8");
+    }
+  }
+  if (
+    !snapshot.directoryExisted &&
+    fs.existsSync(snapshot.directory) &&
+    fs.readdirSync(snapshot.directory).length === 0
+  ) {
+    fs.rmdirSync(snapshot.directory);
+  }
+}
+
+function captureAgentWorkspaces(
+  config: AgentRosterConfig,
+  stateDir: string,
+  gatewayEnvironment: Record<string, string>,
+  entryPath: string,
+): WorkspaceSnapshot[] {
+  const configuredIds = new Set(listConfiguredAgents(config).map((agent) => agent.id));
+  return AGENT_PERSONAS.flatMap((persona) => {
+    if (!configuredIds.has(persona.id)) return [];
+    const snapshot = captureAgentWorkspace(
+      config,
+      stateDir,
+      persona,
+      gatewayEnvironment,
+      entryPath,
+    );
+    return snapshot ? [snapshot] : [];
+  });
+}
+
+function restoreAgentWorkspaces(snapshots: readonly WorkspaceSnapshot[]): void {
+  for (const snapshot of [...snapshots].reverse()) {
+    restoreAgentWorkspace(snapshot);
+  }
+}
+
+async function applyGatewayAgentRoster(
+  agentId: string,
+  shouldExist: boolean,
+  restartGateway?: () => Promise<void>,
+) {
+  if (!gwClient?.connected) throw new Error("Gateway not connected");
+  return await applyAgentRosterReload({
+    listAgentIds: async () => {
+      const result = await gwClient!.listAgents();
+      if (!Array.isArray(result.agents))
+        throw new Error("OpenClaw returned an invalid agent roster");
+      return new Set(
+        result.agents.flatMap((candidate) => {
+          if (
+            typeof candidate !== "object" ||
+            candidate === null ||
+            typeof (candidate as { id?: unknown }).id !== "string"
+          ) {
+            return [];
+          }
+          return [(candidate as { id: string }).id];
+        }),
+      );
+    },
+    isApplied: (agentIds) => agentIds.has(agentId) === shouldExist,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    timeoutMs: 45_000,
+    pollMs: 100,
+    restartGateway,
+  });
+}
+
+async function addCatalogAgent(
+  agentId: string,
+): Promise<{ agents: Array<{ id: string; name: string }> }> {
+  const persona = getAgentPersona(agentId);
+  if (!persona || DEFAULT_AGENT_PERSONAS.some((candidate) => candidate.id === agentId)) {
+    throw new Error(`Unknown installable agent template "${agentId}"`);
+  }
+
+  const stateDir = getOpenClawStateDir();
+  const configPath = getConfigPath();
+  const originalConfigText = fs.readFileSync(configPath, "utf-8");
+  const config = readConfig();
+  if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+  const result = ensureAgentPersonasConfig(config, stateDir, [...DEFAULT_AGENT_PERSONAS, persona]);
+  const skillConfigChanged = setAgentOwnedSkillsEnabled(config, agentId, true);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot add agent "${agentId}" with an externally managed Gateway`);
+  }
+
+  const entryPath = resolveOpenClawEntry();
+  const gatewayEnvironment = loadGatewayEnvironment(stateDir);
+  const workspaceSnapshot = captureAgentWorkspace(
+    config,
+    stateDir,
+    persona,
+    gatewayEnvironment,
+    entryPath,
+  );
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  let skillInstalls: ReturnType<typeof installAgentOwnedSkills> = [];
+  let restartAttempted = false;
+
+  try {
+    skillInstalls = installAgentOwnedSkills(agentId, stateDir, agentSkillBundleRoot, {
+      isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+    });
+    const skillRuntimeChanged =
+      skillConfigChanged || skillInstalls.some(agentOwnedSkillInstallChanged);
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
+    seedAgentPersonaWorkspace(
+      config,
+      stateDir,
+      persona,
+      DECLARE_ACCESS_SECTION,
+      gatewayEnvironment,
+      os.homedir(),
+      path.dirname(entryPath),
+    );
+    persistAgentPersonas(config);
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Installing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, true);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
+        agentId,
+        true,
+        managedGateway
+          ? async () => {
+              restartAttempted = true;
+              await restartManagedGatewayAndRequireReady(
+                `Adding agent ${agentId} after hot-reload timeout`,
+              );
+            }
+          : undefined,
+      );
+    }
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload added agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      acceptManagedSkillIntegrityChanges(
+        skillInstalls.filter(agentOwnedSkillInstallChanged).map((install) => ({
+          skillName: install.skillId,
+          expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+        })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillInstalls(skillInstalls);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill upgrade: ${deferredCleanup.join(", ")}`,
+      );
+    }
+    console.log(`[agents] Added ${agentId} via ${applyResult}`);
+    return { agents: listConfiguredAgents(config) };
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      writeConfigTextAtomically(originalConfigText);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      restoreAgentWorkspace(workspaceSnapshot);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillInstalls(skillInstalls);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillInstalls.some(agentOwnedSkillInstallChanged)) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (restartAttempted && managedGateway) {
+      try {
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent addition ${agentId}`);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Failed to add agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+async function removeCatalogAgent(
+  agentId: string,
+): Promise<{ agents: Array<{ id: string; name: string }> }> {
+  const persona = getAgentPersona(agentId);
+  if (!persona || DEFAULT_AGENT_PERSONAS.some((candidate) => candidate.id === agentId)) {
+    throw new Error(`Unknown removable agent "${agentId}"`);
+  }
+
+  const stateDir = getOpenClawStateDir();
+  const configPath = getConfigPath();
+  const originalConfigText = fs.readFileSync(configPath, "utf-8");
+  const config = readConfig();
+  if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+  ensureAgentPersonasConfig(config, stateDir);
+  const result = removeConfiguredAgent(config, agentId);
+  const skillConfigChanged = disableUnreferencedAgentOwnedSkills(config, agentId);
+  const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+  if (agentOwnedSkillMatchNames(agentId).length > 0 && !managedGateway) {
+    throw new Error(`Cannot remove agent "${agentId}" with an externally managed Gateway`);
+  }
+
+  const integritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  let skillRemovals: ReturnType<typeof prepareUnusedAgentOwnedSkillRemoval> = [];
+  let restartAttempted = false;
+  try {
+    skillRemovals = prepareUnusedAgentOwnedSkillRemoval(
+      config,
+      agentId,
+      stateDir,
+      resolveAgentOwnedSkillBundleRoot(app.isPackaged, process.resourcesPath),
+      { isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot },
+    );
+    const skillRuntimeChanged = skillConfigChanged || skillRemovals.length > 0;
+    if (!result.changed && !skillRuntimeChanged) {
+      return { agents: listConfiguredAgents(config) };
+    }
+    persistAgentPersonas(config);
+    let applyResult: "hot-reloaded" | "restarted" | "timed-out";
+    if (skillRuntimeChanged) {
+      restartAttempted = true;
+      await restartManagedGatewayAndRequireReady(`Removing agent-owned skills for ${agentId}`);
+      applyResult = await applyGatewayAgentRoster(agentId, false);
+    } else {
+      applyResult = await applyGatewayAgentRoster(
+        agentId,
+        false,
+        managedGateway
+          ? async () => {
+              restartAttempted = true;
+              await restartManagedGatewayAndRequireReady(
+                `Removing agent ${agentId} after hot-reload timeout`,
+              );
+            }
+          : undefined,
+      );
+    }
+    if (applyResult === "timed-out") {
+      throw new Error(
+        `Gateway did not hot-reload removed agent "${agentId}" and is externally managed`,
+      );
+    }
+    if (skillRemovals.length > 0) {
+      acceptManagedSkillIntegrityChanges(
+        skillRemovals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(skillRemovals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[agents] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
+      );
+    }
+    console.log(`[agents] Removed ${agentId} via ${applyResult}`);
+    return { agents: listConfiguredAgents(config) };
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    try {
+      writeConfigTextAtomically(originalConfigText);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      rollbackAgentOwnedSkillRemovals(skillRemovals);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (skillRemovals.length > 0) {
+      try {
+        restoreSkillIntegritySnapshotState(integritySnapshot, stateDir);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (restartAttempted && managedGateway) {
+      try {
+        await restartManagedGatewayAndRequireReady(`Rolling back failed agent removal ${agentId}`);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Failed to remove agent "${agentId}" and fully restore the previous state`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Renderer URL (Vite dev server vs built files)
+// ---------------------------------------------------------------------------
+// In local development, prefer the Vite dev server. Packaged builds always use renderer/dist.
+const isDev = !app.isPackaged;
+const VITE_DEV_URL = "http://localhost:5174";
+const APP_ICON_PATH = path.join(
+  __dirname,
+  process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
+);
+const TRANSPARENT_WINDOW_BACKGROUND = "#00000000";
+
+function _getRendererURL(): string {
+  if (isDev) return VITE_DEV_URL;
+  return `file://${path.join(__dirname, "../renderer/dist/index.html")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Window creation
+// ---------------------------------------------------------------------------
+function createMainWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: LOADING_WINDOW_WIDTH,
+    height: LOADING_WINDOW_HEIGHT,
+    resizable: false,
+    center: true,
+    title: "MicroClaw",
+    icon: APP_ICON_PATH,
+    show: false,
+    skipTaskbar: false,
+    titleBarStyle: "hidden",
+    transparent: true,
+    backgroundColor: TRANSPARENT_WINDOW_BACKGROUND,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  // Defer minimum-size enforcement because the loading window intentionally
+  // starts smaller than the main app's minimum dimensions.
+  win.on("will-resize", (event, newBounds) => {
+    const currentBounds = win.getBounds();
+    if (
+      (newBounds.width < MIN_WINDOW_WIDTH && newBounds.width < currentBounds.width) ||
+      (newBounds.height < MIN_WINDOW_HEIGHT && newBounds.height < currentBounds.height)
+    ) {
+      event.preventDefault();
+    }
+  });
+
+  // Save bounds only after the window has expanded to full size.
+  let saveBoundsRegistered = false;
+  const registerSaveBounds = () => {
+    if (saveBoundsRegistered) return;
+    saveBoundsRegistered = true;
+    let saveBoundsTimer: ReturnType<typeof setTimeout> | null = null;
+    const saveBounds = () => {
+      if (saveBoundsTimer) clearTimeout(saveBoundsTimer);
+      saveBoundsTimer = setTimeout(() => {
+        if (!win.isMinimized() && !win.isMaximized()) {
+          store.set("windowBounds", win.getBounds());
+        }
+      }, 300);
+    };
+    win.on("resize", saveBounds);
+    win.on("move", saveBounds);
+  };
+  (win as any).__registerSaveBounds = registerSaveBounds;
+
+  // Forward maximize/unmaximize state to renderer
+  win.on("maximize", () => win.webContents.send("window:maximize-change", true));
+  win.on("unmaximize", () => win.webContents.send("window:maximize-change", false));
+
+  Menu.setApplicationMenu(null);
+  if (isDev) win.webContents.openDevTools({ mode: "detach" });
+  const showWindowOnStartup = () => showAndFocusWindow(win);
+  win.once("ready-to-show", showWindowOnStartup);
+  win.webContents.once("did-finish-load", showWindowOnStartup);
+
+  // Open external links in the default browser instead of navigating the app
+  win.webContents.on("will-navigate", (event, url) => {
+    // Allow navigation to our own renderer pages (dev server or file://)
+    if (url.startsWith("file://") || url.startsWith("http://localhost")) return;
+    event.preventDefault();
+    // Only open http(s) URLs in the system browser; block javascript:, data:, etc.
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      shell.openExternal(url);
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  return win;
+}
+
+// ---------------------------------------------------------------------------
+// Gateway management
+// ---------------------------------------------------------------------------
+
+/** Check if an existing gateway is running on the given port */
+function checkExistingGateway(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(
+      `http://127.0.0.1:${port}/health`,
+      { timeout: HEALTH_CHECK_HTTP_TIMEOUT_MS },
+      (res) => resolve(res.statusCode === 200),
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function isGatewayPortOccupied(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (occupied: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(occupied);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(1_000, () => finish(false));
+  });
+}
+
+/** Resolve AppContainerLauncher.exe path, or null if unavailable. */
+function resolveAppContainerLauncher(): string | null {
+  if (process.platform !== "win32") return null;
+  const candidates = [
+    app.isPackaged ? path.join(process.resourcesPath, "AppContainerLauncher.exe") : "",
+    path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "appcontainer",
+      "bin",
+      "Release",
+      "net9.0-windows",
+      "win-x64",
+      "AppContainerLauncher.exe",
+    ),
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** Wait for gateway health check to pass */
+async function waitForGatewayReady(
+  port: number,
+  timeoutMs = GATEWAY_READY_TIMEOUT_MS,
+  isProcessAlive: () => boolean = () => true,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive()) return false;
+    const ok = await checkExistingGateway(port);
+    if (ok) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/** Kill the managed gateway and any listener still holding gatewayPort. */
+/**
+ * Command line of `pid`, or null when it cannot be read.
+ *
+ * The Gateway port proves nothing by itself: a separately installed OpenClaw
+ * run by the same user listens on the same default port. The command line is
+ * what tells the two installations apart.
+ */
+function readProcessCommandLine(pid: number): string | null {
+  if (process.platform !== "win32") return null;
+  try {
+    const output = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+      ],
+      { windowsHide: true, encoding: "utf-8", timeout: 10_000 },
+    ).trim();
+    return output.length > 0 ? output : null;
+  } catch {
+    // An unreadable command line is treated as "not ours" by the caller.
+    return null;
+  }
+}
+
+/** True only when `pid` runs the exact OpenClaw entry this installation spawns. */
+function isOwnedGatewayProcess(pid: number): boolean {
+  const entryPath = managedGatewayEntryPath;
+  if (!entryPath) return false;
+  const commandLine = readProcessCommandLine(pid);
+  return commandLine !== null && commandLine.includes(entryPath);
+}
+
+/** PIDs LISTENING on `port`, or null when the scan itself failed. */
+function findListeningPids(port: number): number[] | null {
+  if (!port || process.platform !== "win32") return null;
+  try {
+    const result = execFileSync("netstat", ["-ano"], {
+      windowsHide: true,
+      encoding: "utf-8",
+      timeout: 5_000,
+    });
+    const found: number[] = [];
+    for (const line of result.split(/\r?\n/)) {
+      const columns = line.trim().split(/\s+/);
+      if (
+        columns.length >= 5 &&
+        columns[0].toUpperCase() === "TCP" &&
+        columns[1].endsWith(`:${port}`) &&
+        columns[3].toUpperCase() === "LISTENING"
+      ) {
+        const pid = Number.parseInt(columns[4], 10);
+        if (Number.isInteger(pid) && pid > 0 && !found.includes(pid)) found.push(pid);
+      }
+    }
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+function stopGatewayProcess(): void {
+  stopBundledWindowsNodeHost();
+  windowsNodeMxcApprovalProofContext = null;
+  const knownPid = gatewayProcess?.pid;
+  gatewayProcess = null;
+  gatewaySpawnedByUs = false;
+  const pids = new Set<number>();
+  let listenerScanSucceeded = gatewayPort === 0;
+  let allGatewayProcessesStopped = process.platform === "win32";
+  if (knownPid) pids.add(knownPid);
+  if (gatewayPort && process.platform === "win32") {
+    const listeners = findListeningPids(gatewayPort);
+    if (listeners !== null) listenerScanSucceeded = true;
+    for (const pid of listeners ?? []) {
+      // Only a listener running this installation's own OpenClaw entry may be
+      // killed: a separately installed OpenClaw owned by the same user is not
+      // ours to stop, even when it happens to hold the same port.
+      if (isOwnedGatewayProcess(pid)) {
+        pids.add(pid);
+      } else {
+        console.warn(
+          `[gateway] leaving pid ${pid} on port ${gatewayPort} alone — it is not this installation's Gateway`,
+        );
+      }
+    }
+  }
+  for (const pid of pids) {
+    console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+    if (process.platform === "win32") {
+      try {
+        execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+          windowsHide: true,
+          timeout: 10_000,
+          stdio: "ignore",
+        });
+      } catch {
+        allGatewayProcessesStopped = false;
+      }
+    } else {
+      allGatewayProcessesStopped = false;
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
+    }
+  }
+  const stoppedGatewayConfirmed =
+    allGatewayProcessesStopped && (pids.size > 0 || listenerScanSucceeded);
+  if (stoppedGatewayConfirmed) {
+    try {
+      const result = cleanupStoppedGatewayWarmupSession(getOpenClawStateDir());
+      if (result.indexEntryRemoved) {
+        console.log(
+          `[gateway] removed deferred warm-up session and ${result.artifactsRemoved.length} artifact(s)`,
+        );
+      }
+    } catch (error) {
+      console.warn("[gateway] deferred warm-up session cleanup failed:", error);
+    }
+  }
+}
+
+function getGatewayListenerPids(port: number): Set<number> | null {
+  if (process.platform !== "win32") return null;
+  try {
+    const output = execFileSync("netstat", ["-ano"], {
+      windowsHide: true,
+      encoding: "utf-8",
+      timeout: 5_000,
+    });
+    const pids = new Set<number>();
+    for (const line of output.split(/\r?\n/)) {
+      const columns = line.trim().split(/\s+/);
+      if (
+        columns.length >= 5 &&
+        columns[0].toUpperCase() === "TCP" &&
+        columns[1].endsWith(`:${port}`) &&
+        columns[3].toUpperCase() === "LISTENING"
+      ) {
+        const pid = Number.parseInt(columns[4], 10);
+        if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+      }
+    }
+    return pids;
+  } catch {
+    return null;
+  }
+}
+
+function terminateGatewayProcessTree(pid: number): void {
+  try {
+    if (process.platform === "win32") {
+      execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        timeout: 10_000,
+        stdio: "ignore",
+      });
+    } else {
+      process.kill(pid, "SIGTERM");
+    }
+  } catch {
+    // Callers decide whether process-exit confirmation is required.
+  }
+}
+
+async function stopGatewayForSecurityTransition(port: number): Promise<void> {
+  pendingWindowsNodeMxcGatewayApproval = null;
+  sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
+  stopBundledWindowsNodeHost(true);
+  const managedPid =
+    gatewaySpawnedByUs && isManagedGatewayProcessAlive() ? gatewayProcess?.pid : undefined;
+  const listenerPids = getGatewayListenerPids(port);
+  if (listenerPids === null) {
+    if (await isGatewayPortOccupied(port)) {
+      throw new Error(
+        `Cannot prove ownership of the Gateway listener on port ${port}; security mode was not changed`,
+      );
+    }
+  } else if ([...listenerPids].some((pid) => pid !== managedPid)) {
+    throw new Error(
+      `Port ${port} is owned by an external process; stop it before changing security mode`,
+    );
+  }
+
+  windowsNodeMxcApprovalProofContext = null;
+  if (!managedPid) {
+    gwClient?.stop();
+    setGatewayStatus("stopped");
+    return;
+  }
+
+  gwClient?.stop();
+  gatewayProcess = null;
+  gatewaySpawnedByUs = false;
+  terminateGatewayProcessTree(managedPid);
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    let processAlive = true;
+    try {
+      process.kill(managedPid, 0);
+    } catch {
+      processAlive = false;
+    }
+    if (!processAlive && !(await isGatewayPortOccupied(port))) {
+      setGatewayStatus("stopped");
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  setGatewayStatus("failed");
+  throw new Error(
+    `Could not confirm that the previous Gateway stopped on port ${port}; MXC mode was not changed`,
+  );
+}
+
+async function failClosedWindowsNodeMxc(reason: string): Promise<void> {
+  if (!isWindowsNodeMxcDesired()) return;
+  if (windowsNodeMxcFailClosedPromise) return windowsNodeMxcFailClosedPromise;
+  const failClosed = (async () => {
+    windowsNodeMxcIngressGeneration = null;
+    setWindowsNodeMxcLifecycleState("locked", reason);
+    sendToWindow(mainWindow, "gateway:service-loading");
+    bundledWindowsNodeHost.revokeActivationLease();
+    const approvalResolution = windowsNodeMxcApprovalResolutionCompletion;
+    if (approvalResolution) await approvalResolution;
+    windowsNodeMxcActivationInProgress = false;
+    settingsStore.delete("windowsNodeMxcSmoke");
+    const message = `Windows Node + MXC relocked: ${reason}`;
+    console.error(`[windows-node-mxc] ${message}`);
+    mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+    mainWindow?.webContents.send("gateway:ws-disconnected", message);
+    try {
+      const config = readConfig();
+      if (config && typeof config === "object" && !Array.isArray(config)) {
+        const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+        const locked = applyWindowsNodeMxcGatewayPolicy(
+          config,
+          nodeId,
+          settingsStore.get("windowsNodeMxcToolBackups"),
+          "locked",
+        );
+        settingsStore.set("windowsNodeMxcToolBackups", locked.backups);
+        writeConfigTextAtomically(JSON.stringify(locked.config, null, 2));
+      }
+    } finally {
+      try {
+        await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+      } finally {
+        setGatewayStatus("failed");
+      }
+    }
+  })();
+  windowsNodeMxcFailClosedPromise = failClosed;
+  try {
+    await failClosed;
+  } finally {
+    if (windowsNodeMxcFailClosedPromise === failClosed) {
+      windowsNodeMxcFailClosedPromise = null;
+    }
+  }
+}
+
+async function restartManagedGateway(
+  reason: string,
+  allowDuringSecurityTransition = false,
+): Promise<void> {
+  if (windowsNodeMxcSecurityTransitionInProgress && !allowDuringSecurityTransition) {
+    throw new Error("Gateway restart is blocked during a Windows Node + MXC lifecycle operation");
+  }
+  if (gatewayRestartPromise) return gatewayRestartPromise;
+  const restart = (async () => {
+    gatewayRestarting = true;
+    setGatewayStatus("restarting");
+    mainWindow?.webContents.send("gateway:log", `[restart] ${reason}`);
+    try {
+      await hardRestartGateway({
+        stopClient: () => gwClient?.stop(),
+        stopProcess: stopGatewayProcess,
+        isPortOccupied: () => isGatewayPortOccupied(gatewayPort),
+        startGateway,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        timeoutMs: 8_000,
+        pollMs: 500,
+      });
+    } catch (error) {
+      setGatewayStatus("failed");
+      throw error;
+    } finally {
+      gatewayRestarting = false;
+    }
+  })();
+  gatewayRestartPromise = restart;
+  try {
+    await restart;
+  } finally {
+    if (gatewayRestartPromise === restart) gatewayRestartPromise = null;
+  }
+}
+
+async function restartManagedGatewayAndRequireReady(reason: string): Promise<void> {
+  await restartManagedGateway(reason);
+  if (gatewayStatus !== "running") {
+    throw new Error(`Gateway did not become ready after restart (status: ${gatewayStatus})`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Health monitor — auto-restart gateway if it goes down
+// ---------------------------------------------------------------------------
+function isManagedGatewayProcessAlive(): boolean {
+  return gatewayProcess !== null && gatewayProcess.exitCode === null && !gatewayProcess.killed;
+}
+
+function startHealthMonitor(): void {
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  let consecutiveFailures = 0;
+  let unresponsiveSince: number | null = null;
+  healthCheckInterval = setInterval(async () => {
+    // Skip during startup / intentional restart
+    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
+    if (!gatewayPort) return;
+    // Skip while gateway is blocked on a sync permission dialog (Atomics.wait)
+    if (pendingSyncPermissionRequests > 0) {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
+    if (isWindowsNodeMxcDesired()) {
+      // Pairing and internal proof-bound smokes are part of one activation transaction.
+      // Avoid a competing health attestation until that transaction settles.
+      if (windowsNodeMxcActivationInProgress || bundledWindowsNodeStartup) return;
+      const inspectedProcess = gatewayProcess;
+      try {
+        const status = await getWindowsNodeMxcStatus();
+        if (
+          !isWindowsNodeMxcDesired() ||
+          !inspectedProcess ||
+          gatewayProcess !== inspectedProcess ||
+          !isManagedGatewayProcessAlive()
+        ) {
+          return;
+        }
+        if (shouldStopManagedGatewayForWindowsNodeMxc(status)) {
+          await failClosedWindowsNodeMxc(
+            `Readiness drifted: ${status.blockers.join("; ") || "unknown readiness failure"}`,
+          );
+          return;
+        }
+        if (status.effectiveEnabled) {
+          try {
+            await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+          } catch (error) {
+            await failClosedWindowsNodeMxc(
+              `Activation lease renewal failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            throw error;
+          }
+        }
+      } catch (error) {
+        await failClosedWindowsNodeMxc(
+          `Health attestation failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+    }
+
+    const alive = await checkExistingGateway(gatewayPort);
+    if (alive) {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
+    if (gatewayStatus !== "running") {
+      consecutiveFailures = 0;
+      unresponsiveSince = null;
+      return;
+    }
+
+    if (isManagedGatewayProcessAlive()) {
+      consecutiveFailures = 0;
+      unresponsiveSince ??= Date.now();
+      const elapsedMs = Date.now() - unresponsiveSince;
+      const msg =
+        `[health-monitor] gateway unresponsive but process alive ` +
+        `(${Math.floor(elapsedMs / 1_000)}s/${HEALTH_CHECK_BUSY_GRACE_MS / 1_000}s) - likely busy`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("gateway:log", msg);
+      }
+      if (elapsedMs < HEALTH_CHECK_BUSY_GRACE_MS) return;
+      unresponsiveSince = null;
+
+      try {
+        await restartManagedGateway(
+          "Gateway process remained unresponsive beyond the busy grace period",
+        );
+      } catch (error) {
+        console.error("[health-monitor] Gateway restart failed:", error);
+      }
+      return;
+    }
+
+    unresponsiveSince = null;
+    consecutiveFailures += 1;
+    const msg = `[health-monitor] /health failed (${consecutiveFailures}/${HEALTH_CHECK_FAILURE_THRESHOLD})`;
+    console.log(msg);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("gateway:log", msg);
+    }
+    if (consecutiveFailures < HEALTH_CHECK_FAILURE_THRESHOLD) return;
+    consecutiveFailures = 0;
+
+    try {
+      await restartManagedGateway("Gateway health check failed; replacing process");
+    } catch (error) {
+      console.error("[health-monitor] Gateway restart failed:", error);
+    }
+  }, HEALTH_CHECK_INTERVAL_MS);
+}
+
+/** Check gateway health & reconnect if needed (called on window-show / focus) */
+async function ensureGatewayConnected(): Promise<void> {
+  if (
+    windowsNodeMxcSecurityTransitionInProgress ||
+    gatewayRestarting ||
+    gatewayStatus === "starting"
+  ) {
+    return;
+  }
+  if (!gatewayPort) return;
+
+  const alive = await checkExistingGateway(gatewayPort);
+  if (alive) {
+    // Gateway is up — if WS is not connected, reconnect
+    if (!gwClient?.connected) {
+      if (gatewayStatus !== "running") {
+        setGatewayStatus("running");
+      }
+      connectGatewayWs();
+    }
+  } else if (isManagedGatewayProcessAlive()) {
+    console.log(
+      "[ensure-gateway] Gateway not reachable but process is alive; health monitor will retry",
+    );
+  } else {
+    console.log("[ensure-gateway] Gateway not reachable — restarting...");
+    await restartManagedGateway("Gateway was unreachable when the window became active");
+  }
+}
+
+let gatewayStartInProgress = false;
+let gatewayStartPromise: Promise<void> | null = null;
+
+// ---------------------------------------------------------------------------
+// Remote channel notification — sends a simple message to WeChat when a
+// permission dialog is shown on the desktop and the session is remote.
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a WeChat text message directly from the Electron main process via HTTP.
+ * Used to notify remote users that a permission dialog is waiting on the desktop.
+ */
+function sendWeixinNotification(
+  source: { baseUrl: string; token?: string; userId: string; contextToken?: string },
+  text: string,
+): void {
+  try {
+    const clientId = `mc-notify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const msgPayload: Record<string, unknown> = {
+      from_user_id: "",
+      to_user_id: source.userId,
+      client_id: clientId,
+      message_type: 2,
+      message_state: 2,
+      item_list: [{ type: 1, text_item: { text } }],
+    };
+    if (source.contextToken) msgPayload.context_token = source.contextToken;
+    const bodyStr = JSON.stringify({ msg: msgPayload });
+    const uint32 = require("crypto").randomBytes(4).readUInt32BE(0);
+    const wechatUin = Buffer.from(String(uint32), "utf-8").toString("base64");
+    const urlStr =
+      (source.baseUrl.endsWith("/") ? source.baseUrl : source.baseUrl + "/") +
+      "ilink/bot/sendmessage";
+
+    const parsed = new URL(urlStr);
+    const mod = parsed.protocol === "https:" ? require("https") : require("http");
+    const req = mod.request(
+      urlStr,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          AuthorizationType: "ilink_bot_token",
+          "Content-Length": Buffer.byteLength(bodyStr, "utf-8"),
+          "X-WECHAT-UIN": wechatUin,
+          ...(source.token ? { Authorization: `Bearer ${source.token}` } : {}),
+        },
+        timeout: 15000,
+      },
+      (res: any) => {
+        let data = "";
+        res.on("data", (chunk: string) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          console.log(
+            `[remote-notify] WeChat API response: status=${res.statusCode} body=${data.slice(0, 200)}`,
+          );
+        });
+      },
+    );
+    req.on("error", (err: Error) => {
+      console.error(`[remote-notify] HTTP error: ${err.message}`);
+    });
+    req.write(bodyStr);
+    req.end();
+  } catch (err: any) {
+    console.error(`[remote-notify] Failed to send WeChat notification: ${err.message}`);
+  }
+}
+
+/**
+ * Notify the remote WeChat user that a permission dialog is waiting on the desktop.
+ *
+ * Keyed off the trusted context of the message being handled, not the bare
+ * "last input was remote" flag: only a message that really arrived through the
+ * trusted boundary may address a WeChat user.
+ */
+function notifyRemotePermissionNeeded(): void {
+  if (!activeTrustedContext || !cachedRemoteSource) return;
+  const lang = settingsStore.get("language") ?? "en-US";
+  sendWeixinNotification(cachedRemoteSource, mainT(lang, "perm.remoteNotify"));
+}
+
+/**
+ * Sends an approval card to the owner's bound WeChat chat.
+ *
+ * Passed to the IPC layer so the card the owner reads is the one the security
+ * core built. Without a bound chat the send is skipped: an approval nobody can
+ * see must not look like one that was delivered.
+ */
+async function sendPendingApprovalCard(message: string): Promise<void> {
+  if (!cachedRemoteSource) throw new Error("no-bound-chat");
+  sendWeixinNotification(cachedRemoteSource, message);
+}
+
+/**
+ * Handles one inbound message that arrived through the trusted channel boundary.
+ *
+ * Identity comes from the local WeChat↔device↔SID binding, never from the
+ * message, and the channel's message id is what de-duplicates a redelivery. A
+ * sender that is not the paired identity produces no task, so an unbound
+ * account cannot start work by sending text.
+ */
+function handleTrustedRemoteMessage(source: {
+  channelType: string;
+  userId: string;
+  accountId?: string;
+  messageId?: string;
+}): void {
+  if (!companyClawRuntime) return;
+  const context = buildTrustedRemoteContext({
+    channelAccountId: source.accountId ?? "",
+    senderId: source.userId ?? "",
+    conversationId: source.userId ?? "",
+    messageId: typeof source.messageId === "string" ? source.messageId : "",
+    receivedAt: Date.now(),
+    owner: companyClawRuntime.runtime.resolveRemoteOwner({
+      channelType: source.channelType,
+      channelUserId: source.userId ?? "",
+    }),
+  });
+  if (!context.ok) {
+    // Not the paired sender (or no message id): nothing to act on. This is
+    // reported rather than silently ignored so a mis-paired account is visible.
+    console.warn(`[companyclaw] Inbound remote message ignored: ${context.reason}`);
+    return;
+  }
+  if (!remoteMessageDedup.accept(context.context.messageId)) {
+    console.log(
+      `[companyclaw] Duplicate remote message ${context.context.messageId} ignored (already processed)`,
+    );
+    return;
+  }
+  activeTrustedContext = context.context;
+  void companyClawRuntime.runtime
+    .createTaskFromRemote({
+      channelType: context.context.channel,
+      channelUserId: context.context.senderId,
+      messageId: context.context.messageId,
+      objective: "",
+    })
+    .then((result) => {
+      if (!result.ok) {
+        console.warn(`[companyclaw] No task created for remote message: ${result.reason}`);
+        return;
+      }
+      const verb = result.resumed ? "resumed" : "created";
+      console.log(
+        `[companyclaw] Task ${verb} for remote message (task=${result.task.taskId}, owner=${result.task.ownerSid})`,
+      );
+    })
+    .catch((error) => {
+      console.error("[companyclaw] Failed to record the remote task:", error);
+    });
+}
+
+/** One skill's diagnostic status merged from `skills check` + `skills list --json`. */
+interface SkillStatusRecord {
+  skillKey: string;
+  name: string;
+  source: string;
+  bundled: boolean;
+  eligible: boolean;
+  disabled: boolean;
+  modelVisible: boolean;
+  commandVisible: boolean;
+  blockedByAllowlist: boolean;
+  blockedByAgentFilter: boolean;
+  missing: {
+    bins: string[];
+    anyBins: string[];
+    env: string[];
+    config: string[];
+    os: string[];
+  };
+}
+
+interface SkillsStatusResult {
+  ok: boolean;
+  error?: string;
+  summary: {
+    total: number;
+    modelVisible: number;
+  };
+  skills: SkillStatusRecord[];
+}
+
+/**
+ * OpenClaw's CLI prints a config-warning banner before its JSON payload. Strip
+ * everything before the first top-level `{` so the remainder parses cleanly.
+ */
+function stripJsonBanner(raw: string): string {
+  const start = raw.indexOf("{");
+  return start >= 0 ? raw.slice(start) : raw;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/**
+ * Merge the outputs of `skills list --agent <id> --json` (per-skill booleans +
+ * `missing`) and `skills check --agent <id> --json` (aggregate buckets +
+ * detailed `missingRequirements`) into one per-skill record list. `list` is the
+ * primary source; `check` supplies `missingRequirements` detail and the model-visible
+ * bucket. Either input may be null when its CLI call failed.
+ */
+function normalizeSkillsStatus(
+  listJson: Record<string, unknown> | null,
+  checkJson: Record<string, unknown> | null,
+): SkillStatusRecord[] {
+  // Detailed missing-requirement info keyed by skill name from `check`.
+  const missingByName = new Map<
+    string,
+    { bins: string[]; anyBins: string[]; env: string[]; config: string[]; os: string[] }
+  >();
+  const missingReqs = Array.isArray(checkJson?.missingRequirements)
+    ? (checkJson!.missingRequirements as unknown[])
+    : [];
+  for (const req of missingReqs) {
+    if (typeof req !== "object" || req === null) continue;
+    const r = req as Record<string, unknown>;
+    const name = typeof r.name === "string" ? r.name : undefined;
+    if (!name) continue;
+    const m = (r.missing ?? {}) as Record<string, unknown>;
+    missingByName.set(name, {
+      bins: asStringArray(m.bins),
+      anyBins: asStringArray(m.anyBins),
+      env: asStringArray(m.env),
+      config: asStringArray(m.config),
+      os: asStringArray(m.os),
+    });
+  }
+
+  const rawSkills = Array.isArray(listJson?.skills) ? (listJson!.skills as unknown[]) : [];
+  const records: SkillStatusRecord[] = [];
+  for (const raw of rawSkills) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const s = raw as Record<string, unknown>;
+    const name = typeof s.name === "string" ? s.name : "";
+    // `skills list` keys skills by their frontmatter `name`; treat it as the skillKey
+    // the UI needs for global gating only when a distinct key isn't provided.
+    const skillKey =
+      typeof s.skillKey === "string" ? s.skillKey : typeof s.key === "string" ? s.key : name;
+    const detail = missingByName.get(name);
+    const perSkillMissing = (s.missing ?? {}) as Record<string, unknown>;
+    records.push({
+      skillKey,
+      name,
+      source: typeof s.source === "string" ? s.source : "",
+      bundled: Boolean(s.bundled),
+      eligible: Boolean(s.eligible),
+      disabled: Boolean(s.disabled),
+      modelVisible: Boolean(s.modelVisible),
+      commandVisible: Boolean(s.commandVisible),
+      blockedByAllowlist: Boolean(s.blockedByAllowlist),
+      blockedByAgentFilter: Boolean(s.blockedByAgentFilter),
+      missing: detail ?? {
+        bins: asStringArray(perSkillMissing.bins),
+        anyBins: asStringArray(perSkillMissing.anyBins),
+        env: asStringArray(perSkillMissing.env),
+        config: asStringArray(perSkillMissing.config),
+        os: asStringArray(perSkillMissing.os),
+      },
+    });
+  }
+  return records;
+}
+
+async function startGateway(): Promise<void> {
+  if (gatewayStartPromise) return gatewayStartPromise;
+  const start = (async () => {
+    gatewayStartInProgress = true;
+    try {
+      await startGatewayInner();
+    } finally {
+      gatewayStartInProgress = false;
+    }
+  })();
+  gatewayStartPromise = start;
+  try {
+    await start;
+  } finally {
+    if (gatewayStartPromise === start) gatewayStartPromise = null;
+  }
+}
+
+async function startGatewayWithWindowsNodeMxcPolicy(policy: "active" | "locked"): Promise<void> {
+  if (windowsNodeMxcGatewayStartPolicyOverride !== null) {
+    throw new Error("A managed Gateway policy override is already in progress");
+  }
+  windowsNodeMxcGatewayStartPolicyOverride = policy;
+  try {
+    await startGateway();
+  } finally {
+    windowsNodeMxcGatewayStartPolicyOverride = null;
+  }
+}
+
+async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
+  logStartupTiming("gateway-preflight-start");
+  // Read config to get token and configured port
+  let config = readConfig();
+  if (isWindowsNodeMxcDesired()) {
+    const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+    const policyState = getWindowsNodeMxcGatewayPolicyState(config, nodeId);
+    const requestedState = selectWindowsNodeMxcGatewayStartPolicy(
+      windowsNodeMxcGatewayStartPolicyOverride,
+      windowsNodeMxcActivationInProgress,
+    );
+    if (policyState === "active" && requestedState === "locked") {
+      settingsStore.delete("windowsNodeMxcSmoke");
+      console.warn("[windows-node-mxc] Relocked active policy for fresh startup attestation");
+    }
+    const pinned = applyWindowsNodeMxcGatewayPolicy(
+      config,
+      nodeId,
+      settingsStore.get("windowsNodeMxcToolBackups"),
+      requestedState,
+    );
+    if (JSON.stringify(config) !== JSON.stringify(pinned.config)) {
+      writeConfigTextAtomically(JSON.stringify(pinned.config, null, 2));
+    }
+    config = pinned.config;
+    settingsStore.set("windowsNodeMxcToolBackups", pinned.backups);
+    settingsStore.set("windowsNodeMxcNodeId", nodeId);
+    const policy = validateWindowsNodeMxcGatewayPolicy(config, nodeId, requestedState);
+    if (!policy.ready) {
+      const message = `Windows Node + MXC Gateway policy drift: ${policy.blockers.join("; ")}`;
+      console.error(`[windows-node-mxc] ${message}`);
+      mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+      setGatewayStatus("failed");
+      return;
+    }
+  }
+  gatewayToken = config?.gateway?.auth?.token || "";
+  const configuredPort = config?.gateway?.port || DEFAULT_PORT;
+  gatewayPort = configuredPort;
+  const stateDir = getOpenClawStateDir();
+  let nodePath: string;
+  try {
+    nodePath = resolveNodePath();
+  } catch (error) {
+    reportGatewayFailure(
+      "resolve-runtime",
+      error instanceof Error ? error.message : String(error),
+      "正式版使用安装包内置的私有运行时；请重新运行 CompanyClaw 安装包执行修复安装，无需手动安装任何组件。",
+    );
+    throw error;
+  }
+  mainWindow?.webContents.send("gateway:log", `[info][stage=resolve-runtime] node=${nodePath}`);
+  let entryPath: string;
+  try {
+    entryPath = resolveOpenClawEntry();
+  } catch (error) {
+    reportGatewayFailure(
+      "extract-runtime",
+      error instanceof Error ? error.message : String(error),
+      "内置 OpenClaw 资源（openclaw.asar）解压或校验失败；请重新运行 CompanyClaw 安装包执行修复安装。",
+    );
+    throw error;
+  }
+  mainWindow?.webContents.send("gateway:log", `[info][stage=resolve-runtime] entry=${entryPath}`);
+  // Recorded so stopGatewayProcess() can tell our Gateway apart from a
+  // separately installed OpenClaw that happens to use the same port.
+  managedGatewayEntryPath = entryPath;
+  const gatewayEnvironment = loadGatewayEnvironment(stateDir);
+
+  // Apply MicroClaw's default workspace identity before persona migration.
+  // This also updates existing installations when connecting to a running Gateway.
+  seedWorkspaceFiles(stateDir);
+
+  // Ensure plugins.allow includes enabled plugins so they load synchronously
+  // (avoids the race where auto-discovered plugins miss the channel-start sweep)
+  ensurePluginsAllow();
+  postSpawnRestartRequired =
+    !isWindowsNodeMxcDesired() && requiresPostSpawnChannelCheck(readConfig());
+  if (!postSpawnRestartRequired) {
+    postSpawnRestartDone = true;
+    postSpawnRestartScheduled = false;
+  }
+
+  const preparedPersonas = prepareAgentPersonas(stateDir);
+  if (isWindowsNodeMxcDesired() && preparedPersonas) {
+    settingsStore.set(
+      "windowsNodeMxcToolBackups",
+      migrateWindowsNodeMxcToolBackupAliases(
+        settingsStore.get("windowsNodeMxcToolBackups"),
+        LEGACY_AGENT_ID_ALIASES,
+      ),
+    );
+    const policy = validateWindowsNodeMxcGatewayPolicy(
+      preparedPersonas.config,
+      settingsStore.get("windowsNodeMxcNodeId"),
+      selectWindowsNodeMxcGatewayStartPolicy(
+        windowsNodeMxcGatewayStartPolicyOverride,
+        windowsNodeMxcActivationInProgress,
+      ),
+    );
+    if (!policy.ready) {
+      const message = `Windows Node + MXC blocked an unprotected agent roster change: ${policy.blockers.join("; ")}`;
+      console.error(`[windows-node-mxc] ${message}`);
+      mainWindow?.webContents.send("gateway:log", `[error] ${message}`);
+      setGatewayStatus("failed");
+      return;
+    }
+  }
+  const originalAgentConfigText = fs.existsSync(getConfigPath())
+    ? fs.readFileSync(getConfigPath(), "utf-8")
+    : null;
+  const originalIntegritySnapshot = captureSkillIntegritySnapshotState(stateDir);
+  const agentSkillBundleRoot = resolveAgentOwnedSkillBundleRoot(
+    app.isPackaged,
+    process.resourcesPath,
+  );
+  const ownedSkillTrust = {
+    isTrustedInstalledSkill: isManagedSkillTrustedBySnapshot,
+  };
+
+  // Check ownership before any agent-owned skill filesystem mutation. An
+  // externally managed Gateway may observe the shared state directory.
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  logStartupTiming("gateway-existing-check-complete");
+  if (alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null)) {
+    // A healthy Gateway on our port that we did not spawn belongs to another
+    // installation (for example a separately installed OpenClaw). Adopting it
+    // would hand this product's traffic to a runtime it never validated, so the
+    // refusal is explicit instead.
+    const foreignPids = (findListeningPids(configuredPort) ?? []).filter(
+      (pid) => !isOwnedGatewayProcess(pid),
+    );
+    if (foreignPids.length > 0) {
+      reportGatewayFailure(
+        "spawn",
+        `端口 ${configuredPort} 已被其他程序占用（PID ${foreignPids.join(", ")}），它不是本安装启动的 Gateway。`,
+        "请关闭占用该端口的程序，或在设置中为 CompanyClaw 指定其他端口后重试。",
+      );
+      return;
+    }
+  }
+  const externallyManagedGateway =
+    alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
+  const ownedSkillPlan = preparedPersonas
+    ? inspectConfiguredAgentOwnedSkills(
+        preparedPersonas.config,
+        stateDir,
+        agentSkillBundleRoot,
+        ownedSkillTrust,
+      )
+    : { required: false, reasons: [] };
+  if (externallyManagedGateway && (preparedPersonas?.changed || ownedSkillPlan.required)) {
+    failForExternalGateway(configuredPort);
+  }
+
+  const agentSkillReconciliation =
+    preparedPersonas && !externallyManagedGateway
+      ? reconcileConfiguredAgentOwnedSkills(
+          preparedPersonas.config,
+          stateDir,
+          agentSkillBundleRoot,
+          ownedSkillTrust,
+        )
+      : { installs: [], removals: [], configChanged: false, runtimeChanged: false };
+  const agentConfigurationChanged =
+    (preparedPersonas?.changed ?? false) || agentSkillReconciliation.runtimeChanged;
+  const agentSkillDiskChanged =
+    agentSkillReconciliation.installs.some(
+      (install) => agentOwnedSkillInstallChanged(install) || install.markerCreated,
+    ) || agentSkillReconciliation.removals.length > 0;
+  const agentSkillIntegrityChanged =
+    agentSkillReconciliation.installs.some(agentOwnedSkillInstallChanged) ||
+    agentSkillReconciliation.removals.length > 0;
+  let agentSkillTransactionPending = agentSkillDiskChanged || agentConfigurationChanged;
+  const workspaceSnapshots = preparedPersonas
+    ? captureAgentWorkspaces(preparedPersonas.config, stateDir, gatewayEnvironment, entryPath)
+    : [];
+
+  const rollbackStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    rollbackAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    rollbackAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (originalAgentConfigText !== null) {
+      writeConfigTextAtomically(originalAgentConfigText);
+    }
+    restoreAgentWorkspaces(workspaceSnapshots);
+    restoreSkillIntegritySnapshotState(originalIntegritySnapshot, stateDir);
+    agentSkillTransactionPending = false;
+  };
+
+  const commitStartupAgentSkills = () => {
+    if (!agentSkillTransactionPending) return;
+    if (agentSkillIntegrityChanged) {
+      acceptManagedSkillIntegrityChanges([
+        ...agentSkillReconciliation.installs
+          .filter(agentOwnedSkillInstallChanged)
+          .map((install) => ({
+            skillName: install.skillId,
+            expectedDirectory: path.join(agentSkillBundleRoot, install.skillId),
+          })),
+        ...agentSkillReconciliation.removals.map((removal) => ({
+          skillName: removal.skillId,
+          expectedDirectory: null,
+        })),
+      ]);
+    }
+    const deferredUpgradeCleanup = commitAgentOwnedSkillInstalls(agentSkillReconciliation.installs);
+    if (deferredUpgradeCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill upgrade: ${deferredUpgradeCleanup.join(", ")}`,
+      );
+    }
+    const deferredCleanup = commitAgentOwnedSkillRemovals(agentSkillReconciliation.removals);
+    if (deferredCleanup.length > 0) {
+      console.warn(
+        `[startup] Deferred cleanup for agent-owned skill quarantine: ${deferredCleanup.join(", ")}`,
+      );
+    }
+    agentSkillTransactionPending = false;
+  };
+
+  // If gateway is already healthy, just connect WS and return — no new process.
+  // Callers that need replacement use restartManagedGateway(), which stops the
+  // old process and waits for the port before invoking this function.
+  if (
+    isWindowsNodeMxcDesired() &&
+    alreadyRunning &&
+    (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())
+  ) {
+    failForExternalGateway(configuredPort);
+  }
+  if (
+    requiresExternalGatewayStop(
+      alreadyRunning,
+      agentConfigurationChanged,
+      gatewaySpawnedByUs,
+      gatewayProcess !== null,
+    )
+  ) {
+    rollbackStartupAgentSkills();
+    failForExternalGateway(configuredPort);
+  }
+  try {
+    if (preparedPersonas?.changed || agentSkillReconciliation.configChanged) {
+      persistAgentPersonas(preparedPersonas!.config);
+    }
+    if (preparedPersonas && !externallyManagedGateway) {
+      agentSkillTransactionPending = true;
+      seedSpecialistAgentWorkspaces(
+        preparedPersonas.config,
+        stateDir,
+        entryPath,
+        gatewayEnvironment,
+      );
+    }
+  } catch (error) {
+    rollbackStartupAgentSkills();
+    throw error;
+  }
+  try {
+    if (alreadyRunning && !agentConfigurationChanged) {
+      commitStartupAgentSkills();
+      console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
+      gatewaySpawnedByUs = false;
+      postSpawnRestartDone = true;
+      postSpawnRestartScheduled = false;
+      postSpawnChannelCheck = null;
+      setGatewayStatus("running");
+      connectGatewayWs();
+      startHealthMonitor();
+      return;
+    }
+    if (alreadyRunning) {
+      console.log(
+        "[gateway] Agent or owned-skill configuration changed — restarting to load canonical configuration",
+      );
+      gwClient?.stop();
+    }
+
+    // Kill any old gateway on this port
+    stopGatewayProcess();
+    logStartupTiming("gateway-stop-complete");
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
+    try {
+      const lockDir = path.join(process.env.LOCALAPPDATA || "", "Temp", "openclaw");
+      if (fs.existsSync(lockDir)) {
+        for (const f of fs.readdirSync(lockDir)) {
+          if (f.startsWith("gateway.") && f.endsWith(".lock")) {
+            fs.unlinkSync(path.join(lockDir, f));
+            console.log(`Removed stale lock: ${f}`);
+          }
+        }
+      }
+    } catch {}
+
+    if (!fs.existsSync(nodePath)) {
+      reportGatewayFailure(
+        "resolve-runtime",
+        `安装包内置的私有 Node 运行时不可用：${nodePath}`,
+        "请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 Node.js。",
+      );
+      rollbackStartupAgentSkills();
+      return;
+    }
+    if (!fs.existsSync(entryPath)) {
+      reportGatewayFailure(
+        "extract-runtime",
+        `内置 OpenClaw 入口文件不可用：${entryPath}`,
+        "请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 OpenClaw 或 npm。",
+      );
+      rollbackStartupAgentSkills();
+      return;
+    }
+    if (app.isPackaged) {
+      if (runtimeManifestProblems.length > 0) {
+        mainWindow?.webContents.send(
+          "gateway:log",
+          `[warn][stage=verify-manifest] 运行资源校验未通过：${runtimeManifestProblems.join("; ")}`,
+        );
+      } else if (runtimeManifestChecked !== null) {
+        mainWindow?.webContents.send(
+          "gateway:log",
+          `[info][stage=verify-manifest] 运行资源完整（已校验 ${runtimeManifestChecked} 项）`,
+        );
+      }
+    }
+
+    console.log(
+      `Launching gateway: stateDir=${stateDir} auth=${gatewayToken ? "configured" : "missing"}`,
+    );
+    console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
+
+    // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
+    const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+    if (!fs.existsSync(compileCacheDir)) {
+      fs.mkdirSync(compileCacheDir, { recursive: true });
+    }
+
+    // Spawn gateway as a hidden background process — logs are forwarded
+    // to the renderer via the gateway:log IPC channel (visible in Settings).
+
+    const windowsNodeMxcDesired = isWindowsNodeMxcDesired();
+    const nextGatewayGenerationId = randomUUID();
+    const nextApprovalProofContext = windowsNodeMxcDesired
+      ? bundledWindowsNodeHost.createApprovalProofContext(
+          nextGatewayGenerationId,
+          settingsStore.get("windowsNodeMxcNodeId"),
+          getBundledWindowsNodeFolders(),
+          stateDir,
+          windowsNodeMxcReadinessTransitionId ?? randomUUID(),
+        )
+      : null;
+    const gwEnv: Record<string, string> = {
+      ...gatewayEnvironment,
+      OPENCLAW_STATE_DIR: stateDir,
+      NODE_OPTIONS: "--disable-warning=ExperimentalWarning --dns-result-order=ipv4first",
+      NODE_ENV: "production",
+      NODE_COMPILE_CACHE: compileCacheDir,
+      // The Desktop process already supplies a stable cache directory. Prevent
+      // the OpenClaw launcher from self-respawning through the tool sandbox.
+      OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+      OPENCLAW_NO_RESPAWN: "1",
+      // HMAC key for verifying the external apps whitelist file
+      OPENCLAW_SANDBOX_HMAC_KEY: sandboxHmacKey,
+    };
+
+    // Determine spawn command
+    const launcherPath = resolveAppContainerLauncher();
+
+    // Initialize tool sandbox for AI agent command sandboxing.
+    // Gateway runs outside AppContainer, but tool commands are routed
+    // through AppContainer via preload interception.
+    toolSandbox = new ToolSandbox(launcherPath, nodePath, stateDir);
+
+    // Restore sandbox enabled state from settings
+    const sandboxEnabled = settingsStore.get("sandboxEnabled") && !isWindowsNodeMxcDesired();
+    if (!sandboxEnabled) {
+      toolSandbox.setEnabled(false);
+    }
+
+    // Grant sandbox access to the state directory and the resolved runtimes.
+    if (fs.existsSync(stateDir)) toolSandbox.addDirRW(stateDir);
+    const openClawPackageDir = resolveOpenClawPackageDir(entryPath);
+    if (fs.existsSync(openClawPackageDir)) toolSandbox.addDirRO(openClawPackageDir);
+    const nodeRuntimeDir = path.dirname(nodePath);
+    if (fs.existsSync(nodeRuntimeDir)) toolSandbox.addDirRO(nodeRuntimeDir);
+
+    // Preserve support for the legacy per-user runtime layout.
+    const ocNodeDir = process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".openclaw-node")
+      : "";
+    if (ocNodeDir && fs.existsSync(ocNodeDir)) toolSandbox.addDirRO(ocNodeDir);
+
+    // Grant read access to custom skills dir (~/.agents/skills/) so the
+    // gateway can scan it without triggering a sandbox permission prompt.
+    const customSkillsDir = process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".agents", "skills")
+      : "";
+    if (customSkillsDir && fs.existsSync(customSkillsDir)) toolSandbox.addDirRO(customSkillsDir);
+
+    // Load user-configured external apps whitelist from settings.
+    // These apps bypass AppContainer when launched (need COM/RPC/named-pipes).
+    // Stored in Electron settings (not accessible from sandbox).
+    const externalApps = settingsStore.get("sandboxExternalApps");
+    toolSandbox.setExternalApps(externalApps);
+    // Write to %APPDATA%/microclaw/ so sandbox-preload.js can read it.
+    // This file is NOT in the AppContainer's writable dirs, so it's safe.
+    writeExternalAppsFile(externalApps);
+
+    // Load AppContainer capabilities from settings (e.g. internetClient, privateNetworkClientServer).
+    const savedCaps = settingsStore.get("sandboxCapabilities");
+    if (savedCaps && savedCaps.length > 0) {
+      toolSandbox.setCapabilities(savedCaps);
+    }
+
+    // Load user-configured sandbox directory permissions from settings.
+    const userDirsRW = settingsStore.get("sandboxUserDirsRW");
+    const userDirsRO = settingsStore.get("sandboxUserDirsRO");
+    for (const dir of userDirsRW) {
+      if (fs.existsSync(dir)) toolSandbox.addDirRW(dir);
+    }
+    for (const dir of userDirsRO) {
+      if (fs.existsSync(dir)) toolSandbox.addDirRO(dir);
+    }
+
+    if (toolSandbox.isActive()) {
+      // ACL inheritance changes plugin file ctime. Finish before OpenClaw captures
+      // its startup inventory, otherwise its migration fingerprint never converges.
+      await toolSandbox.provisionAsync().then(async (provisioned) => {
+        if (provisioned) {
+          console.log("[sandbox] AppContainer tool sandbox provisioned");
+          mainWindow?.webContents.send("gateway:log", "[sandbox] 工具沙箱已启用 (AppContainer)");
+          // Clean up any stale ACLs from previous failed revokes
+          await cleanupStaleAcls();
+          // Apply explicit DENY ACEs on credential / private files inside the
+          // OpenClaw state dir. The state dir as a whole is granted rw to the
+          // AppContainer (skills need it for logs/scratch/plugin state), but
+          // .env / openclaw.json / device-identity.json / sessions/ must be
+          // shielded from sandboxed skill subprocesses.
+          hardenOpenClawStateDir();
+        } else {
+          console.warn("[sandbox] AppContainer provisioning failed — sandbox disabled");
+          toolSandbox!.setEnabled(false);
+        }
+      });
+    }
+
+    // Merge sandbox env (COMSPEC, sandbox config)
+    const sandboxEnv = toolSandbox.getGatewayEnv();
+    Object.assign(gwEnv, sandboxEnv);
+
+    // Append sandbox preload to NODE_OPTIONS if available
+    const preloadPath = toolSandbox.getPreloadPath();
+    if (preloadPath) {
+      // NODE_OPTIONS --require treats backslashes as escapes; use forward slashes
+      const preloadForward = preloadPath.replace(/\\/g, "/");
+      gwEnv.NODE_OPTIONS = `${gwEnv.NODE_OPTIONS} --require ${preloadForward}`;
+      console.log(`[sandbox] Preload: ${preloadForward}`);
+    }
+
+    const approvalCompatPath = app.isPackaged
+      ? path.join(process.resourcesPath, "openclaw-approval-replay-compat.mjs")
+      : path.join(__dirname, "..", "src", "openclaw-approval-replay-compat.mjs");
+    if (windowsNodeMxcDesired) {
+      if (!fs.existsSync(approvalCompatPath)) {
+        const msg = `[error] Windows Node + MXC approval compatibility preload is missing: ${approvalCompatPath}`;
+        console.error(msg);
+        mainWindow?.webContents.send("gateway:log", msg);
+        setGatewayStatus("failed");
+        rollbackStartupAgentSkills();
+        return;
+      }
+      gwEnv.MICROCLAW_WINDOWS_NODE_MXC_APPROVAL_COMPAT = "1";
+      gwEnv.MICROCLAW_OPENCLAW_PACKAGE_DIR = openClawPackageDir;
+      if (!nextApprovalProofContext) {
+        throw new Error("Windows Node + MXC approval proof context is unavailable");
+      }
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_SECRET = nextApprovalProofContext.secretBase64;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_GATEWAY_GENERATION =
+        nextApprovalProofContext.gatewayGeneration;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_POLICY_FINGERPRINT =
+        nextApprovalProofContext.policyFingerprint;
+      gwEnv.MICROCLAW_MXC_APPROVAL_PROOF_NODE_ID = nextApprovalProofContext.nodeId;
+    }
+
+    const gwArgs = [
+      ...(windowsNodeMxcDesired ? ["--import", pathToFileURL(approvalCompatPath).href] : []),
+      entryPath,
+      "gateway",
+      "run",
+      "--port",
+      String(configuredPort),
+      "--bind",
+      "loopback",
+      // Note: --force is intentionally omitted. It calls exec("netstat") which
+      // routes through COMSPEC=AppContainerLauncher, causing netstat to run inside
+      // AppContainer where it may return wrong results, leading to the gateway
+      // killing itself in a restart loop. Stale lock cleanup is handled by
+      // ContainerManager.CleanStaleLockFiles() instead.
+      "--allow-unconfigured",
+    ];
+
+    logStartupTiming("gateway-spawn");
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[info][stage=spawn] node=${nodePath} entry=${entryPath} port=${configuredPort} stateDir=${stateDir} auth=${
+        gatewayToken ? "configured" : "missing"
+      }`,
+    );
+    const child = spawn(nodePath, gwArgs, {
+      cwd: path.dirname(entryPath),
+      env: gwEnv,
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true,
+      ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
+    });
+
+    gatewayProcess = child;
+    gatewayGenerationId = nextGatewayGenerationId;
+    windowsNodeMxcApprovalProofContext = nextApprovalProofContext;
+    windowsNodeMxcIngressGeneration = null;
+    gatewaySpawnedByUs = true;
+    // Only allow post-spawn restart on the very first gateway launch.
+    // Do NOT reset on subsequent restarts — it causes an infinite restart loop.
+    // postSpawnRestartDone keeps its value across gateway restarts.
+
+    const safeSendLog = (channel: string, payload: unknown) => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send(channel, payload);
+        }
+      } catch {
+        // window tearing down — ignore
+      }
+    };
+
+    // Forward stdout/stderr to the renderer's gateway log viewer
+    child.stdout?.on("data", (data: Buffer) => {
+      const msg = data.toString("utf-8").trim();
+      if (msg) {
+        console.log(`[gateway] ${msg}`);
+        safeSendLog("gateway:log", msg);
+      }
+    });
+    let startupStderr = "";
+    child.stderr?.on("data", (data: Buffer) => {
+      startupStderr = (startupStderr + data.toString("utf-8")).slice(-8192);
+      const msg = data.toString("utf-8").trim();
+      if (msg) {
+        console.log(`[gateway:err] ${msg}`);
+        safeSendLog("gateway:log", msg);
+      }
+    });
+
+    child.on("error", (err) => {
+      console.error("Gateway spawn error:", err);
+      safeSendLog("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
+      safeSendLog("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
+      if (gatewayProcess === child) {
+        if (!postInstallReadySignaled) signalPostInstallFailure(err);
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcApprovalProofContext = null;
+        bundledWindowsNodeHost.revokeActivationLease();
+        stopBundledWindowsNodeHost();
+        gatewayProcess = null;
+        gatewaySpawnedByUs = false;
+        reportGatewayFailure(
+          "spawn",
+          `Gateway 进程创建失败：${err.message}（node=${nodePath}）`,
+          "若为“文件不存在/拒绝访问”，请重新运行 CompanyClaw 安装包执行修复安装。",
+        );
+      }
+    });
+
+    child.on("exit", (code, signal) => {
+      console.log(`[gateway] exited: code=${code} signal=${signal}`);
+      safeSendLog("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
+      if (gatewayProcess === child) {
+        // EX_CONFIG is terminal: waiting longer cannot repair rejected configuration.
+        if (code === 78 && !postInstallReadySignaled) {
+          signalPostInstallFailure(
+            new Error("Gateway rejected its configuration (exit 78); see the desktop handoff log"),
+          );
+        }
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcApprovalProofContext = null;
+        bundledWindowsNodeHost.revokeActivationLease();
+        stopBundledWindowsNodeHost();
+        gatewayProcess = null;
+        gatewaySpawnedByUs = false;
+      }
+    });
+
+    // Log ALL IPC messages from gateway for debugging remote permission routing
+    child.on("message", (msg: any) => {
+      if (msg?.type) {
+        console.log(`[gateway-ipc] type=${msg.type} keys=${Object.keys(msg).join(",")}`);
+      }
+    });
+
+    // Forward actual shell command notifications to renderer for exec panel display
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-exec-command") return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("sandbox:exec-command", {
+          shell: msg.shell,
+          command: msg.command,
+        });
+      }
+    });
+
+    // Handle sandbox approval requests from sandbox-preload.js via Node IPC.
+    // The preload blocks (Atomics.wait) until we write the response file.
+    // We pause the health-monitor while blocked to prevent it killing the gateway.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-approval-request") return;
+      const { id, app, command, responseFile } = msg;
+      const appLower = (app || "").toLowerCase();
+      console.log(
+        `[sandbox] Approval request: app=${appLower} id=${id} session=${activeChatSession}`,
+      );
+
+      // Check per-session deny list — auto-deny without prompting
+      const sessionDenied = sessionDeniedApps.get(activeChatSession);
+      if (sessionDenied?.has(appLower)) {
+        console.log(`[sandbox] Auto-denied (session): ${appLower}`);
+        try {
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+        } catch {}
+        return;
+      }
+
+      pendingSyncPermissionRequests++;
+      const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingPermissionRequests.set(requestId, { type: "app-approval", msg });
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        notifyRemotePermissionNeeded();
+        mainWindow.webContents.send("sandbox:permission-request", {
+          requestId,
+          type: "app-approval",
+          app: appLower,
+          command,
+        });
+      } else {
+        pendingPermissionRequests.delete(requestId);
+        pendingSyncPermissionRequests--;
+        try {
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+        } catch {}
+      }
+    });
+
+    // Handle file permission requests from sandbox-preload.js via Node IPC.
+    // The preload blocks (Atomics.wait) until we write the response file.
+    // We pause the health-monitor and use a renderer dialog.
+    // ACL is granted BEFORE writing the response file so the retried write succeeds.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-file-permission-request") return;
+      const {
+        id,
+        filePath: reqPath,
+        roDir,
+        accessNeeded,
+        command: blockedCommand,
+        callerStack,
+        responseFile,
+      } = msg;
+      console.log(
+        `[sandbox] File permission request: path=${reqPath} roDir=${roDir} access=${accessNeeded} command=${blockedCommand || "(none)"} stack=${callerStack || "(none)"} id=${id}`,
+      );
+
+      pendingSyncPermissionRequests++;
+      const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingPermissionRequests.set(requestId, { type: "file", msg });
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        notifyRemotePermissionNeeded();
+        mainWindow.webContents.send("sandbox:permission-request", {
+          requestId,
+          type: "file",
+          targetPath: reqPath,
+          dirPath: roDir,
+          accessNeeded: accessNeeded || "rw",
+          command: blockedCommand || null,
+          callerStack: callerStack || null,
+        });
+      } else {
+        pendingPermissionRequests.delete(requestId);
+        pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+        try {
+          fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+        } catch {}
+      }
+    });
+
+    // Handle shell command permission requests (access-denied retry).
+    // Triggered when a shell command inside AppContainer fails with "Access is denied".
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-shell-permission-request") return;
+      const { id, deniedPath, dirPath, command, accessNeeded, responseFile } = msg;
+      console.log(
+        `[sandbox] Shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded} id=${id}`,
+      );
+
+      // If directory is already granted, re-grant ACL silently (may have been lost
+      // e.g. startup provision failed due to admin requirement) and auto-approve.
+      const normalCheck = normalizeDirPath(dirPath).toLowerCase();
+      const existingRW = settingsStore.get("sandboxUserDirsRW");
+      const existingRO = settingsStore.get("sandboxUserDirsRO");
+      const alreadyRW = existingRW.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      const alreadyRO = existingRO.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      if (alreadyRW || alreadyRO) {
+        console.log(
+          `[sandbox] Dir "${dirPath}" already granted — re-granting ACL and auto-approving`,
+        );
+        const access = alreadyRW ? "rw" : "r";
+        const dirToGrant = normalizeDirPath(dirPath);
+        grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
+          .then(() => {
+            const decision = alreadyRW ? "grant-rw" : "grant-ro";
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch {}
+          })
+          .catch(() => {
+            const decision = alreadyRW ? "grant-rw" : "grant-ro";
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch {}
+          });
+      } else {
+        // Use renderer dialog — safe because spawnSync no longer calls this
+        // (it sends sandbox-shell-permission-request-async instead).
+        const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        pendingPermissionRequests.set(requestId, { type: "shell", msg });
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          notifyRemotePermissionNeeded();
+          mainWindow.webContents.send("sandbox:permission-request", {
+            requestId,
+            type: "shell",
+            targetPath: deniedPath,
+            dirPath,
+            command,
+            accessNeeded: accessNeeded || "rw",
+          });
+        } else {
+          pendingPermissionRequests.delete(requestId);
+          try {
+            fs.writeFileSync(responseFile, JSON.stringify({ id, decision: "deny" }), "utf-8");
+          } catch {}
+        }
+      }
+    });
+
+    // Handle async shell permission requests from spawn (non-blocking).
+    // The command has already failed — we show a dialog, grant ACL if approved,
+    // and the AI will naturally retry the command.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-shell-permission-request-async") return;
+      const { deniedPath, dirPath, command, accessNeeded } = msg;
+      console.log(
+        `[sandbox] Async shell permission request: path=${deniedPath} dir=${dirPath} access=${accessNeeded}`,
+      );
+
+      // If directory is already in settings but command still failed with Access
+      // Denied, silently re-grant ACL (may have been lost, e.g. startup provision
+      // failed due to admin requirement).  No dialog needed.
+      const normalCheck = normalizeDirPath(dirPath).toLowerCase();
+      const rwDirs = settingsStore.get("sandboxUserDirsRW");
+      const roDirs = settingsStore.get("sandboxUserDirsRO");
+      const alreadyRW = rwDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      const alreadyRO = roDirs.some(
+        (d: string) => normalizeDirPath(d).toLowerCase() === normalCheck,
+      );
+      if (alreadyRW || alreadyRO) {
+        const access = alreadyRW ? "rw" : "r";
+        const dirToGrant = normalizeDirPath(dirPath);
+        console.log(
+          `[sandbox] Async: dir "${dirPath}" already in settings — silently re-granting ACL (${access})`,
+        );
+        grantAndVerifyAcl(dirToGrant, access as "rw" | "r")
+          .then(() => {
+            // Write response file to unblock any sync poll in preload
+            if (msg.responseFile) {
+              const decision = alreadyRW ? "grant-rw" : "grant-ro";
+              try {
+                fs.writeFileSync(msg.responseFile, JSON.stringify({ decision }), "utf-8");
+              } catch {}
+            }
+          })
+          .catch(() => {
+            if (msg.responseFile) {
+              try {
+                fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+              } catch {}
+            }
+          });
+        return;
+      }
+
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        // No window — write deny response to unblock
+        if (msg.responseFile) {
+          try {
+            fs.writeFileSync(msg.responseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+          } catch {}
+        }
+        return;
+      }
+
+      notifyRemotePermissionNeeded();
+      const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingPermissionRequests.set(requestId, { type: "shell-async", msg });
+      mainWindow.webContents.send("sandbox:permission-request", {
+        requestId,
+        type: "shell-async",
+        targetPath: deniedPath,
+        dirPath,
+        command,
+        accessNeeded: accessNeeded || "rw",
+      });
+    });
+
+    // Handle ACL-ineffective reports: directory is in settings but AppContainer
+    // still got Access Denied. Attempt silent re-grant and notify the user.
+    child.on("message", (msg: any) => {
+      if (msg?.type !== "sandbox-acl-ineffective") return;
+      const { deniedPath, dirPath, command } = msg;
+      console.warn(
+        `[sandbox] ACL ineffective: path=${deniedPath} dir=${dirPath} cmd=${command?.substring(0, 80)}`,
+      );
+
+      // Find the dir in settings to determine access level
+      const normalCheck = path.resolve(dirPath).toLowerCase();
+      const rwDirs = settingsStore.get("sandboxUserDirsRW");
+      const roDirs = settingsStore.get("sandboxUserDirsRO");
+      const isRW = rwDirs.some(
+        (d: string) =>
+          normalizeDirPath(d).toLowerCase() === normalCheck ||
+          normalCheck.startsWith(normalizeDirPath(d).toLowerCase()),
+      );
+      const isRO =
+        !isRW &&
+        roDirs.some(
+          (d: string) =>
+            normalizeDirPath(d).toLowerCase() === normalCheck ||
+            normalCheck.startsWith(normalizeDirPath(d).toLowerCase()),
+        );
+
+      if (isRW || isRO) {
+        const access = isRW ? "rw" : "r";
+        const matchedDir = isRW
+          ? rwDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()))
+          : roDirs.find((d: string) => normalCheck.startsWith(normalizeDirPath(d).toLowerCase()));
+        if (matchedDir) {
+          console.log(`[sandbox] Attempting silent ACL re-grant for: ${matchedDir} (${access})`);
+          grantAndVerifyAcl(normalizeDirPath(matchedDir), access as "rw" | "r").then((ok) => {
+            if (!ok) {
+              console.error(`[sandbox] ACL re-grant failed for: ${matchedDir}`);
+              mainWindow?.webContents.send("sandbox:acl-ineffective", {
+                dir: matchedDir,
+                deniedPath,
+                access,
+                command,
+              });
+            } else {
+              console.log(`[sandbox] ACL re-grant succeeded for: ${matchedDir}`);
+            }
+          });
+        }
+      }
+    });
+
+    // Track session source info from the WeChat plugin (or other remote channels).
+    // Used to send a notification when a permission dialog appears on the desktop.
+    child.on("message", (msg: any) => {
+      if (msg?.type === "approval-reply-request") {
+        const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
+        const text = typeof msg.text === "string" ? msg.text : "";
+        const channelUserId = typeof msg.channelUserId === "string" ? msg.channelUserId : "";
+        void (async () => {
+          let handled = false;
+          try {
+            if (companyClawRuntime && companyClawOwnerSid && channelUserId) {
+              // Sender binding is checked first: being bound is not permission
+              // to approve anything, but an unbound sender can never do so.
+              const authorized = companyClawRuntime.runtime.isRemoteCallerAuthorized({
+                channelType: "weixin",
+                channelUserId,
+              });
+              if (authorized) {
+                const outcome = await companyClawRuntime.runtime.applyApprovalReply(
+                  companyClawOwnerSid,
+                  text,
+                );
+                handled = outcome.handled;
+              }
+            }
+          } catch (error) {
+            console.error("[companyclaw] Approval reply failed:", error);
+          } finally {
+            // Always answer: silence would leave the plugin waiting for the
+            // full timeout before releasing the message to the AI.
+            child.send?.({ type: "approval-reply-response", requestId, handled });
+          }
+        })();
+        return;
+      }
+      if (msg?.type !== "session-source") return;
+      const { source } = msg;
+      if (source?.channelType) {
+        cachedRemoteSource = source;
+        console.log(`[session] Remote source: channel=${source.channelType} user=${source.userId}`);
+        handleTrustedRemoteMessage(source);
+      }
+    });
+
+    // Wait for gateway to become ready
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[info][stage=auth] token=${gatewayToken ? "configured" : "missing"} port=${configuredPort}`,
+    );
+    setGatewayStatus("starting");
+
+    const ready = await waitForGatewayReady(
+      configuredPort,
+      GATEWAY_READY_TIMEOUT_MS,
+      () => gatewayProcess === child && !child.killed,
+    );
+    if (ready) {
+      try {
+        logStartupTiming("gateway-ready");
+        commitStartupAgentSkills();
+        gatewayFailureStage = null;
+        gatewayFailureReason = null;
+        setGatewayStatus("running");
+      } catch (error) {
+        stopGatewayProcess();
+        rollbackStartupAgentSkills();
+        setGatewayStatus("failed");
+        throw error;
+      }
+    } else {
+      const retryConvergence = shouldRetryGatewayStartup(
+        child.exitCode,
+        startupStderr,
+        startupRetriesRemaining,
+      );
+      if (retryConvergence) {
+        stopGatewayProcess();
+        rollbackStartupAgentSkills();
+        console.log("[gateway] Retrying once after plugin migration convergence requested restart");
+        return startGatewayInner(startupRetriesRemaining - 1);
+      }
+      mainWindow?.webContents.send(
+        "gateway:log",
+        `[warn] Gateway health check timed out on port ${configuredPort}`,
+      );
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
+      const stderrTail = startupStderr.trim().split(/\r?\n/).slice(-10).join("\n");
+      reportGatewayFailure(
+        "health",
+        `${
+          child.exitCode !== null
+            ? `Gateway 进程在启动阶段退出（exit=${child.exitCode}）`
+            : `Gateway 健康检查超时（port=${configuredPort}，等待 ${GATEWAY_READY_TIMEOUT_MS}ms）`
+        }；node=${nodePath} entry=${entryPath} stateDir=${stateDir}${
+          stderrTail ? `；最近日志：\n${stderrTail}` : ""
+        }`,
+        "可在“设置 → 日志”导出完整启动日志用于排查。",
+      );
+      signalPostInstallFailure(
+        new Error(
+          child.exitCode !== null
+            ? `Gateway exited during startup (code ${child.exitCode}); see the desktop handoff log`
+            : "Gateway health check timed out",
+        ),
+      );
+    }
+    // Always connect WS — even on timeout the gateway may start shortly after,
+    // and GatewayClient has built-in reconnect with exponential backoff.
+    connectGatewayWs();
+
+    // Start health monitoring to auto-restart if the gateway goes down
+    startHealthMonitor();
+  } catch (error) {
+    if (agentSkillTransactionPending) {
+      stopGatewayProcess();
+      rollbackStartupAgentSkills();
+    }
+    throw error;
+  }
+}
+
+// (end of startGatewayInner)
+
+// ---------------------------------------------------------------------------
+// WebSocket gateway client — mirrors the webchat protocol
+// ---------------------------------------------------------------------------
+
+function _extractText(message: unknown): string | null {
+  const m = message as Record<string, unknown>;
+  if (typeof m.content === "string") return m.content;
+  if (typeof m.text === "string") return m.text;
+  if (Array.isArray(m.content)) {
+    return (m.content as Array<Record<string, unknown>>)
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("");
+  }
+  return null;
+}
+
+let wsAuthRestartInProgress = false;
+
+async function completePostSpawnChannelStartup(
+  client: GatewayClient,
+  child: ChildProcess,
+): Promise<void> {
+  const check = Symbol("post-spawn-channel-check");
+  postSpawnChannelCheck = check;
+  postSpawnRestartScheduled = true;
+  const isCurrent = () =>
+    postSpawnChannelCheck === check &&
+    gwClient === client &&
+    gatewayProcess === child &&
+    !isWindowsNodeMxcDesired() &&
+    client.connected;
+  try {
+    const result = await waitForPostSpawnChannels({
+      readStatus: (timeoutMs) => client.getChannelsStatus(timeoutMs),
+      isCurrent,
+      onError: (error) => console.warn("[gateway-ws] startup channel status unavailable:", error),
+    });
+    if (result === "cancelled" || !isCurrent()) return;
+    postSpawnRestartDone = true;
+    if (result === "ready") {
+      logStartupTiming("channels-ready-without-restart");
+      return;
+    }
+    console.log("[gateway-ws] post-spawn: restarting Gateway for inactive plugin channels");
+    mainWindow?.webContents.send("gateway:log", "[startup] 正在重启网关以激活插件通道…");
+    await restartManagedGateway("Activating installed plugin channels", true);
+  } finally {
+    if (postSpawnChannelCheck === check) {
+      postSpawnChannelCheck = null;
+      postSpawnRestartScheduled = false;
+      notifyRendererApplicationReady();
+    }
+  }
+}
+
+function connectGatewayWs(): void {
+  stopBundledWindowsNodeHost();
+  gwClient?.stop();
+  gatewayModelCatalogRequest = null;
+  if (!postSpawnRestartDone) {
+    postSpawnChannelCheck = null;
+    postSpawnRestartScheduled = false;
+  }
+
+  gwClient = new GatewayClient({
+    port: gatewayPort,
+    token: gatewayToken,
+    supportsExecApprovals: isWindowsNodeMxcDesired(),
+    beforeChatSend: requireEffectiveWindowsNodeMxc,
+    onConnected: () => {
+      console.log("[gateway-ws] connected");
+      wsAuthRestartInProgress = false;
+      if (isWindowsNodeMxcDesired()) {
+        const gateway = gwClient;
+        if (gateway && !bundledWindowsNodeStartup) {
+          const gatewayGeneration = gatewayProcess;
+          if (!gatewayGeneration?.pid) {
+            console.error("[bundled-windows-node] managed Gateway process identity is unavailable");
+            return;
+          }
+          const approvalProof = windowsNodeMxcApprovalProofContext;
+          if (
+            !approvalProof ||
+            approvalProof.gatewayGeneration !== gatewayGenerationId ||
+            approvalProof.nodeId !== settingsStore.get("windowsNodeMxcNodeId").toLowerCase()
+          ) {
+            console.error(
+              "[bundled-windows-node] approval proof context is unavailable for this Gateway generation",
+            );
+            void failClosedWindowsNodeMxc(
+              "Bundled node approval proof context did not match the managed Gateway generation",
+            );
+            return;
+          }
+          const hostGeneration = ++bundledWindowsNodeGeneration;
+          const startOptions = {
+            gatewayUrl: `ws://127.0.0.1:${gatewayPort}`,
+            gatewayToken,
+            gatewayProcessId: gatewayGeneration.pid,
+            gatewayGeneration: gatewayGenerationId,
+            uiLocale: resolveSupportedLocale(settingsStore.get("language") ?? "en-US"),
+            openClawStateRoot: getOpenClawStateDir(),
+            folders: getBundledWindowsNodeFolders(),
+            approvalProof,
+            onApproval: (approval: BundledApprovalRequest | null) => {
+              if (
+                !isCurrentBundledWindowsNodeApprovalCallback({
+                  expectedHostGeneration: hostGeneration,
+                  currentHostGeneration: bundledWindowsNodeGeneration,
+                  gatewayConnected: gateway.connected,
+                  gatewayMatches: gwClient === gateway,
+                  gatewayProcessMatches: gatewayProcess === gatewayGeneration,
+                  expectedGatewayGeneration: approvalProof.gatewayGeneration,
+                  currentGatewayGeneration: gatewayGenerationId,
+                })
+              ) {
+                return;
+              }
+              sendToWindow(
+                mainWindow,
+                "windows-node-mxc:approval-request",
+                approval
+                  ? {
+                      ...approval,
+                      approvalLayer: "node",
+                      allowedDecisions: ["deny", "allow-once"],
+                    }
+                  : null,
+              );
+            },
+          };
+          bundledWindowsNodeHost.stop();
+          const assertCurrentGatewayGeneration = () => {
+            if (
+              bundledWindowsNodeGeneration !== hostGeneration ||
+              gwClient !== gateway ||
+              !gateway.connected ||
+              !gatewayGeneration ||
+              gatewayProcess !== gatewayGeneration ||
+              gatewayGeneration.exitCode !== null ||
+              gatewayGeneration.killed
+            ) {
+              throw new Error("Managed Gateway generation changed before Windows node startup");
+            }
+          };
+          const startup = Promise.resolve()
+            .then(() => {
+              assertCurrentGatewayGeneration();
+              return bundledWindowsNodeHost.start(startOptions);
+            })
+            .then(() => {
+              assertCurrentGatewayGeneration();
+              return bundledWindowsNodeHost.ensurePaired(gateway);
+            })
+            .catch((error) => {
+              if (bundledWindowsNodeGeneration === hostGeneration) {
+                bundledWindowsNodeHost.stop();
+              }
+              throw error;
+            })
+            .finally(() => {
+              if (bundledWindowsNodeStartup === startup) bundledWindowsNodeStartup = null;
+            });
+          bundledWindowsNodeStartup = startup;
+          void startup.catch((error) => {
+            console.error("[bundled-windows-node] start failed:", error);
+          });
+        }
+      }
+      // Sync the status indicator — fixes "timeout" showing while WS is actually connected
+      if (gatewayStatus !== "running") {
+        setGatewayStatus("running");
+      }
+      // Keep chat gated until we know whether a compatibility restart is needed.
+      // Already-running channels must not pay for a second full Gateway startup.
+      if (gatewaySpawnedByUs && postSpawnRestartRequired && !postSpawnRestartDone) {
+        if (!postSpawnRestartScheduled && gwClient && gatewayProcess) {
+          void completePostSpawnChannelStartup(gwClient, gatewayProcess).catch((error) => {
+            console.error("[gateway-ws] post-spawn channel startup failed:", error);
+          });
+        }
+        return;
+      }
+
+      notifyRendererApplicationReady();
+    },
+    onDisconnected: (reason) => {
+      console.log(`[gateway-ws] disconnected: ${reason}`);
+      const activeGeneration =
+        isWindowsNodeMxcDesired() &&
+        windowsNodeMxcIngressGeneration !== null &&
+        windowsNodeMxcIngressGeneration === gatewayGenerationId;
+      windowsNodeMxcIngressGeneration = null;
+      stopBundledWindowsNodeHost();
+      sendToWindow(mainWindow, "gateway:ws-disconnected", reason);
+      if (activeGeneration && !windowsNodeMxcActivationInProgress && !gatewayRestarting) {
+        void failClosedWindowsNodeMxc(
+          `Managed Gateway disconnected: ${reason || "unknown reason"}`,
+        );
+      }
+    },
+    onAuthError: (message) => {
+      // A stale gateway (from a previous install / scheduled task) is running
+      // with a different token. Kill it and restart with our token.
+      console.log(`[gateway-ws] auth error: ${message} — killing stale gateway`);
+      gatewayFailureStage = "auth";
+      gatewayFailureReason = `网关鉴权失败（token 不匹配）：${message}`;
+      mainWindow?.webContents.send("gateway:log", `[warn] 网关认证失败 (token 不匹配)，正在重启…`);
+      if (!wsAuthRestartInProgress) {
+        wsAuthRestartInProgress = true;
+        setTimeout(async () => {
+          try {
+            await restartManagedGateway("Replacing Gateway after authentication failure");
+          } catch (err: any) {
+            console.error("[gateway-ws] restart after auth error failed:", err);
+            mainWindow?.webContents.send(
+              "gateway:log",
+              `[error] 网关重启失败: ${err?.message || err}`,
+            );
+          } finally {
+            wsAuthRestartInProgress = false;
+          }
+        }, 1500);
+      }
+    },
+    onEvent: (evt) => {
+      if (evt.event === "exec.approval.requested" && isWindowsNodeMxcDesired()) {
+        const approval = normalizeWindowsNodeMxcGatewayApproval(
+          evt.payload,
+          settingsStore.get("windowsNodeMxcNodeId"),
+        );
+        if (!approval) {
+          const id =
+            evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
+              ? (evt.payload as Record<string, unknown>).id
+              : null;
+          if (typeof id === "string" && id) {
+            void gwClient?.request("exec.approval.resolve", { id, decision: "deny" });
+          }
+          return;
+        }
+        const approvalGeneration = gatewayGenerationId;
+        void handleWindowsNodeMxcGatewayApproval(approval, approvalGeneration).catch((error) => {
+          console.error("[windows-node-mxc] Gateway approval handling failed:", error);
+          if (gwClient?.connected && approvalGeneration === gatewayGenerationId) {
+            void gwClient
+              .request("exec.approval.resolve", { id: approval.id, decision: "deny" })
+              .catch((denyError) =>
+                console.error("[windows-node-mxc] Gateway approval denial failed:", denyError),
+              );
+          }
+        });
+        return;
+      }
+      if (evt.event === "exec.approval.resolved") {
+        const id =
+          evt.payload && typeof evt.payload === "object" && !Array.isArray(evt.payload)
+            ? (evt.payload as Record<string, unknown>).id
+            : null;
+        if (id === pendingWindowsNodeMxcGatewayApproval?.request.id) {
+          pendingWindowsNodeMxcGatewayApproval = null;
+          mainWindow?.webContents.send("windows-node-mxc:approval-request", null);
+        }
+        return;
+      }
+      if (evt.event === "agent") {
+        const p = evt.payload as Record<string, unknown> | undefined;
+        if (p && p.stream === "tool") {
+          const d = p.data as Record<string, unknown> | undefined;
+          console.log(`[agent:tool] phase=${d?.phase} name=${d?.name} id=${d?.toolCallId}`);
+          mainWindow?.webContents.send("agent:tool-event", p);
+        }
+      }
+      if (evt.event === "chat") {
+        const payload = evt.payload as ChatEventPayload | undefined;
+        if (!payload) return;
+        console.log(`[chat:event] state=${payload.state} sessionKey=${payload.sessionKey}`);
+
+        // Track active session for per-session sandbox deny list
+        if (payload.sessionKey && payload.sessionKey !== activeChatSession) {
+          activeChatSession = payload.sessionKey;
+          // Notify gateway process so sandbox-preload can reset per-session caches
+          if (gatewayProcess && !gatewayProcess.killed) {
+            try {
+              gatewayProcess.send({
+                type: "sandbox-session-changed",
+                sessionKey: activeChatSession,
+              });
+            } catch {}
+          }
+        }
+        mainWindow?.webContents.send("chat:event", payload);
+      }
+    },
+  });
+  gwClient.start();
+}
+
+function requestGatewayModelCatalog(): Promise<unknown> {
+  if (gatewayModelCatalogRequest) return gatewayModelCatalogRequest;
+  const client = gwClient;
+  if (!client?.connected) return Promise.reject(new Error("Gateway is not connected"));
+
+  const request = client.request("models.list", { view: "all" });
+  gatewayModelCatalogRequest = request;
+  void request.then(
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+    () => {
+      if (gatewayModelCatalogRequest === request) gatewayModelCatalogRequest = null;
+    },
+  );
+  return request;
+}
+
+async function refreshGatewayGitHubCopilotAuthStatus(): Promise<void> {
+  const client = gwClient;
+  if (!client?.connected) return;
+  try {
+    await client.request("models.authStatus", { refresh: true });
+  } catch (error) {
+    console.warn("[github-copilot-auth] Gateway auth refresh unavailable:", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IPC Handlers
+// ---------------------------------------------------------------------------
+
+/** Notify gateway process about updated sandbox directory lists. */
+function notifySandboxDirsChanged(): void {
+  if (!gatewayProcess || gatewayProcess.killed) return;
+  const status = toolSandbox?.getStatus();
+  if (!status) return;
+  try {
+    gatewayProcess.send({
+      type: "sandbox-dirs-updated",
+      rw: status.sandboxDirsRW,
+      ro: status.sandboxDirsRO,
+    });
+  } catch {}
+}
+
+/** Record a directory in grant history (idempotent). */
+function addToGrantHistory(dir: string): void {
+  const history = settingsStore.get("sandboxGrantHistory");
+  const norm = dir.toLowerCase();
+  if (!history.some((d) => d.toLowerCase() === norm)) {
+    history.push(dir);
+    settingsStore.set("sandboxGrantHistory", history);
+  }
+}
+
+/** Remove a directory from grant history after successful revoke. */
+function removeFromGrantHistory(dir: string): void {
+  const norm = dir.toLowerCase();
+  const history = settingsStore
+    .get("sandboxGrantHistory")
+    .filter((d: string) => d.toLowerCase() !== norm);
+  settingsStore.set("sandboxGrantHistory", history);
+}
+
+/**
+ * Clean up stale ACLs on startup: revoke any directories that are in
+ * grant history but no longer in the current settings (RW or RO).
+ * Handles: failed revokes from previous sessions, removed-then-not-cleaned dirs.
+ * Does NOT touch dirs that were re-added (they're in settings → safe).
+ */
+async function cleanupStaleAcls(): Promise<void> {
+  if (!toolSandbox) return;
+  const history = settingsStore.get("sandboxGrantHistory");
+  const rwSet = new Set(
+    settingsStore.get("sandboxUserDirsRW").map((d: string) => normalizeDirPath(d).toLowerCase()),
+  );
+  const roSet = new Set(
+    settingsStore.get("sandboxUserDirsRO").map((d: string) => normalizeDirPath(d).toLowerCase()),
+  );
+
+  for (const dir of history) {
+    const norm = normalizeDirPath(dir).toLowerCase();
+    if (!rwSet.has(norm) && !roSet.has(norm)) {
+      console.log(`[sandbox] Cleaning up stale ACL: ${dir}`);
+      const ok = await revokeWithUnshield(dir);
+      if (ok) {
+        removeFromGrantHistory(dir);
+        console.log(`[sandbox] Stale ACL cleaned: ${dir}`);
+      } else {
+        console.warn(`[sandbox] Failed to clean stale ACL: ${dir} (will retry next startup)`);
+      }
+    }
+  }
+}
+
+// --- Skill dependency (PATH) indexing ---
+// Skills declare required CLIs in their SKILL.md metadata (requires.bins). To tell
+// whether a skill is actually usable we must check if those binaries are on PATH.
+// Doing a per-binary lookup (or spawning `where`/`which`) is extremely slow (~11s for
+// ~40 bins). Instead we list each PATH directory ONCE and build an in-memory Set of
+// executable basenames; membership checks are then O(1). The index is cached for the
+// session and only rebuilt on an explicit refresh (e.g. after the user installs a CLI).
+let pathExecutableIndexCache: Set<string> | null = null;
+
+function buildPathExecutableIndex(): Set<string> {
+  const exts = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+    .split(";")
+    .map((e) => e.toLowerCase())
+    .filter(Boolean);
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const index = new Set<string>();
+  for (const dir of dirs) {
+    let items: string[];
+    try {
+      items = fs.readdirSync(dir);
+    } catch {
+      continue; // missing/inaccessible PATH entry — skip
+    }
+    for (const item of items) {
+      const lower = item.toLowerCase();
+      index.add(lower); // bare name (covers scripts without an extension)
+      const ext = path.extname(lower);
+      if (ext && exts.includes(ext)) {
+        index.add(lower.slice(0, lower.length - ext.length));
+      }
+    }
+  }
+  return index;
+}
+
+function getPathExecutableIndex(forceRebuild = false): Set<string> {
+  if (forceRebuild || !pathExecutableIndexCache) {
+    pathExecutableIndexCache = buildPathExecutableIndex();
+  }
+  return pathExecutableIndexCache;
+}
+
+// A skill's usability requirements, mirroring openclaw's `metadata.openclaw.requires`
+// plus the top-level `os` gate. The runtime (`evaluateRuntimeRequires`) rejects a skill
+// unless ALL of these are satisfied, so the UI must evaluate every field — not just
+// `bins` — or it will show skills as available that the gateway silently drops.
+interface SkillRequirements {
+  bins: string[]; // every one of these CLIs must be on PATH
+  anyBins: string[]; // at least ONE of these CLIs must be on PATH
+  env: string[]; // every one of these env vars must be set
+  config: string[]; // every one of these dotted config paths must be truthy
+  os: string[]; // if non-empty, current platform must be included
+  primaryEnv?: string; // env var that a skill's `apiKey` config satisfies
+}
+
+// Extract the balanced `{ ... }` object following `metadata:` in a SKILL.md frontmatter.
+// The block is multi-line and, importantly, uses RELAXED JSON with trailing commas,
+// which `JSON.parse` rejects — callers must tolerate that (see parseSkillRequirements).
+function extractMetadataBlock(frontmatter: string): string | null {
+  const key = frontmatter.indexOf("metadata:");
+  if (key < 0) return null;
+  const start = frontmatter.indexOf("{", key);
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < frontmatter.length; i++) {
+    const c = frontmatter[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return frontmatter.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+// Parse a skill's requirements out of its SKILL.md frontmatter. Handles the multi-line,
+// trailing-comma "relaxed JSON" that openclaw skills ship with. Falls back to a
+// bins-only regex if the block can't be parsed, so we never regress the old behavior.
+function parseSkillRequirements(frontmatter: string): SkillRequirements {
+  const empty: SkillRequirements = { bins: [], anyBins: [], env: [], config: [], os: [] };
+  const asStringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
+  const block = extractMetadataBlock(frontmatter);
+  if (block) {
+    // Strip trailing commas (`,` before `}` or `]`) so JSON.parse accepts the block.
+    const relaxed = block.replace(/,(\s*[}\]])/g, "$1");
+    try {
+      const meta = JSON.parse(relaxed);
+      const oc = meta?.openclaw ?? meta?.clawdbot ?? {};
+      const req = oc?.requires ?? {};
+      return {
+        bins: asStringArray(req.bins),
+        anyBins: asStringArray(req.anyBins),
+        env: asStringArray(req.env),
+        config: asStringArray(req.config),
+        os: asStringArray(oc.os),
+        primaryEnv: typeof oc.primaryEnv === "string" ? oc.primaryEnv : undefined,
+      };
+    } catch {
+      // fall through to regex fallback
+    }
+  }
+
+  // Fallback: pull just the `bins` array (legacy behavior) when the block is missing
+  // or unparseable.
+  const match = frontmatter.match(/"requires"\s*:\s*\{[^}]*?"bins"\s*:\s*\[([^\]]*)\]/);
+  if (!match) return empty;
+  return {
+    ...empty,
+    bins: match[1]
+      .split(",")
+      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean),
+  };
+}
+
+// Resolve a dotted config path (e.g. "channels.discord.token") to its value, mirroring
+// openclaw's `resolveConfigPath`.
+function resolveConfigPath(config: any, dotted: string): unknown {
+  const parts = dotted.split(".").filter(Boolean);
+  let current: any = config;
+  for (const part of parts) {
+    if (typeof current !== "object" || current === null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+// Truthiness check matching openclaw's `isTruthy`: empty/whitespace strings and 0 are
+// falsy; any non-empty object/array is truthy.
+function isConfigValueTruthy(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value.trim().length > 0;
+  return true;
+}
+
+// Skills that ship in the OpenClaw package but are intentionally not surfaced in
+// MicroClaw because they cannot work on Windows (macOS-only tooling) or are otherwise
+// unusable here. These directories may still exist on disk, so we filter them out of
+// the Skills list by name. Keep in sync with deployer/skill_catalog.py removals.
+const EXCLUDED_SKILL_IDS = new Set<string>([
+  "apple-notes", // macOS Apple Notes
+  "apple-reminders", // macOS Apple Reminders
+  "imsg", // macOS Messages / iMessage
+  "peekaboo", // macOS-only UI automation
+  "model-usage", // restricted upstream to macOS / CodexBar
+  "tmux", // upstream supports macOS and Linux only
+  "desktop-beautify", // catalog-only, no skill dir; requires Notezilla
+]);
+
+function registerIpcHandlers(): void {
+  // --- Gateway ---
+  ipcMain.handle("gateway:get-port", () => gatewayPort);
+  // gateway:get-token intentionally removed — the renderer does not need
+  // direct access to the gateway auth token.  All gateway communication
+  // flows through main-process IPC handlers (chat:send-message, etc.).
+  ipcMain.handle("gateway:get-status", () => gatewayStatus);
+  ipcMain.handle("gateway:is-service-ready", () => isApplicationServiceReady());
+  ipcMain.handle("gateway:restart", async (_event, _options?: { hard?: boolean }) => {
+    assertWindowsNodeMxcConfigurationMutable();
+    try {
+      await restartManagedGateway("Restart requested by user");
+      mainWindow?.webContents.send("gateway:log", "[restart] 网关重启完成");
+    } catch (err: any) {
+      const msg = `[error] Gateway restart failed: ${err?.message || err}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      throw err;
+    }
+  });
+
+  // --- Config ---
+  ipcMain.handle("config:get-state-dir", () => getOpenClawStateDir());
+  ipcMain.handle("config:is-configured", () => isConfigured());
+  ipcMain.handle("config:needs-setup", () => needsSetup());
+  ipcMain.handle("config:read", () => readConfig());
+  ipcMain.handle("config:read-env", () => loadStateDirEnv());
+  ipcMain.handle("config:write", async (_event, config: any) => {
+    const stateDir = getOpenClawStateDir();
+    await fs.promises.mkdir(stateDir, { recursive: true });
+    assertConfigWriteAllowed(config, readConfig());
+    if (isWindowsNodeMxcDesired()) {
+      throw new Error("config:write is blocked while Windows Node + MXC mode is enabled");
+    }
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  });
+
+  // --- Skills ---
+  const buildSkillsPayload = (forceRebuildPathIndex: boolean) => {
+    const homeDir = app.getPath("home");
+    const builtinDir = resolveBuiltinSkillsDir();
+    const customDir = path.join(homeDir, ".agents", "skills");
+    const managedDir = path.join(getOpenClawStateDir(), "skills");
+
+    // Build (or reuse) the PATH executable index used to resolve skill dependencies.
+    const pathIndex = getPathExecutableIndex(forceRebuildPathIndex);
+
+    // Load certification catalog (builtin)
+    let catalog: Record<string, { description: string; platform: string[] }> = {};
+    try {
+      const catalogPath = path.join(getOpenClawStateDir(), "skill_catalog.json");
+      if (fs.existsSync(catalogPath)) {
+        catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+      }
+    } catch {
+      /* catalog unavailable — all skills show as non-windows */
+    }
+
+    // Load managed skill catalog
+    let managedCatalog: Record<string, { description: string; platform: string[] }> = {};
+    try {
+      const managedCatalogPath = path.join(getOpenClawStateDir(), "managed_skill_catalog.json");
+      if (fs.existsSync(managedCatalogPath)) {
+        managedCatalog = JSON.parse(fs.readFileSync(managedCatalogPath, "utf-8"));
+      }
+    } catch {}
+
+    // Load allowBundled and entries from config
+    const config = readConfig();
+    const allowBundled: string[] | undefined = config?.skills?.allowBundled;
+    const entries: Record<string, { enabled: boolean }> = config?.skills?.entries ?? {};
+
+    function scanSkills(dir: string, source: "builtin" | "custom" | "managed"): any[] {
+      const results: any[] = [];
+      if (!fs.existsSync(dir)) return results;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (EXCLUDED_SKILL_IDS.has(entry.name)) continue;
+        const skillMd = path.join(dir, entry.name, "SKILL.md");
+        let name = entry.name;
+        let description = "";
+        let requirements: SkillRequirements = {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: [],
+          os: [],
+        };
+        if (fs.existsSync(skillMd)) {
+          const content = fs.readFileSync(skillMd, "utf-8");
+          // Extract the YAML frontmatter block (between the first two `---` fences) so
+          // the full multi-line `metadata` object is available to the parser. Fall back
+          // to the whole file if the closing fence isn't found.
+          let frontmatter = content;
+          const fenceStart = content.indexOf("---");
+          if (fenceStart >= 0) {
+            const fenceEnd = content.indexOf("\n---", fenceStart + 3);
+            if (fenceEnd >= 0) frontmatter = content.slice(fenceStart, fenceEnd);
+          }
+          const nameMatch = frontmatter.match(/^name:\s*(.+)/m);
+          const descMatch = frontmatter.match(/^description:\s*(.+)/m);
+          if (nameMatch) name = nameMatch[1].trim();
+          if (descMatch) description = descMatch[1].replace(/^["']|["']$/g, "").trim();
+          requirements = parseSkillRequirements(frontmatter);
+        }
+
+        // Evaluate every requirement type the runtime checks (see openclaw's
+        // `evaluateRuntimeRequires`). A skill is only usable when ALL are satisfied;
+        // checking `bins` alone (the old behavior) marked skills gated by env vars,
+        // channel config, or alternative CLIs as available even though the gateway
+        // silently drops them. See #83.
+        const skillCfg: any = (entries as Record<string, any>)[entry.name] ?? {};
+        const hasBin = (b: string): boolean => pathIndex.has(b.toLowerCase());
+        const hasEnv = (envName: string): boolean =>
+          Boolean(
+            process.env[envName] ||
+            skillCfg?.env?.[envName] ||
+            (skillCfg?.apiKey && requirements.primaryEnv === envName),
+          );
+
+        const missingBins = requirements.bins.filter((b) => !hasBin(b));
+        // `anyBins` is unmet only when NONE of the alternatives are present.
+        const missingAnyBins =
+          requirements.anyBins.length > 0 && !requirements.anyBins.some((b) => hasBin(b))
+            ? requirements.anyBins
+            : [];
+        const missingEnv = requirements.env.filter((e) => !hasEnv(e));
+        const missingConfig = requirements.config.filter(
+          (c) => !isConfigValueTruthy(resolveConfigPath(config, c)),
+        );
+        const osMismatch =
+          requirements.os.length > 0 && !requirements.os.includes(process.platform);
+
+        const eligible =
+          missingBins.length === 0 &&
+          missingAnyBins.length === 0 &&
+          missingEnv.length === 0 &&
+          missingConfig.length === 0 &&
+          !osMismatch;
+
+        let enabled = true;
+
+        if (source === "managed") {
+          const windowsAdapted = managedCatalog[entry.name]?.platform?.includes("windows") ?? false;
+          enabled = entries[entry.name]?.enabled ?? windowsAdapted;
+          if (!description && managedCatalog[entry.name]?.description) {
+            description = managedCatalog[entry.name].description;
+          }
+        } else if (source === "custom") {
+          // Custom (user-authored) skills default to enabled; persisted per-skill via
+          // skills.entries so the user can toggle them on/off from the UI.
+          enabled = entries[entry.name]?.enabled ?? true;
+        } else {
+          if (source === "builtin" && allowBundled && allowBundled.length > 0) {
+            enabled = allowBundled.includes(entry.name);
+          }
+        }
+
+        results.push({
+          id: entry.name,
+          name,
+          description,
+          source,
+          platform: catalog[entry.name]?.platform ?? managedCatalog[entry.name]?.platform ?? [],
+          enabled,
+          installed: true,
+          requiredBins: requirements.bins,
+          missingBins,
+          missingAnyBins,
+          missingEnv,
+          missingConfig,
+          osRequired: requirements.os,
+          osMismatch,
+          eligible,
+        });
+      }
+      return results;
+    }
+
+    const builtin = scanSkills(builtinDir, "builtin");
+    const custom = scanSkills(customDir, "custom");
+    const managedOnDisk = scanSkills(managedDir, "managed");
+
+    // Only expose managed skills that are actually installed on disk. Catalog-only
+    // entries (defined in managed_skill_catalog.json but not present on disk) are
+    // intentionally omitted because there is no in-app install action for them. See #58.
+
+    // Skills the user authors (e.g. via skill-creator) land in the managed skills
+    // directory but are NOT part of the shipped managed catalog. Reclassify those as
+    // custom so they appear under "Custom Skills" instead of the built-in workspace
+    // skills. Catalog workspace skills (officecli, excel-xlsx, …) stay managed.
+    const managedWorkspace = managedOnDisk.filter(
+      (s) => managedCatalog[s.id] !== undefined || isAgentOwnedSkillId(s.id),
+    );
+    const userAuthored = managedOnDisk
+      .filter((s) => managedCatalog[s.id] === undefined && !isAgentOwnedSkillId(s.id))
+      // Reclassified from managed → custom: recompute `enabled` with custom
+      // semantics (default on) rather than the managed default (off when not
+      // windows-adapted in the catalog).
+      .map((s) => ({ ...s, source: "custom" as const, enabled: entries[s.id]?.enabled ?? true }));
+
+    return { builtin, custom: [...custom, ...userAuthored], managed: managedWorkspace };
+  };
+
+  ipcMain.handle("skills:list", () => buildSkillsPayload(false));
+
+  // Rebuild the PATH executable index (picks up CLIs the user installed/removed while
+  // the app was running) and recompute skill eligibility. Cheap — only re-indexes PATH.
+  ipcMain.handle("skills:refresh", () => buildSkillsPayload(true));
+
+  ipcMain.handle("skills:update-allowlist", (_event, allowBundled: string[]) => {
+    const config = readConfig() || {};
+    if (!config.skills) config.skills = {};
+    config.skills.allowBundled = allowBundled;
+    const stateDir = getOpenClawStateDir();
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  });
+
+  ipcMain.handle(
+    "skills:update-managed-entries",
+    (_event, updatedEntries: Record<string, { enabled: boolean }>) => {
+      const config = readConfig() || {};
+      if (!config.skills) config.skills = {};
+      if (!config.skills.entries) config.skills.entries = {};
+      Object.assign(config.skills.entries, updatedEntries);
+      const stateDir = getOpenClawStateDir();
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    },
+  );
+
+  ipcMain.handle("skills:integrity-check", (): IntegrityResult => {
+    return verifySkillIntegrity();
+  });
+
+  ipcMain.handle("skills:generate-snapshot", () => {
+    generateAndSignSnapshot();
+  });
+
+  ipcMain.handle("skills:pending-integrity-result", (): IntegrityResult | null => {
+    return pendingIntegrityResult;
+  });
+
+  ipcMain.handle("skills:accept-integrity-changes", () => {
+    generateAndSignSnapshot();
+    pendingIntegrityResult = null;
+  });
+
+  ipcMain.handle(
+    "skills:set-agent-skills",
+    async (
+      _event,
+      agentId: string,
+      skillIds: string[],
+    ): Promise<{ agentId: string; skills: string[] }> => {
+      assertWindowsNodeMxcConfigurationMutable();
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      const skills = sanitizeAgentSkillIds(skillIds ?? []);
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      // Persist match-names (not raw slugs) so OpenClaw's frontmatter-name based
+      // allowlist filter binds every eligible skill. The IPC input and return value
+      // stay slug-based; resolution happens only at the openclaw.json write.
+      applyAgentSkillsToConfig(config, agentId, skills);
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update agent skills while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Updating skills for agent ${agentId}`);
+        return { agentId, skills };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed skills update for ${agentId}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Dev-only diagnostics: run the OpenClaw CLI directly (reads config from disk;
+  // does NOT require the gateway to be up) to surface each skill's gating status
+  // for the given agent. Merges `skills list` (per-skill booleans + missing) with
+  // `skills check` (aggregate buckets + detailed missingRequirements).
+  ipcMain.handle(
+    "skills:get-status",
+    async (_event, agentId: string): Promise<SkillsStatusResult> => {
+      const emptySummary = { total: 0, modelVisible: 0 };
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        return {
+          ok: false,
+          error: "A non-empty agentId is required",
+          summary: emptySummary,
+          skills: [],
+        };
+      }
+
+      const nodePath = resolveNodePath();
+      const entryPath = resolveOpenClawEntry();
+      if (!fs.existsSync(nodePath) || !fs.existsSync(entryPath)) {
+        return { ok: false, error: "OpenClaw CLI not found", summary: emptySummary, skills: [] };
+      }
+
+      const stateDir = getOpenClawStateDir();
+      const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+
+      const runCli = (subArgs: string[]): Promise<Record<string, unknown> | null> =>
+        new Promise((resolve) => {
+          const spawnOpts: Record<string, unknown> = {
+            cwd: path.dirname(entryPath),
+            env: {
+              ...process.env,
+              OPENCLAW_STATE_DIR: stateDir,
+              NODE_COMPILE_CACHE: compileCacheDir,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          };
+          if (process.platform === "win32") {
+            spawnOpts.creationFlags = CREATE_NO_WINDOW;
+          }
+          let stdout = "";
+          let stderr = "";
+          let settled = false;
+          const child = spawn(nodePath, [entryPath, ...subArgs], spawnOpts);
+          child.stdout?.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
+          child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
+          const finish = (value: Record<string, unknown> | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          child.on("error", () => finish(null));
+          child.on("close", () => {
+            try {
+              const parsed = JSON.parse(stripJsonBanner(stdout));
+              finish(typeof parsed === "object" && parsed !== null ? parsed : null);
+            } catch {
+              if (stderr.trim()) console.error(`[skills:get-status] CLI stderr: ${stderr.trim()}`);
+              finish(null);
+            }
+          });
+          setTimeout(() => {
+            if (!settled) {
+              child.kill();
+              finish(null);
+            }
+          }, SKILLS_STATUS_TIMEOUT_MS);
+        });
+
+      try {
+        // `skills list --json` already carries every per-skill boolean and the
+        // per-skill `missing` requirements the panel renders, so we only spawn one
+        // CLI process (the cold CLI can take ~60–90s). normalizeSkillsStatus stays
+        // tolerant of a null `check` payload.
+        const listJson = await runCli(["skills", "list", "--agent", agentId, "--json"]);
+        if (!listJson) {
+          return {
+            ok: false,
+            error: "OpenClaw skills CLI produced no parseable output",
+            summary: emptySummary,
+            skills: [],
+          };
+        }
+        const skills = normalizeSkillsStatus(listJson, null);
+        return {
+          ok: true,
+          summary: {
+            total: skills.length,
+            modelVisible: skills.filter((s) => s.modelVisible).length,
+          },
+          skills,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          summary: emptySummary,
+          skills: [],
+        };
+      }
+    },
+  );
+
+  // Dev-only: global master toggle for a single skill. Controls OpenClaw's global
+  // gating (both layers): the per-skill `skills.entries[key].enabled` flag and, for
+  // bundled skills, membership in `skills.allowBundled`. Operates on skillKey (slug).
+  ipcMain.handle(
+    "skills:set-global-enabled",
+    async (
+      _event,
+      params: { skillKey: string; enabled: boolean },
+    ): Promise<{ skillKey: string; enabled: boolean }> => {
+      assertWindowsNodeMxcConfigurationMutable();
+      const skillKey = params?.skillKey;
+      const enabled = params?.enabled;
+      if (typeof skillKey !== "string" || skillKey.length === 0) {
+        throw new Error("A non-empty skillKey is required");
+      }
+      if (typeof enabled !== "boolean") {
+        throw new Error("enabled must be a boolean");
+      }
+
+      // Validate against actually-discovered skills and learn whether it's bundled.
+      const payload = buildSkillsPayload(false);
+      const discovered = [...payload.builtin, ...payload.custom, ...payload.managed].find(
+        (s) => s.id === skillKey,
+      );
+      if (!discovered) {
+        throw new Error(`Unknown skill "${skillKey}"`);
+      }
+      const isBundled = discovered.source === "builtin";
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      applyGlobalSkillChange(config, skillKey, enabled, isBundled);
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update skill state while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Toggling global state for skill ${skillKey}`);
+        return { skillKey, enabled };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed global toggle for ${skillKey}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Dev-only: batched apply of BOTH the per-agent allowlist and any number of global
+  // on/off changes in a SINGLE atomic config write + SINGLE gateway restart. The panel
+  // stages per-agent and global toggles locally and flushes them here on "Apply &
+  // reload", so the user waits for exactly one restart instead of one per flip. Mirrors
+  // the robustness of skills:set-agent-skills + skills:set-global-enabled (validation,
+  // atomic write, rollback-on-failure) using the shared skill-config helpers.
+  ipcMain.handle(
+    "skills:apply-agent-config",
+    async (
+      _event,
+      params: { agentId: string; skillIds: string[]; globalChanges: GlobalSkillChange[] },
+    ): Promise<{ agentId: string; skills: string[]; globalChanges: GlobalSkillChange[] }> => {
+      assertWindowsNodeMxcConfigurationMutable();
+      const agentId = params?.agentId;
+      if (typeof agentId !== "string" || agentId.length === 0) {
+        throw new Error("A non-empty agentId is required");
+      }
+      if (!AGENT_CATALOG.some((agent) => agent.id === agentId)) {
+        throw new Error(`Unknown agent "${agentId}"`);
+      }
+      const skills = sanitizeAgentSkillIds(params?.skillIds ?? []);
+
+      // Validate every global change against actually-discovered skills and learn
+      // whether each is bundled (only bundled skills are gated by allowBundled).
+      const rawGlobalChanges = Array.isArray(params?.globalChanges) ? params.globalChanges : [];
+      const payload = buildSkillsPayload(false);
+      const discovered = [...payload.builtin, ...payload.custom, ...payload.managed];
+      const globalChanges: Array<GlobalSkillChange & { bundled: boolean }> = [];
+      for (const change of rawGlobalChanges) {
+        const skillKey = change?.skillKey;
+        const enabled = change?.enabled;
+        if (typeof skillKey !== "string" || skillKey.length === 0) {
+          throw new Error("Each global change requires a non-empty skillKey");
+        }
+        if (typeof enabled !== "boolean") {
+          throw new Error("Each global change requires a boolean enabled");
+        }
+        const match = discovered.find((s) => s.id === skillKey);
+        if (!match) {
+          throw new Error(`Unknown skill "${skillKey}"`);
+        }
+        globalChanges.push({ skillKey, enabled, bundled: match.source === "builtin" });
+      }
+
+      const configPath = getConfigPath();
+      const originalConfigText = fs.readFileSync(configPath, "utf-8");
+      const config = readConfig();
+      if (!config) throw new Error("OpenClaw configuration is unavailable");
+
+      // Stage every change onto the single config object before writing once.
+      applyAgentSkillsToConfig(config, agentId, skills);
+      for (const change of globalChanges) {
+        applyGlobalSkillChange(config, change.skillKey, change.enabled, change.bundled);
+      }
+
+      const alreadyRunning = await checkExistingGateway(gatewayPort);
+      const managedGateway = gatewaySpawnedByUs && gatewayProcess !== null;
+      if (
+        requiresExternalGatewayStop(
+          alreadyRunning,
+          true,
+          gatewaySpawnedByUs,
+          gatewayProcess !== null,
+        )
+      ) {
+        throw new Error(
+          "Cannot update skill state while MicroClaw is connected to an externally managed Gateway",
+        );
+      }
+
+      let restartAttempted = false;
+      try {
+        writeConfigTextAtomically(JSON.stringify(config, null, 2));
+        restartAttempted = true;
+        await restartManagedGateway(`Applying skill config for agent ${agentId}`);
+        return {
+          agentId,
+          skills,
+          globalChanges: globalChanges.map(({ skillKey, enabled }) => ({ skillKey, enabled })),
+        };
+      } catch (error) {
+        try {
+          writeConfigTextAtomically(originalConfigText);
+          if (restartAttempted && managedGateway) {
+            await restartManagedGateway(`Rolling back failed skill config apply for ${agentId}`);
+          }
+        } catch {
+          // Preserve the original failure; rollback is best-effort.
+        }
+        throw error;
+      }
+    },
+  );
+
+  // --- Chat (WebSocket gateway protocol) ---
+  ipcMain.handle("dialog:open-files", async (_event, params?: { currentTotalBytes?: number }) => {
+    if (!mainWindow) throw new Error("Main window is not available");
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openFile", "multiSelections"],
+    });
+    if (result.canceled) return { attachments: [], rejections: [] };
+    const currentTotalBytes =
+      typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
+        ? Math.max(0, params.currentTotalBytes)
+        : 0;
+    return prepareChatAttachments(result.filePaths, undefined, undefined, currentTotalBytes);
+  });
+
+  ipcMain.handle("logs:export-gateway", async (_event, lines: unknown) => {
+    if (!mainWindow) throw new Error("Main window is not available");
+    const contents = formatGatewayLogExport(lines);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.join(app.getPath("documents"), createGatewayLogExportFilename()),
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fs.promises.writeFile(result.filePath, contents, "utf-8");
+    return { canceled: false, filePath: result.filePath };
+  });
+
+  ipcMain.handle(
+    "attachment:import-clipboard-images",
+    async (_event, params?: { images?: unknown; currentTotalBytes?: number }) => {
+      const currentTotalBytes =
+        typeof params?.currentTotalBytes === "number" && Number.isFinite(params.currentTotalBytes)
+          ? Math.max(0, params.currentTotalBytes)
+          : 0;
+      return prepareClipboardImageAttachments(
+        params?.images,
+        app.getPath("temp"),
+        currentTotalBytes,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    "chat:send-message",
+    async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
+      if (!gwClient?.connected) throw new Error("Gateway not connected");
+      // The trusted remote context is cleared: a later permission prompt must
+      // not be attributed to whoever spoke remotely last.
+      activeTrustedContext = null;
+      await gwClient.sendChat(
+        params.sessionKey,
+        params.message,
+        validateChatAttachments(params.attachments),
+      );
+    },
+  );
+
+  ipcMain.handle("chat:load-history", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.loadHistory(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:list-session-titles", async (_event, params: { keys: string[] }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listSessionTitles(params.keys);
+  });
+
+  ipcMain.handle("chat:generate-session-title", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.generateSessionTitle(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:abort", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    await gwClient.abortChat(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:delete-session", async (_event, params: { sessionKey: string }) => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    await gwClient.deleteSession(params.sessionKey);
+  });
+
+  ipcMain.handle("chat:clear-history", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.clearAllHistory();
+  });
+
+  ipcMain.handle("gateway:warm-up-agent", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (
+      isWindowsNodeMxcDesired() &&
+      !isWindowsNodeMxcIngressReleased(
+        true,
+        gatewayGenerationId,
+        windowsNodeMxcIngressGeneration,
+        windowsNodeMxcActivationInProgress,
+      )
+    ) {
+      console.log("[gateway-ws] agent warm-up skipped: Windows Node + MXC ingress is locked");
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
+    if (needsSetup()) {
+      console.log("[gateway-ws] agent warm-up skipped: no model is configured");
+      return { outcome: "skipped", transcriptDeleted: true };
+    }
+    return await gwClient.warmUpAgent();
+  });
+
+  // Report as "not connected" while the post-spawn restart is pending.
+  // Without this, the renderer's isConnected() poll on mount bypasses the
+  // ws-connected gate and lets the user send messages before the gateway's
+  // post-spawn process replacement completes (sandbox runtime not yet initialized).
+  ipcMain.handle(
+    "chat:is-connected",
+    () =>
+      (gwClient?.connected ?? false) &&
+      postSpawnRestartDone &&
+      !postSpawnRestartScheduled &&
+      isApplicationIngressReady(),
+  );
+
+  // --- Cron / Scheduled Tasks ---
+  ipcMain.handle("cron:list", async () => {
+    if (isWindowsNodeMxcDesired()) return { jobs: [] };
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listCronJobs();
+  });
+
+  // --- Agents ---
+  ipcMain.handle("agents:list", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listAgents();
+  });
+  ipcMain.handle("agents:add", async (_event, agentId: string) => {
+    if (typeof agentId !== "string" || !agentId.trim()) {
+      throw new Error("Agent id is required");
+    }
+    if (isWindowsNodeMxcDesired()) {
+      throw new Error("Agent roster changes are blocked while Windows Node + MXC mode is enabled");
+    }
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (agentRosterChangeInProgress) {
+      throw new Error("Another agent roster change is already in progress");
+    }
+    agentRosterChangeInProgress = true;
+    try {
+      return await addCatalogAgent(agentId);
+    } finally {
+      agentRosterChangeInProgress = false;
+    }
+  });
+  ipcMain.handle("agents:remove", async (_event, agentId: string) => {
+    if (typeof agentId !== "string" || !agentId.trim()) {
+      throw new Error("Agent id is required");
+    }
+    if (isWindowsNodeMxcDesired()) {
+      throw new Error("Agent roster changes are blocked while Windows Node + MXC mode is enabled");
+    }
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    if (agentRosterChangeInProgress) {
+      throw new Error("Another agent roster change is already in progress");
+    }
+    agentRosterChangeInProgress = true;
+    try {
+      return await removeCatalogAgent(agentId);
+    } finally {
+      agentRosterChangeInProgress = false;
+    }
+  });
+
+  // --- Channels ---
+  ipcMain.handle("channels:list", async () => {
+    if (isWindowsNodeMxcDesired()) return { channels: [] };
+    if (!gwClient?.connected) return { channels: [] };
+    try {
+      return await gwClient.listChannels();
+    } catch (err) {
+      console.warn("[channels:list] failed:", err);
+      return { channels: [] };
+    }
+  });
+
+  // --- WeChat Plugin ---
+  ipcMain.handle("plugin:weixin:get-status", () => readWeixinPluginStatus());
+
+  ipcMain.handle("plugin:weixin:set-enabled", async (_event, enabled: boolean) => {
+    assertWindowsNodeMxcConfigurationMutable();
+    const existing = readConfig() || {};
+    // One set of enable rules, shared with first-run installation: an enable
+    // has to reach both entries.enabled and plugins.allow or the Gateway may
+    // load the plugin asynchronously.
+    const config = planWeixinPluginEnable(existing, enabled);
+    const stateDir = getOpenClawStateDir();
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    return { ok: true };
+  });
+
+  ipcMain.handle("plugin:weixin:login", async () => {
+    assertWindowsNodeMxcConfigurationMutable();
+    if (weixinLoginProcess) {
+      weixinLoginProcess.kill();
+      weixinLoginProcess = null;
+    }
+    const nodePath = resolveNodePath();
+    const entryPath = resolveOpenClawEntry();
+    if (!fs.existsSync(nodePath) || !fs.existsSync(entryPath)) {
+      return { ok: false, error: "OpenClaw CLI not found" };
+    }
+    return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      const args = [entryPath, "channels", "login", "--channel", "openclaw-weixin"];
+      const stateDir = getOpenClawStateDir();
+      const compileCacheDir = path.join(stateDir, COMPILE_CACHE_SUBDIR);
+      const spawnOpts: any = {
+        cwd: path.dirname(entryPath),
+        env: {
+          ...process.env,
+          OPENCLAW_STATE_DIR: stateDir,
+          NODE_COMPILE_CACHE: compileCacheDir,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      };
+      if (process.platform === "win32") {
+        spawnOpts.creationFlags = CREATE_NO_WINDOW;
+      }
+      const child = spawn(nodePath, args, spawnOpts);
+      weixinLoginProcess = child;
+      let settled = false;
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        mainWindow?.webContents.send("plugin:weixin:login-output", chunk.toString("utf-8"));
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        mainWindow?.webContents.send("plugin:weixin:login-output", chunk.toString("utf-8"));
+      });
+      child.on("error", (err) => {
+        weixinLoginProcess = null;
+        if (!settled) {
+          settled = true;
+          resolve({ ok: false, error: err.message });
+        }
+      });
+      child.on("close", (code) => {
+        weixinLoginProcess = null;
+        mainWindow?.webContents.send("plugin:weixin:login-done", { code });
+        if (!settled) {
+          settled = true;
+          resolve({ ok: code === 0, error: code !== 0 ? `Exit code ${code}` : undefined });
+        }
+        // After successful login, restart gateway so weixin channel starts
+        if (code === 0) {
+          console.log("[weixin-login] Login succeeded — will restart gateway in 2s");
+          mainWindow?.webContents.send(
+            "gateway:log",
+            "[weixin] 登录成功，正在重启网关以激活微信通道…",
+          );
+          setTimeout(async () => {
+            try {
+              await restartManagedGateway("Activating Weixin after login");
+            } catch (err: any) {
+              console.error("[weixin-login] restart failed:", err.message);
+            }
+          }, 2000);
+        }
+      });
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          child.kill();
+          weixinLoginProcess = null;
+          resolve({ ok: false, error: "Login timed out" });
+        }
+      }, WEIXIN_LOGIN_TIMEOUT_MS);
+    });
+  });
+
+  ipcMain.handle("plugin:weixin:cancel-login", () => {
+    if (weixinLoginProcess) {
+      weixinLoginProcess.kill();
+      weixinLoginProcess = null;
+    }
+  });
+
+  // --- WeChat QR Login via Gateway RPC (fast path, no CLI spawn) ---
+  ipcMain.handle(
+    "plugin:weixin:login-qr-start",
+    async (
+      _event,
+      params?: {
+        accountId?: string;
+        force?: boolean;
+      },
+    ) => {
+      assertWindowsNodeMxcConfigurationMutable();
+      if (!gwClient?.connected) {
+        return { ok: false, error: "Gateway not connected" };
+      }
+      try {
+        const result = await gwClient.weixinLoginQrStart(params);
+        return { ok: true, ...result };
+      } catch (err: any) {
+        console.error("[weixin:login-qr-start] failed:", err.message);
+        return { ok: false, error: err.message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "plugin:weixin:login-qr-wait",
+    async (
+      _event,
+      params: {
+        sessionKey: string;
+        accountId?: string;
+        timeoutMs?: number;
+      },
+    ) => {
+      assertWindowsNodeMxcConfigurationMutable();
+      if (!gwClient?.connected) {
+        return { connected: false, message: "Gateway not connected" };
+      }
+      try {
+        const result = await gwClient.weixinLoginQrWait(params);
+        return result;
+      } catch (err: any) {
+        console.error("[weixin:login-qr-wait] failed:", err.message);
+        return { connected: false, message: err.message };
+      }
+    },
+  );
+
+  ipcMain.handle("plugin:weixin:disconnect", async (_event, params?: { accountId?: string }) => {
+    assertWindowsNodeMxcConfigurationMutable();
+    // Remove all account files and restart gateway
+    try {
+      const stateDir = getOpenClawStateDir();
+      const accountsIndexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
+      const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
+
+      let accountIds: string[] = [];
+      if (params?.accountId) {
+        accountIds = [params.accountId];
+      } else {
+        // Remove all accounts
+        try {
+          if (fs.existsSync(accountsIndexPath)) {
+            const parsed = JSON.parse(fs.readFileSync(accountsIndexPath, "utf-8"));
+            if (Array.isArray(parsed)) accountIds = parsed;
+          }
+        } catch {}
+      }
+
+      // Delete account data files
+      for (const id of accountIds) {
+        const tokenFile = path.join(accountsDir, `${id}.json`);
+        try {
+          fs.unlinkSync(tokenFile);
+        } catch {}
+      }
+
+      // Update or clear the index
+      if (params?.accountId) {
+        // Remove just this account from index
+        try {
+          const remaining =
+            accountIds.length > 0
+              ? JSON.parse(fs.readFileSync(accountsIndexPath, "utf-8")).filter(
+                  (id: string) => id !== params.accountId,
+                )
+              : [];
+          fs.writeFileSync(accountsIndexPath, JSON.stringify(remaining, null, 2), "utf-8");
+        } catch {}
+      } else {
+        // Clear entire index
+        try {
+          fs.writeFileSync(accountsIndexPath, "[]", "utf-8");
+        } catch {}
+      }
+
+      // Restart gateway so the channel stops
+      console.log("[weixin:disconnect] Credentials removed, restarting gateway...");
+      mainWindow?.webContents.send("gateway:log", "[weixin] 微信账号已断开，正在重启网关…");
+      await restartManagedGateway("Applying Weixin account disconnection");
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // --- Model connection test (runs in main process to avoid CORS) ---
+  ipcMain.handle(
+    "model:test-connection",
+    async (
+      _event,
+      params: {
+        baseUrl: string;
+        apiKey: string;
+        apiFormat: string;
+        modelName: string;
+        reasoningEffort?: string;
+      },
+    ) => {
+      const { baseUrl, apiKey: configuredApiKey, apiFormat, modelName, reasoningEffort } = params;
+      const apiKeyResult = resolveModelApiKey(configuredApiKey, {
+        ...process.env,
+        ...loadStateDirEnv(),
+      });
+      if (!apiKeyResult.ok) return apiKeyResult;
+      const apiKey = apiKeyResult.value;
+
+      const baseUrlResult = prepareModelBaseUrl(baseUrl);
+      if (!baseUrlResult.ok) return baseUrlResult;
+      const versionedBase = baseUrlResult.value;
+      const normalizedReasoning =
+        reasoningEffort === "minimal" ||
+        reasoningEffort === "low" ||
+        reasoningEffort === "medium" ||
+        reasoningEffort === "high" ||
+        reasoningEffort === "xhigh"
+          ? reasoningEffort
+          : undefined;
+      try {
+        if (apiFormat === "anthropic") {
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "messages"), {
+            method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: modelName || "claude-3-haiku-20240307",
+              max_tokens: 1,
+              messages: [{ role: "user", content: "hi" }],
+            }),
+          });
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (Anthropic)",
+              baseUrl: versionedBase,
+            };
+          }
+          return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+        } else if (apiFormat === "openai-responses") {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+          const body: Record<string, unknown> = {
+            model: modelName || "gpt-4o",
+            input: "hi",
+            max_output_tokens: 1,
+          };
+          if (normalizedReasoning) {
+            body.reasoning = { effort: normalizedReasoning };
+          }
+
+          const res = await requestModelEndpoint(appendModelEndpoint(versionedBase, "responses"), {
+            method: "POST",
+            signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
+            headers,
+            body: JSON.stringify(body),
+          });
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI Responses)",
+              baseUrl: versionedBase,
+            };
+          }
+          return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+        } else {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+          const res = await requestModelEndpoint(
+            appendModelEndpoint(versionedBase, "chat/completions"),
+            {
+              method: "POST",
+              signal: AbortSignal.timeout(MODEL_CONNECTION_TEST_TIMEOUT_MS),
+              headers,
+              body: JSON.stringify({
+                model: modelName || "gpt-4o",
+                max_tokens: 1,
+                messages: [{ role: "user", content: "hi" }],
+              }),
+            },
+          );
+          if (res.ok) {
+            return {
+              ok: true,
+              message: "Connection successful (OpenAI)",
+              baseUrl: versionedBase,
+            };
+          }
+          return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+        }
+      } catch (err: any) {
+        return { ok: false, message: "Connection failed: " + (err.message || "Network error") };
+      }
+    },
+  );
+
+  ipcMain.handle("model:github-copilot:prepare", async () => {
+    assertWindowsNodeMxcConfigurationMutable();
+    const config = readConfig();
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("OpenClaw configuration is unavailable");
+    }
+    const restartRequired = ensureGitHubCopilotProviderPlugin(config);
+    if (restartRequired) {
+      await fs.promises.writeFile(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+      invalidateGitHubCopilotAuthStatusCache();
+    }
+    return { restartRequired };
+  });
+
+  ipcMain.handle("model:github-copilot:start-login", () => ({
+    sessionId: githubCopilotAuthManager.start(resolveGitHubCopilotAuthRuntime()),
+  }));
+
+  ipcMain.handle("model:github-copilot:cancel-login", (_event, sessionId?: string) => ({
+    cancelled: githubCopilotAuthManager.cancel(sessionId),
+  }));
+
+  ipcMain.handle("model:github-copilot:disconnect", async () => {
+    githubCopilotAuthManager.stop();
+    const result = await disconnectGitHubCopilot(resolveGitHubCopilotAuthRuntime());
+    await refreshGatewayGitHubCopilotAuthStatus();
+    return result;
+  });
+
+  ipcMain.handle("model:github-copilot:status", () => {
+    const client = gwClient;
+    const queryGateway = client?.connected ? () => client.request("models.authStatus") : undefined;
+    return getGitHubCopilotAuthStatus(resolveGitHubCopilotAuthRuntime(), queryGateway);
+  });
+
+  ipcMain.handle("model:github-copilot:list-models", async () => {
+    if (gwClient?.connected) {
+      try {
+        const result = await requestGatewayModelCatalog();
+        const models = parseGitHubCopilotGatewayModels(result);
+        if (models.length > 0) return models;
+      } catch (error) {
+        console.warn("[github-copilot-auth] Gateway model catalog unavailable:", error);
+      }
+    }
+    return listGitHubCopilotModels(resolveGitHubCopilotAuthRuntime());
+  });
+
+  // --- Usage (via gateway WebSocket sessions.usage) ---
+  ipcMain.handle("usage:get-stats", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway 未连接");
+    const endDate = new Date().toISOString().split("T")[0];
+    const startDate = new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000)
+      .toISOString()
+      .split("T")[0];
+
+    // Query the gateway's sessions.usage method (same as OpenClaw web dashboard)
+    const result = await gwClient.request<any>("sessions.usage", {
+      startDate,
+      endDate,
+      limit: 1000,
+      includeContextWeight: true,
+    });
+
+    const totals = result?.totals || {};
+    const aggregates = result?.aggregates || {};
+    const daily = aggregates.daily || [];
+    const byModel = aggregates.byModel || [];
+    const messages = aggregates.messages || {};
+
+    // Build model breakdown
+    const modelBreakdown: Record<
+      string,
+      {
+        requests: number;
+        promptTokens: number;
+        completionTokens: number;
+        spend: number;
+      }
+    > = {};
+    const modelSpend: Record<string, number> = {};
+    for (const m of byModel) {
+      const name = m.model || m.provider || "unknown";
+      const mt = m.totals || {};
+      modelBreakdown[name] = {
+        requests: m.count || 0,
+        promptTokens: mt.input || 0,
+        completionTokens: mt.output || 0,
+        spend: mt.totalCost || 0,
+      };
+      modelSpend[name] = mt.totalCost || 0;
+    }
+
+    // Build daily spend
+    const dailySpend: Record<string, number> = {};
+    for (const d of daily) {
+      if (d.date) dailySpend[d.date] = d.cost || 0;
+    }
+
+    // The gateway reports cost in USD; fetch the live USD→CNY rate so the
+    // renderer can convert + relabel spend to ¥ (falls back gracefully offline).
+    const fx = await getUsdToCnyRate();
+
+    return {
+      totalSpend: totals.totalCost || 0,
+      maxBudget: null,
+      modelSpend,
+      keyName: "",
+      budgetDuration: null,
+      budgetResetAt: null,
+      totalPromptTokens: totals.input || 0,
+      totalCompletionTokens: totals.output || 0,
+      totalTokens: totals.totalTokens || 0,
+      totalRequests: messages.total || result?.sessions?.length || 0,
+      modelBreakdown,
+      dailySpend,
+      hasDetailedLogs: (result?.sessions?.length || 0) > 0,
+      // Extra fields from gateway
+      cacheReadTokens: totals.cacheRead || 0,
+      cacheWriteTokens: totals.cacheWrite || 0,
+      sessionCount: result?.sessions?.length || 0,
+      toolCalls: aggregates.tools?.totalCalls || 0,
+      // USD→CNY conversion metadata (spend values above remain raw USD)
+      exchangeRate: fx.rate,
+      currency: fx.currency,
+    };
+  });
+
+  // Live USD→CNY exchange rate used to render spend figures in CNY.
+  ipcMain.handle("usage:get-exchange-rate", async () => {
+    return getUsdToCnyRate();
+  });
+
+  // Detailed usage stats for the full Usage dashboard page
+  ipcMain.handle(
+    "usage:get-detailed-stats",
+    async (_event, params: { startDate?: string; endDate?: string; filter?: string }) => {
+      if (!gwClient?.connected) throw new Error("Gateway 未连接");
+
+      const endDate = params.endDate || new Date().toISOString().split("T")[0];
+      const startDate =
+        params.startDate ||
+        new Date(Date.now() - USAGE_QUERY_DAYS * 86_400_000).toISOString().split("T")[0];
+
+      const result = await gwClient.request<any>("sessions.usage", {
+        startDate,
+        endDate,
+        limit: 5000,
+        includeContextWeight: true,
+      });
+
+      const totals = result?.totals || {};
+      const aggregates = result?.aggregates || {};
+      const sessions: any[] = result?.sessions || [];
+
+      // Compute aggregate messages from sessions if aggregates.messages is incomplete
+      const aggMessages = aggregates.messages || {};
+      if (!aggMessages.total && sessions.length) {
+        let total = 0,
+          user = 0,
+          assistant = 0,
+          toolCalls = 0,
+          errors = 0;
+        for (const s of sessions) {
+          const mc = s.usage?.messageCounts || {};
+          total += mc.total || 0;
+          user += mc.user || 0;
+          assistant += mc.assistant || 0;
+          toolCalls += mc.toolCalls || 0;
+          errors += mc.errors || 0;
+        }
+        aggMessages.total = total;
+        aggMessages.user = user;
+        aggMessages.assistant = assistant;
+        aggMessages.toolCalls = toolCalls;
+        aggMessages.errors = errors;
+      }
+
+      // Compute aggregate tools from sessions if aggregates.tools is incomplete
+      const aggTools = aggregates.tools || {};
+      if (!aggTools.totalCalls && sessions.length) {
+        let totalCalls = 0;
+        const toolSet = new Set<string>();
+        for (const s of sessions) {
+          const mc = s.usage?.messageCounts || {};
+          totalCalls += mc.toolCalls || 0;
+        }
+        aggTools.totalCalls = totalCalls;
+        aggTools.uniqueTools = toolSet.size;
+      }
+
+      // Build error aggregation by day/hour from daily data
+      const errTotal = (aggregates.daily || []).reduce(
+        (sum: number, d: any) => sum + (d.errors || 0),
+        0,
+      );
+      const errorsByDay = (aggregates.daily || [])
+        .filter((d: any) => d.errors > 0)
+        .map((d: any) => ({ date: d.date, count: d.errors, messages: d.messages || 0 }));
+
+      // Build byTool from aggregates.tools or sessions
+      const byTool: Array<{ tool: string; calls: number }> = [];
+      if (aggregates.tools?.byTool) {
+        for (const [name, calls] of Object.entries(aggregates.tools.byTool)) {
+          byTool.push({ tool: name, calls: calls as number });
+        }
+      }
+
+      return {
+        totals: {
+          totalCost: totals.totalCost || 0,
+          input: totals.input || 0,
+          output: totals.output || 0,
+          totalTokens: totals.totalTokens || 0,
+          cacheRead: totals.cacheRead || 0,
+          cacheWrite: totals.cacheWrite || 0,
+        },
+        aggregates: {
+          daily: (aggregates.daily || []).map((d: any) => ({
+            date: d.date,
+            tokens: d.tokens || 0,
+            cost: d.cost || 0,
+            input: d.input || 0,
+            output: d.output || 0,
+            cacheRead: d.cacheRead || 0,
+            messages: d.messages || 0,
+            toolCalls: d.toolCalls || 0,
+            errors: d.errors || 0,
+          })),
+          byModel: (aggregates.byModel || []).map((m: any) => ({
+            model: m.model || "unknown",
+            provider: m.provider || "",
+            count: m.count || 0,
+            totals: m.totals || {},
+          })),
+          byProvider: (aggregates.byProvider || []).map((p: any) => ({
+            provider: p.provider || p.name || "unknown",
+            count: p.count || 0,
+            totals: p.totals || {},
+          })),
+          byAgent: (aggregates.byAgent || []).map((a: any) => ({
+            agent: a.agentId || a.agent || a.name || "unknown",
+            count: a.count || 0,
+            totals: a.totals || {},
+          })),
+          byChannel: (aggregates.byChannel || []).map((c: any) => ({
+            channel: c.channel || c.name || "unknown",
+            count: c.count || 0,
+            totals: c.totals || {},
+          })),
+          byTool,
+          messages: aggMessages,
+          tools: aggTools,
+          errors: {
+            total: errTotal,
+            byDay: errorsByDay,
+          },
+        },
+        sessions: sessions.map((s: any) => {
+          const usage = s.usage || {};
+          const mc = usage.messageCounts || {};
+          return {
+            key: s.key || s.sessionKey || "",
+            agent: s.agentId || s.agent || "",
+            channel: s.channel || "",
+            provider: s.modelProvider || s.provider || "",
+            model: s.model || "",
+            messages: mc.total || 0,
+            tools: mc.toolCalls || 0,
+            errors: mc.errors || 0,
+            tokens: usage.totalTokens || 0,
+            cost: usage.totalCost || 0,
+            duration: (usage.durationMs || 0) / 1000,
+            createdAt: usage.firstActivity
+              ? new Date(usage.firstActivity).toISOString()
+              : s.updatedAt
+                ? new Date(s.updatedAt).toISOString()
+                : "",
+          };
+        }),
+        startDate,
+        endDate,
+      };
+    },
+  );
+
+  // --- Settings ---
+  ipcMain.handle("settings:get", () => settingsStore.store);
+  ipcMain.handle("settings:set", (_event, key: string, value: any) => {
+    if (!RENDERER_WRITABLE_SETTING_KEYS.has(key)) {
+      throw new Error(`Setting "${key}" cannot be changed through the generic settings API`);
+    }
+    settingsStore.set(key as any, value);
+    if (key === "autoStart") {
+      app.setLoginItemSettings({ openAtLogin: !!value });
+    } else if (key === "language") {
+      updateTrayMenu(gatewayStatus, resolveSupportedLocale(String(value)));
+    }
+  });
+
+  // --- Experimental Windows Node + MXC sandbox (security framework #202) ---
+  ipcMain.handle("windows-node-mxc:get-status", () => getWindowsNodeMxcStatus());
+  ipcMain.handle("windows-node-mxc:approval-current", () =>
+    getPendingWindowsNodeMxcApprovalForRenderer(),
+  );
+
+  ipcMain.handle("windows-node-mxc:durable-approvals:list", () =>
+    getWindowsNodeMxcDurableApprovalStore().list(),
+  );
+
+  ipcMain.handle("windows-node-mxc:durable-approvals:revoke", async (_event, id: string) => {
+    await withWindowsNodeMxcDurableApprovalLock(() =>
+      getWindowsNodeMxcDurableApprovalStore().revoke(id),
+    );
+    return getWindowsNodeMxcDurableApprovalStore().list();
+  });
+
+  ipcMain.handle("windows-node-mxc:durable-approvals:revoke-all", async () => {
+    await withWindowsNodeMxcDurableApprovalLock(() =>
+      getWindowsNodeMxcDurableApprovalStore().revokeAll(),
+    );
+    return [];
+  });
+
+  ipcMain.handle(
+    "windows-node-mxc:set-enabled",
+    async (_event, params: { enabled: boolean; nodeId?: string }) => {
+      beginWindowsNodeMxcLifecycleOperation();
+      let transitionSucceeded = false;
+      let automaticReadinessStarted = false;
+      try {
+        const enabled = params?.enabled === true;
+        setWindowsNodeMxcLifecycleState("locking");
+        windowsNodeMxcIngressGeneration = null;
+        windowsNodeMxcActivationInProgress = false;
+        bundledWindowsNodeHost.revokeActivationLease();
+        sendToWindow(mainWindow, "gateway:ws-disconnected", "Security mode transition");
+        sendToWindow(mainWindow, "gateway:service-loading");
+        if (gwClient?.connected && (!gatewaySpawnedByUs || !isManagedGatewayProcessAlive())) {
+          throw new Error(
+            "Windows Node + MXC mode requires MicroClaw's managed Gateway; stop the external Gateway first",
+          );
+        }
+        const config = readConfig();
+        if (!config || typeof config !== "object" || Array.isArray(config)) {
+          throw new Error("OpenClaw configuration is unavailable");
+        }
+
+        const configuredPort = config?.gateway?.port || gatewayPort || DEFAULT_PORT;
+
+        if (enabled) {
+          const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+          const applied = applyWindowsNodeMxcGatewayPolicy(
+            config,
+            nodeId,
+            settingsStore.get("windowsNodeMxcToolBackups"),
+            "locked",
+          );
+          await stopGatewayForSecurityTransition(configuredPort);
+          if (!isWindowsNodeMxcDesired()) {
+            settingsStore.set(
+              "windowsNodeMxcPreviousSandboxEnabled",
+              settingsStore.get("sandboxEnabled"),
+            );
+          }
+          settingsStore.set("windowsNodeMxcToolBackups", applied.backups);
+          settingsStore.set("windowsNodeMxcNodeId", nodeId);
+          settingsStore.set("securityMode", WINDOWS_NODE_MXC_MODE);
+          settingsStore.set("sandboxEnabled", false);
+          settingsStore.delete("windowsNodeMxcSmoke");
+          toolSandbox?.setEnabled(false);
+          writeConfigTextAtomically(JSON.stringify(applied.config, null, 2));
+          automaticReadinessStarted = true;
+          const status = await runAutomaticWindowsNodeMxcReadiness();
+          transitionSucceeded = true;
+          return status;
+        } else {
+          stopBundledWindowsNodeHost();
+          const restored = restoreWindowsNodeMxcGatewayPolicy(
+            config,
+            settingsStore.get("windowsNodeMxcToolBackups"),
+          );
+          await stopGatewayForSecurityTransition(configuredPort);
+          settingsStore.set(
+            "sandboxEnabled",
+            settingsStore.get("windowsNodeMxcPreviousSandboxEnabled"),
+          );
+          toolSandbox?.setEnabled(settingsStore.get("windowsNodeMxcPreviousSandboxEnabled"));
+          writeConfigTextAtomically(JSON.stringify(restored, null, 2));
+          settingsStore.set("windowsNodeMxcToolBackups", {});
+          settingsStore.delete("windowsNodeMxcSmoke");
+          settingsStore.set("securityMode", "appcontainer");
+          setWindowsNodeMxcLifecycleState("starting-standard");
+          postSpawnRestartDone = false;
+          mainWindow?.webContents.send(
+            "gateway:log",
+            "[start] Applying remembered non-MXC security mode",
+          );
+          await startGateway();
+          await waitForManagedGatewayConnection();
+          setWindowsNodeMxcLifecycleState("idle");
+          transitionSucceeded = true;
+          return getWindowsNodeMxcStatus();
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (isWindowsNodeMxcDesired()) {
+          setWindowsNodeMxcLifecycleState("locked", detail);
+          if (!automaticReadinessStarted) {
+            await failClosedWindowsNodeMxc(`Security-mode transition failed: ${detail}`);
+          }
+        } else {
+          setWindowsNodeMxcLifecycleState("failed", detail);
+          try {
+            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+          } finally {
+            setGatewayStatus("failed");
+          }
+        }
+        throw error;
+      } finally {
+        endWindowsNodeMxcLifecycleOperation();
+        if (transitionSucceeded) notifyRendererApplicationReady();
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "windows-node-mxc:approval-respond",
+    async (
+      _event,
+      params: {
+        requestId?: unknown;
+        decision?: unknown;
+      },
+    ) => {
+      const requestId = params?.requestId;
+      const decision = params?.decision;
+      if (typeof requestId !== "string" || requestId.length === 0) {
+        throw new Error("Invalid Windows node approval request ID");
+      }
+      if (
+        typeof decision !== "string" ||
+        !["deny", "allow-once", "allow-always"].includes(decision)
+      ) {
+        throw new Error("Invalid Windows node approval decision");
+      }
+      const normalizedDecision = decision as WindowsNodeMxcApprovalDecision;
+      const gatewayApproval = pendingWindowsNodeMxcGatewayApproval;
+      if (gatewayApproval?.request.id === requestId) {
+        await withWindowsNodeMxcApprovalResolution(async () => {
+          const approvalGeneration = gatewayApproval.gatewayGeneration;
+          const proofContext = windowsNodeMxcApprovalProofContext;
+          const client = gwClient;
+          if (approvalGeneration !== gatewayGenerationId || !proofContext) {
+            throw new Error("The Gateway approval belongs to a stale security generation");
+          }
+          if (!gatewayApproval.request.allowedDecisions.includes(normalizedDecision)) {
+            throw new Error("The requested Gateway approval decision is unavailable");
+          }
+          if (normalizedDecision !== "deny") await requireEffectiveWindowsNodeMxc(true);
+          if (
+            windowsNodeMxcSecurityTransitionInProgress ||
+            pendingWindowsNodeMxcGatewayApproval !== gatewayApproval ||
+            approvalGeneration !== gatewayGenerationId ||
+            proofContext !== windowsNodeMxcApprovalProofContext ||
+            !isWindowsNodeMxcIngressReleased(
+              true,
+              gatewayGenerationId,
+              windowsNodeMxcIngressGeneration,
+              windowsNodeMxcActivationInProgress,
+            ) ||
+            !client?.connected ||
+            client !== gwClient
+          ) {
+            throw new Error("The Gateway approval became stale before it could be resolved");
+          }
+          const durableIdentity =
+            normalizedDecision === "allow-always"
+              ? durableApprovalIdentityFromGateway(
+                  gatewayApproval.request,
+                  proofContext.policyFingerprint,
+                )
+              : null;
+          if (normalizedDecision === "allow-always" && !durableIdentity) {
+            throw new Error("This command is not eligible for an exact durable MXC approval");
+          }
+          await client.request("exec.approval.resolve", {
+            id: requestId,
+            // MicroClaw owns the exact durable identity. Never create an upstream
+            // allow-always entry whose scope is weaker than the prepared node plan.
+            decision: normalizedDecision === "allow-always" ? "allow-once" : normalizedDecision,
+          });
+          if (durableIdentity) {
+            await withWindowsNodeMxcDurableApprovalLock(() =>
+              getWindowsNodeMxcDurableApprovalStore().add(durableIdentity),
+            );
+          }
+          pendingWindowsNodeMxcGatewayApproval = null;
+          sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
+        });
+        return;
+      }
+      if (normalizedDecision === "allow-always") {
+        throw new Error("Diagnostic node approvals are one-use only");
+      }
+      bundledWindowsNodeHost.respond(requestId, normalizedDecision);
+    },
+  );
+
+  // --- Updates ---
+  ipcMain.handle("updates:check", () => {
+    return checkForUpdates({
+      currentVersion: app.getVersion(),
+      manifestUrl: UPDATE_MANIFEST_URL,
+      storeManaged: process.windowsStore,
+    });
+  });
+
+  // --- Window ---
+  ipcMain.handle("window:minimize", () => {
+    minimizeWindow(mainWindow, settingsStore.get("minimizeToTray"));
+  });
+  ipcMain.handle("window:maximize", () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow?.maximize();
+    }
+  });
+  ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
+  ipcMain.handle("window:close", () => mainWindow?.close());
+  ipcMain.handle("window:resize-to-setup", () => {
+    if (!mainWindow) return;
+    mainWindow.setSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT);
+    mainWindow.center();
+  });
+  ipcMain.handle("window:expand-to-full", () => {
+    if (!mainWindow) return;
+    mainWindow.setResizable(true);
+    const savedBounds = store.get("windowBounds") as
+      | { width?: number; height?: number; x?: number; y?: number }
+      | undefined;
+    const width = savedBounds?.width || DEFAULT_WINDOW_WIDTH;
+    const height = savedBounds?.height || DEFAULT_WINDOW_HEIGHT;
+    mainWindow.setSize(width, height);
+    mainWindow.center();
+    (mainWindow as any).__registerSaveBounds?.();
+  });
+
+  // --- Shell ---
+  ipcMain.handle("shell:open-external", (_event, url: string) => {
+    if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
+      shell.openExternal(url);
+    }
+  });
+
+  ipcMain.handle("attachment:open", async (_event, request: unknown) => {
+    try {
+      const targetPath = await prepareAttachmentForOpen(
+        request,
+        app.getPath("temp"),
+        getOpenClawStateDir(),
+      );
+      const error = await shell.openPath(targetPath);
+      return error ? { ok: false, error } : { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // --- Tool Sandbox ---
+  ipcMain.handle("sandbox:get-status", () => {
+    return (
+      toolSandbox?.getStatus() ?? {
+        available: false,
+        enabled: false,
+        launcherPath: null,
+        containerName: "MicroClaw",
+        capabilities: [],
+        sandboxDirsRW: [],
+        sandboxDirsRO: [],
+        externalApps: [],
+      }
+    );
+  });
+
+  ipcMain.handle("sandbox:set-enabled", async (_event, enabled: boolean) => {
+    if (isWindowsNodeMxcDesired()) {
+      throw new Error(
+        "AppContainer and Windows Node + MXC modes are mutually exclusive; disable the experimental mode first",
+      );
+    }
+    toolSandbox?.setEnabled(enabled);
+    settingsStore.set("sandboxEnabled", enabled);
+    // Sandbox enabled/disabled requires hard gateway restart — COMSPEC and
+    // NODE_OPTIONS are baked at process start, can't change for running gateway.
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[sandbox] Sandbox ${enabled ? "enabled" : "disabled"} — restarting gateway…`,
+    );
+    try {
+      await restartManagedGateway(`Applying sandbox ${enabled ? "enablement" : "disablement"}`);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  ipcMain.handle(
+    "sandbox:exec-shell",
+    async (
+      _event,
+      params: {
+        command: string;
+        cwd?: string;
+        timeout?: number;
+      },
+    ) => {
+      if (!toolSandbox?.isActive()) {
+        return { exitCode: 1, stdout: "", stderr: "Sandbox not available", timedOut: false };
+      }
+      return await toolSandbox.execShell(params.command, {
+        cwd: params.cwd,
+        timeout: params.timeout || 30000,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    "sandbox:exec-node",
+    async (
+      _event,
+      params: {
+        code: string;
+        cwd?: string;
+        timeout?: number;
+      },
+    ) => {
+      if (!toolSandbox?.isActive()) {
+        return { exitCode: 1, stdout: "", stderr: "Sandbox not available", timedOut: false };
+      }
+      return await toolSandbox.execNode(params.code, {
+        cwd: params.cwd,
+        timeout: params.timeout || 30000,
+      });
+    },
+  );
+
+  ipcMain.handle("sandbox:provision", async () => {
+    return (await toolSandbox?.provisionAsync()) ?? false;
+  });
+
+  ipcMain.handle("sandbox:get-external-apps", () => {
+    return settingsStore.get("sandboxExternalApps");
+  });
+
+  ipcMain.handle("sandbox:set-external-apps", async (_event, apps: string[]) => {
+    if (!Array.isArray(apps)) return { ok: false, apps: [] };
+    // Shell executables must never bypass the sandbox — block them even if
+    // a compromised renderer tries to add them.
+    const BLOCKED_NAMES = new Set([
+      "cmd",
+      "powershell",
+      "pwsh",
+      "bash",
+      "sh",
+      "wsl",
+      "python",
+      "python3",
+      "node",
+      "cscript",
+      "wscript",
+      "mshta",
+    ]);
+    const MAX_EXTERNAL_APPS = 20;
+    // Validate: only accept simple alphanumeric names (no paths, no special chars)
+    const clean = apps
+      .map((a) =>
+        String(a)
+          .trim()
+          .toLowerCase()
+          .replace(/\.exe$/i, ""),
+      )
+      .filter((a) => /^[a-z0-9_-]+$/.test(a) && !BLOCKED_NAMES.has(a))
+      .slice(0, MAX_EXTERNAL_APPS);
+    settingsStore.set("sandboxExternalApps", clean);
+    toolSandbox?.setExternalApps(clean);
+    // Write to file so sandbox-preload.js picks up changes immediately
+    // (no gateway restart needed — preload re-reads on each spawn check)
+    writeExternalAppsFile(clean);
+    return { ok: true, apps: clean };
+  });
+
+  ipcMain.handle("sandbox:apply-external-apps", async () => {
+    // No-op now — changes take effect immediately via file.
+    // Kept for API compatibility.
+    return { ok: true, restarted: false };
+  });
+
+  // --- Sandbox directory permissions ---
+  const assertSandboxFolderPolicyMutable = () => {
+    assertWindowsNodeMxcFolderPolicyMutable(
+      isWindowsNodeMxcDesired(),
+      windowsNodeMxcSecurityTransitionInProgress,
+      windowsNodeMxcFolderPolicyMutationInProgress,
+    );
+  };
+
+  const beginSandboxFolderPolicyMutation = () => {
+    assertSandboxFolderPolicyMutable();
+    windowsNodeMxcFolderPolicyMutationInProgress = true;
+  };
+
+  const beginWindowsNodeMxcFolderDraftMutation = () => {
+    if (windowsNodeMxcSecurityTransitionInProgress) {
+      throw new Error("Wait for the Windows Node + MXC lifecycle operation to finish");
+    }
+    if (windowsNodeMxcFolderPolicyMutationInProgress) {
+      throw new Error("Another approved folder draft change is already in progress");
+    }
+    windowsNodeMxcFolderPolicyMutationInProgress = true;
+  };
+
+  const endSandboxFolderPolicyMutation = () => {
+    windowsNodeMxcFolderPolicyMutationInProgress = false;
+  };
+
+  const currentSandboxUserDirs = () => ({
+    rw: settingsStore.get("sandboxUserDirsRW"),
+    ro: settingsStore.get("sandboxUserDirsRO"),
+  });
+
+  const getReparsePathComponents = (dir: string): Set<string> => {
+    const normalized = path.win32.normalize(dir);
+    const parsed = path.win32.parse(normalized);
+    const components: string[] = [];
+    let current = parsed.root;
+    for (const component of normalized.slice(parsed.root.length).split("\\").filter(Boolean)) {
+      current = path.win32.join(current, component);
+      components.push(current);
+    }
+    if (components.length === 0) return new Set();
+
+    const powershellPath = path.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const script =
+      "& { foreach ($candidate in $args) { try { [Console]::Out.WriteLine([int][System.IO.File]::GetAttributes($candidate)) } catch { exit 2 } } }";
+    try {
+      const output = execFileSync(
+        powershellPath,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, ...components],
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 10_000,
+        },
+      );
+      const attributes = output
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((value) => Number.parseInt(value, 10));
+      if (
+        attributes.length !== components.length ||
+        attributes.some((value) => !Number.isInteger(value))
+      ) {
+        throw new Error("Unexpected Windows file-attribute response");
+      }
+      return new Set(
+        components
+          .filter((_component, index) => (attributes[index] & 0x400) !== 0)
+          .map((component) => normalizeDirPath(component).toLowerCase()),
+      );
+    } catch (error) {
+      console.warn(
+        `[windows-node-mxc] Could not verify reparse attributes for "${dir}"; rejecting the folder:`,
+        error,
+      );
+      return new Set(components.map((component) => normalizeDirPath(component).toLowerCase()));
+    }
+  };
+
+  const validateSandboxUserDir = (dir: string) => {
+    let reparseComponents: Set<string> | null = null;
+    return validateWindowsNodeMxcFolderPath(
+      dir,
+      (candidate) => fs.realpathSync.native(candidate),
+      (candidate) => {
+        reparseComponents ??= getReparsePathComponents(dir);
+        return (
+          fs.lstatSync(candidate).isSymbolicLink() ||
+          reparseComponents.has(normalizeDirPath(candidate).toLowerCase())
+        );
+      },
+      sensitiveWindowsRoots(
+        path.join(app.getPath("userData"), "windows-node"),
+        getOpenClawStateDir(),
+      ),
+    );
+  };
+
+  const applySandboxUserDir = async (
+    dir: string,
+    access: "rw" | "ro",
+    strictWindowsNodeMxcPolicy: boolean,
+  ) => {
+    const current = currentSandboxUserDirs();
+    let canonicalDir = normalizeDirPath(dir);
+    if (strictWindowsNodeMxcPolicy) {
+      const validation = validateSandboxUserDir(dir);
+      if (!validation.ok || !validation.canonicalPath) {
+        return {
+          ok: false,
+          reason: validation.reason,
+          removedChildren: [] as string[],
+          dirs: current,
+        };
+      }
+      canonicalDir = validation.canonicalPath;
+    }
+
+    const plan = planWindowsNodeMxcFolderUpsert(current, canonicalDir, access);
+    if (!plan.ok) return plan;
+
+    if (toolSandbox) {
+      let aclUpdated: boolean;
+      if (plan.inheritsFromParent) {
+        const launcherPath = toolSandbox.getStatus().launcherPath;
+        if (launcherPath) {
+          await unshieldIfNeeded(launcherPath, "MicroClaw", canonicalDir).catch(() => {});
+        }
+        aclUpdated = await toolSandbox.revokeDirAsync(canonicalDir);
+        if (aclUpdated && _appContainerSid) {
+          try {
+            const icaclsPath = path.join(
+              process.env.SystemRoot ?? "C:\\Windows",
+              "System32",
+              "icacls.exe",
+            );
+            const output = execFileSync(icaclsPath, [canonicalDir], {
+              windowsHide: true,
+              timeout: 3_000,
+              encoding: "utf8",
+            });
+            aclUpdated = !hasExplicitSidAce(output, _appContainerSid);
+          } catch {
+            aclUpdated = false;
+          }
+        }
+        if (aclUpdated) {
+          const inheritedAcl = await toolSandbox.checkAcl(
+            canonicalDir,
+            access === "rw" ? "rw" : "r",
+          );
+          aclUpdated = inheritedAcl?.sufficient === true;
+        }
+      } else {
+        aclUpdated =
+          (await grantAndVerifyAcl(canonicalDir, access === "rw" ? "rw" : "r")) !== "failed";
+      }
+      if (!aclUpdated) {
+        return {
+          ok: false,
+          reason: "acl-failed" as const,
+          removedChildren: [] as string[],
+          dirs: current,
+        };
+      }
+    }
+
+    for (const child of plan.removedChildren) {
+      if (toolSandbox) {
+        await revokeWithUnshield(child).catch(() => false);
+      }
+      removeFromGrantHistory(child);
+    }
+
+    settingsStore.set("sandboxUserDirsRW", plan.dirs.rw);
+    settingsStore.set("sandboxUserDirsRO", plan.dirs.ro);
+    if (toolSandbox) {
+      for (const existing of current.rw) toolSandbox.removeDirRW(existing);
+      for (const existing of current.ro) toolSandbox.removeDirRO(existing);
+      for (const configured of plan.dirs.rw) toolSandbox.addDirRW(configured);
+      for (const configured of plan.dirs.ro) toolSandbox.addDirRO(configured);
+    }
+    if (plan.inheritsFromParent) removeFromGrantHistory(canonicalDir);
+    else addToGrantHistory(canonicalDir);
+
+    if (access === "ro" && toolSandbox) {
+      for (const childRw of plan.dirs.rw.filter((child) => isSubdirectoryOf(canonicalDir, child))) {
+        if (fs.existsSync(childRw)) await grantAndVerifyAcl(childRw, "rw");
+      }
+    }
+
+    notifySandboxDirsChanged();
+    return plan;
+  };
+
+  const normalizeCompleteWindowsNodeMxcFolderPolicy = (draft: WindowsNodeMxcFolderPolicy) => {
+    const result = normalizeWindowsNodeMxcFolderPolicy(draft, validateSandboxUserDir);
+    if (!result.ok) {
+      throw new Error(
+        `Approved folder policy rejected${result.path ? ` (${result.path})` : ""}: ${
+          result.reason ?? "invalid policy"
+        }`,
+      );
+    }
+    return result.dirs;
+  };
+
+  const replaceWindowsNodeMxcFolderAcls = async (
+    previous: WindowsNodeMxcFolderPolicy,
+    next: WindowsNodeMxcFolderPolicy,
+  ) => {
+    if (!toolSandbox) throw new Error("The AppContainer ACL manager is unavailable");
+    const previousAccess = new Map([
+      ...previous.ro.map((dir) => [normalizeDirPath(dir).toLowerCase(), "ro"] as const),
+      ...previous.rw.map((dir) => [normalizeDirPath(dir).toLowerCase(), "rw"] as const),
+    ]);
+    const nextAccess = new Map([
+      ...next.ro.map((dir) => [normalizeDirPath(dir).toLowerCase(), "ro"] as const),
+      ...next.rw.map((dir) => [normalizeDirPath(dir).toLowerCase(), "rw"] as const),
+    ]);
+    for (const dir of [...previous.rw, ...previous.ro]) {
+      const key = normalizeDirPath(dir).toLowerCase();
+      if (nextAccess.get(key) === previousAccess.get(key)) continue;
+      const launcherPath = toolSandbox.getStatus().launcherPath;
+      if (launcherPath) await unshieldIfNeeded(launcherPath, "MicroClaw", dir);
+      if (!(await toolSandbox.revokeDirAsync(dir))) {
+        throw new Error(
+          `Windows could not revoke the previous ACL for ${dir}. No elevation was attempted; the MXC route remains locked.`,
+        );
+      }
+    }
+    const ordered = [
+      ...next.ro.map((dir) => ({ dir, access: "r" as const })),
+      ...next.rw.map((dir) => ({ dir, access: "rw" as const })),
+    ].sort((left, right) => left.dir.length - right.dir.length);
+    for (const entry of ordered) {
+      if (likelyNeedsElevation(entry.dir)) {
+        throw new Error(
+          `The folder ${entry.dir} requires elevated ACL preparation. MicroClaw did not request elevation; choose a user-owned folder or prepare it explicitly.`,
+        );
+      }
+      const granted = await toolSandbox.grantDirAsync(entry.dir, entry.access, true);
+      if (!granted || !(await verifyAclPropagation(entry.dir, entry.access))) {
+        throw new Error(`Windows could not apply and verify the MXC ACL for ${entry.dir}`);
+      }
+    }
+  };
+
+  const persistWindowsNodeMxcFolderPolicy = (
+    next: WindowsNodeMxcFolderPolicy,
+    previous: WindowsNodeMxcFolderPolicy,
+    lastError: string | null,
+  ) => {
+    const currentGrantHistory = settingsStore.get("sandboxGrantHistory");
+    const nextKeys = new Set(
+      [...next.rw, ...next.ro].map((dir) => normalizeDirPath(dir).toLowerCase()),
+    );
+    const nextGrantHistory = [
+      ...currentGrantHistory.filter((dir) => nextKeys.has(normalizeDirPath(dir).toLowerCase())),
+      ...[...next.rw, ...next.ro].filter(
+        (dir) =>
+          !currentGrantHistory.some(
+            (existing) =>
+              normalizeDirPath(existing).toLowerCase() === normalizeDirPath(dir).toLowerCase(),
+          ),
+      ),
+    ];
+    settingsStore.store = {
+      ...settingsStore.store,
+      sandboxUserDirsRW: [...next.rw],
+      sandboxUserDirsRO: [...next.ro],
+      sandboxGrantHistory: nextGrantHistory,
+      windowsNodeMxcFolderPolicyRecovery: {
+        previous: { rw: [...previous.rw], ro: [...previous.ro] },
+        draft: { rw: [...next.rw], ro: [...next.ro] },
+        updatedAt: new Date().toISOString(),
+        lastError,
+      },
+    };
+    if (toolSandbox) {
+      for (const dir of previous.rw) toolSandbox.removeDirRW(dir);
+      for (const dir of previous.ro) toolSandbox.removeDirRO(dir);
+      for (const dir of next.rw) toolSandbox.addDirRW(dir);
+      for (const dir of next.ro) toolSandbox.addDirRO(dir);
+    }
+    notifySandboxDirsChanged();
+  };
+
+  const preserveWindowsNodeMxcAclGrantHistory = (...policies: WindowsNodeMxcFolderPolicy[]) => {
+    const history = [...settingsStore.get("sandboxGrantHistory")];
+    for (const policy of policies) {
+      for (const dir of [...policy.rw, ...policy.ro]) {
+        if (
+          !history.some(
+            (existing) =>
+              normalizeDirPath(existing).toLowerCase() === normalizeDirPath(dir).toLowerCase(),
+          )
+        ) {
+          history.push(dir);
+        }
+      }
+    }
+    settingsStore.set("sandboxGrantHistory", history);
+  };
+
+  ipcMain.handle(
+    "sandbox:stage-user-dir",
+    async (_event, params: { access: "rw" | "ro"; draft: WindowsNodeMxcFolderPolicy }) => {
+      beginWindowsNodeMxcFolderDraftMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        const current = normalizeCompleteWindowsNodeMxcFolderPolicy(params.draft);
+        if (!mainWindow) return { ok: false, canceled: true, dirs: current };
+        const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+        if (result.canceled || result.filePaths.length === 0) {
+          return { ok: false, canceled: true, dirs: current };
+        }
+        const validation = validateSandboxUserDir(result.filePaths[0]);
+        if (!validation.ok || !validation.canonicalPath) {
+          return {
+            ok: false,
+            canceled: false,
+            reason: validation.reason,
+            removedChildren: [],
+            dirs: current,
+          };
+        }
+        return {
+          ...planWindowsNodeMxcFolderUpsert(current, validation.canonicalPath, params.access),
+          canceled: false,
+        };
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "windows-node-mxc:validate-folder-policy",
+    (_event, draft: WindowsNodeMxcFolderPolicy) =>
+      normalizeCompleteWindowsNodeMxcFolderPolicy(draft),
+  );
+
+  ipcMain.handle(
+    "windows-node-mxc:apply-folder-policy",
+    async (_event, draft: WindowsNodeMxcFolderPolicy) => {
+      if (!isWindowsNodeMxcDesired()) {
+        throw new Error("Apply and reactivate requires Windows Node + MXC mode");
+      }
+      beginWindowsNodeMxcLifecycleOperation();
+      try {
+        windowsNodeMxcActivationInProgress = true;
+        const previous = currentSandboxUserDirs();
+        const recovery = {
+          previous: { rw: [...previous.rw], ro: [...previous.ro] },
+          draft: {
+            rw: Array.isArray(draft?.rw) ? [...draft.rw] : [],
+            ro: Array.isArray(draft?.ro) ? [...draft.ro] : [],
+          },
+          updatedAt: new Date().toISOString(),
+          lastError: null,
+        };
+        settingsStore.set("windowsNodeMxcFolderPolicyRecovery", recovery);
+        await runWindowsNodeMxcFolderPolicyTransaction(draft, previous, {
+          setPhase: setWindowsNodeMxcLifecycleState,
+          closeIngress: () => {
+            windowsNodeMxcIngressGeneration = null;
+            sendToWindow(mainWindow, "gateway:ws-disconnected", "Applying MXC folder policy");
+          },
+          rejectPendingApprovals: async () => {
+            const pending = pendingWindowsNodeMxcGatewayApproval;
+            if (pending && gwClient?.connected) {
+              await gwClient.request("exec.approval.resolve", {
+                id: pending.request.id,
+                decision: "deny",
+              });
+            }
+            pendingWindowsNodeMxcGatewayApproval = null;
+            const nodePending = bundledWindowsNodeHost.status().pendingApproval;
+            if (nodePending) bundledWindowsNodeHost.respond(nodePending.id, "deny");
+            sendToWindow(mainWindow, "windows-node-mxc:approval-request", null);
+          },
+          revokeAuthorization: () => {
+            bundledWindowsNodeHost.revokeActivationLease();
+            windowsNodeMxcApprovalProofContext = null;
+            settingsStore.delete("windowsNodeMxcSmoke");
+          },
+          validatePolicy: (candidate) => normalizeCompleteWindowsNodeMxcFolderPolicy(candidate),
+          stopCurrentGeneration: async () => {
+            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+          },
+          persistPolicy: async (next, old) => {
+            preserveWindowsNodeMxcAclGrantHistory(old, next);
+            await commitWindowsNodeMxcFolderPolicyAtomically(
+              () => replaceWindowsNodeMxcFolderAcls(old, next),
+              () => persistWindowsNodeMxcFolderPolicy(next, old, null),
+              async () => {
+                const rollbackErrors: unknown[] = [];
+                let aclRollbackSucceeded = false;
+                try {
+                  await replaceWindowsNodeMxcFolderAcls(next, old);
+                  aclRollbackSucceeded = true;
+                } catch (rollbackError) {
+                  rollbackErrors.push(rollbackError);
+                }
+                if (aclRollbackSucceeded) {
+                  try {
+                    persistWindowsNodeMxcFolderPolicy(old, next, "Previous folder policy restored");
+                  } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError);
+                  }
+                }
+                if (rollbackErrors.length > 0) {
+                  try {
+                    preserveWindowsNodeMxcAclGrantHistory(old, next);
+                  } catch (historyError) {
+                    rollbackErrors.push(historyError);
+                  }
+                }
+                if (rollbackErrors.length > 0) {
+                  throw new AggregateError(
+                    rollbackErrors,
+                    "Could not fully restore the previous MXC folder policy",
+                  );
+                }
+              },
+            );
+          },
+          startLockedGeneration: async () => {
+            const config = readConfig();
+            if (!config || typeof config !== "object" || Array.isArray(config)) {
+              throw new Error("OpenClaw configuration is unavailable");
+            }
+            const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+            const locked = applyWindowsNodeMxcGatewayPolicy(
+              config,
+              nodeId,
+              settingsStore.get("windowsNodeMxcToolBackups"),
+              "locked",
+            );
+            settingsStore.set("windowsNodeMxcToolBackups", locked.backups);
+            writeConfigTextAtomically(JSON.stringify(locked.config, null, 2));
+            await startGatewayWithWindowsNodeMxcPolicy("locked");
+            const generation = gatewayGenerationId;
+            await waitForBundledWindowsNodeGeneration(generation);
+            return waitForWindowsNodeMxcBaseReady(generation, "locked", false);
+          },
+          attestLockedGeneration: (status) =>
+            assertWindowsNodeMxcBaseReady(status, "locked", false),
+          smokeLockedGeneration: async (status) => {
+            const smoke = await runCurrentWindowsNodeMxcSmoke(status);
+            if (
+              smoke.deniedOutsideRoot.outcome !== "passed" ||
+              smoke.hostname.outcome !== "passed" ||
+              smoke.powershell.outcome !== "passed"
+            ) {
+              throw new Error(
+                `Locked-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+              );
+            }
+          },
+          startActiveGeneration: async () => {
+            const config = readConfig();
+            if (!config || typeof config !== "object" || Array.isArray(config)) {
+              throw new Error("OpenClaw configuration is unavailable");
+            }
+            const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+            const active = applyWindowsNodeMxcGatewayPolicy(
+              config,
+              nodeId,
+              settingsStore.get("windowsNodeMxcToolBackups"),
+              "active",
+            );
+            await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+            settingsStore.delete("windowsNodeMxcSmoke");
+            settingsStore.set("windowsNodeMxcToolBackups", active.backups);
+            writeConfigTextAtomically(JSON.stringify(active.config, null, 2));
+            await startGatewayWithWindowsNodeMxcPolicy("active");
+            const generation = gatewayGenerationId;
+            await waitForBundledWindowsNodeGeneration(generation);
+            return waitForWindowsNodeMxcBaseReady(generation, "active", false);
+          },
+          attestActiveGeneration: (status) =>
+            assertWindowsNodeMxcBaseReady(status, "active", false),
+          smokeActiveGeneration: async (status) => {
+            const smoke = await runCurrentWindowsNodeMxcSmoke(status);
+            if (
+              smoke.deniedOutsideRoot.outcome !== "passed" ||
+              smoke.hostname.outcome !== "passed" ||
+              smoke.powershell.outcome !== "passed"
+            ) {
+              throw new Error(
+                `Active-generation contained smokes failed: ${smoke.deniedOutsideRoot.reason}; ${smoke.hostname.reason}; ${smoke.powershell.reason}`,
+              );
+            }
+          },
+          mintActivationLease: async () => {
+            await bundledWindowsNodeHost.setActivationLease("active", 120_000);
+          },
+          verifyActiveGeneration: async () => {
+            const status = await getWindowsNodeMxcStatus();
+            if (!status.effectiveEnabled) {
+              throw new Error(
+                `Final MXC activation verification failed: ${status.blockers.join("; ")}`,
+              );
+            }
+            return status;
+          },
+          releaseIngress: (status) => {
+            windowsNodeMxcIngressGeneration = status.gatewayGeneration;
+            windowsNodeMxcActivationInProgress = false;
+            sendToWindow(mainWindow, "gateway:ws-connected", gwClient?.mainSessionKey || null);
+          },
+          lockAfterFailure: async (error, context) => {
+            windowsNodeMxcIngressGeneration = null;
+            windowsNodeMxcActivationInProgress = true;
+            bundledWindowsNodeHost.revokeActivationLease();
+            settingsStore.delete("windowsNodeMxcSmoke");
+            const recoveryErrors: unknown[] = [];
+            let generationStopped = false;
+            try {
+              await stopGatewayForSecurityTransition(gatewayPort || DEFAULT_PORT);
+              generationStopped = true;
+            } catch (recoveryError) {
+              recoveryErrors.push(recoveryError);
+            }
+            if (context.persisted) {
+              if (!context.applied) {
+                recoveryErrors.push(
+                  new Error("Persisted MXC folder policy is unavailable for exact rollback"),
+                );
+              } else {
+                let aclRestored = false;
+                if (generationStopped) {
+                  try {
+                    await replaceWindowsNodeMxcFolderAcls(context.applied, context.previous);
+                    aclRestored = true;
+                  } catch (recoveryError) {
+                    recoveryErrors.push(recoveryError);
+                  }
+                } else {
+                  recoveryErrors.push(
+                    new Error(
+                      "ACL rollback was blocked because the previous MXC process tree could not be proven stopped",
+                    ),
+                  );
+                }
+                if (aclRestored) {
+                  try {
+                    persistWindowsNodeMxcFolderPolicy(
+                      context.previous,
+                      context.applied,
+                      "Previous folder policy restored after activation failure",
+                    );
+                  } catch (recoveryError) {
+                    recoveryErrors.push(recoveryError);
+                    try {
+                      await replaceWindowsNodeMxcFolderAcls(context.previous, context.applied);
+                    } catch (compensationError) {
+                      recoveryErrors.push(compensationError);
+                    }
+                  }
+                }
+              }
+            }
+            try {
+              settingsStore.set("windowsNodeMxcFolderPolicyRecovery", {
+                previous: context.previous,
+                draft: context.applied ?? context.draft,
+                updatedAt: new Date().toISOString(),
+                lastError: error instanceof Error ? error.message : String(error),
+              });
+            } catch (recoveryError) {
+              recoveryErrors.push(recoveryError);
+            }
+            let lockedConfigReady = false;
+            try {
+              const config = readConfig();
+              if (!config || typeof config !== "object" || Array.isArray(config)) {
+                throw new Error("OpenClaw configuration is unavailable for locked recovery");
+              }
+              const nodeId = bundledWindowsNodeHost.ensureIdentityNodeId();
+              const locked = applyWindowsNodeMxcGatewayPolicy(
+                config,
+                nodeId,
+                settingsStore.get("windowsNodeMxcToolBackups"),
+                "locked",
+              );
+              settingsStore.set("windowsNodeMxcToolBackups", locked.backups);
+              writeConfigTextAtomically(JSON.stringify(locked.config, null, 2));
+              lockedConfigReady = true;
+            } catch (recoveryError) {
+              recoveryErrors.push(recoveryError);
+            }
+            if (generationStopped && lockedConfigReady) {
+              try {
+                await startGatewayWithWindowsNodeMxcPolicy("locked");
+              } catch (startError) {
+                recoveryErrors.push(startError);
+                setGatewayStatus("failed");
+              }
+            }
+            windowsNodeMxcActivationInProgress = false;
+            if (recoveryErrors.length > 0) {
+              throw new AggregateError(
+                recoveryErrors,
+                "MXC folder policy failed and locked recovery was incomplete",
+              );
+            }
+          },
+        });
+        return await getWindowsNodeMxcStatus();
+      } finally {
+        windowsNodeMxcActivationInProgress = false;
+        endWindowsNodeMxcLifecycleOperation();
+      }
+    },
+  );
+
+  // --- Sandbox capabilities ---
+  ipcMain.handle("sandbox:get-capabilities", () => {
+    return settingsStore.get("sandboxCapabilities");
+  });
+
+  ipcMain.handle("sandbox:set-capabilities", async (_event, caps: string[]) => {
+    // Validate: only accept known capability names
+    const KNOWN_CAPS = new Set([
+      "internetClient",
+      "internetClientServer",
+      "privateNetworkClientServer",
+      "picturesLibrary",
+      "videosLibrary",
+      "musicLibrary",
+      "documentsLibrary",
+      "enterpriseAuthentication",
+      "sharedUserCertificates",
+      "removableStorage",
+      "appointments",
+      "contacts",
+    ]);
+    const clean = caps.filter((c) => KNOWN_CAPS.has(c));
+    settingsStore.set("sandboxCapabilities", clean);
+    toolSandbox?.setCapabilities(clean);
+    // Capabilities are baked into the Gateway environment, so the renderer
+    // asks the user to apply them through the hard restart IPC.
+    return { ok: true, caps: clean, needsRestart: true };
+  });
+
+  ipcMain.handle("sandbox:get-user-dirs", () => {
+    return {
+      rw: settingsStore.get("sandboxUserDirsRW"),
+      ro: settingsStore.get("sandboxUserDirsRO"),
+    };
+  });
+
+  ipcMain.handle(
+    "sandbox:add-user-dir",
+    async (_event, params: { access: "rw" | "ro"; policy?: "windows-node-mxc" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        if (!mainWindow) return { ok: false, dirs: currentSandboxUserDirs() };
+        const result = await dialog.showOpenDialog(mainWindow, {
+          properties: ["openDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return {
+            ok: false,
+            dirs: {
+              rw: settingsStore.get("sandboxUserDirsRW"),
+              ro: settingsStore.get("sandboxUserDirsRO"),
+            },
+          };
+        }
+        return applySandboxUserDir(
+          result.filePaths[0],
+          params.access,
+          params.policy === "windows-node-mxc",
+        );
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "sandbox:set-user-dir-access",
+    async (_event, params: { dir: string; access: "rw" | "ro" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        const current = currentSandboxUserDirs();
+        if (!isWindowsNodeMxcFolderConfigured(current, params.dir)) {
+          return {
+            ok: false,
+            reason: "folder-not-configured" as const,
+            removedChildren: [] as string[],
+            dirs: current,
+          };
+        }
+        return applySandboxUserDir(params.dir, params.access, true);
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "sandbox:remove-user-dir",
+    async (_event, params: { dir: string; access: "rw" | "ro" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (params?.access !== "rw" && params?.access !== "ro") {
+          throw new Error("Invalid sandbox folder access");
+        }
+        const key = params.access === "rw" ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+        const normalTarget = normalizeDirPath(params.dir).toLowerCase();
+
+        // Try to revoke ACL first — only remove from settings if successful
+        let revokeOk = true;
+        if (toolSandbox) {
+          console.log(`[sandbox] Revoking ACL for: ${params.dir}`);
+          let ok = await revokeWithUnshield(params.dir);
+
+          // Verify ACL was actually removed (revoke can succeed but ACE persist)
+          if (ok && _appContainerSid) {
+            try {
+              const { execSync } = require("child_process");
+              const output = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
+                windowsHide: true,
+                timeout: 3000,
+                encoding: "utf-8",
+              }) as string;
+              if (output.includes(_appContainerSid)) {
+                // Check if all remaining ACEs for the SID are inherited (marked
+                // with (I) by icacls). If only inherited ACEs remain, the revoke
+                // of the explicit ACE succeeded — the inherited ones come from a
+                // parent directory's grant and are expected.
+                const hasExplicitAce = hasExplicitSidAce(output, _appContainerSid);
+                if (!hasExplicitAce) {
+                  console.log(`[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK`);
+                } else {
+                  console.warn(
+                    `[sandbox] Revoke returned success but explicit SID still in ACL for: ${params.dir} — retrying elevated`,
+                  );
+                  ok = await toolSandbox.revokeDirElevated(params.dir);
+                  // Check again
+                  const output2 = execSync(`icacls "${normalizeDirPath(params.dir)}"`, {
+                    windowsHide: true,
+                    timeout: 3000,
+                    encoding: "utf-8",
+                  }) as string;
+                  if (output2.includes(_appContainerSid)) {
+                    const hasExplicit2 = hasExplicitSidAce(output2, _appContainerSid);
+                    if (!hasExplicit2) {
+                      console.log(
+                        `[sandbox] Remaining ACL for ${params.dir} is inherited — revoke OK (post-elevated)`,
+                      );
+                    } else {
+                      console.error(
+                        `[sandbox] Explicit ACL still present after elevated revoke for: ${params.dir}`,
+                      );
+                      ok = false;
+                    }
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          console.log(`[sandbox] Revoke result: ${ok}`);
+          if (ok) {
+            removeFromGrantHistory(params.dir);
+          } else {
+            revokeOk = false;
+          }
+        }
+
+        if (revokeOk) {
+          // ACL revoked — remove from settings
+          const current = settingsStore
+            .get(key)
+            .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalTarget);
+          settingsStore.set(key, current);
+          if (toolSandbox) {
+            if (params.access === "rw") toolSandbox.removeDirRW(params.dir);
+            else toolSandbox.removeDirRO(params.dir);
+          }
+
+          // Re-grant ACLs for any child dirs that are still in settings.
+          // When a parent dir is revoked, children lose inherited ACEs (and
+          // RevokeProtectedChildren may remove explicit ACEs from protected children).
+          await regrantChildDirsInSettings(params.dir);
+
+          notifySandboxDirsChanged();
+        } else {
+          console.warn(`[sandbox] Revoke failed for "${params.dir}" — keeping in settings`);
+        }
+
+        return {
+          ok: revokeOk,
+          dirs: {
+            rw: settingsStore.get("sandboxUserDirsRW"),
+            ro: settingsStore.get("sandboxUserDirsRO"),
+          },
+        };
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  // Verify actual NTFS ACL matches settings for each user directory.
+  // Returns per-directory status so the UI can show mismatches.
+  ipcMain.handle("sandbox:verify-acl", async () => {
+    if (!toolSandbox || !toolSandbox.isAvailable())
+      return { missing: [], stale: [], ok: [], errors: [] };
+
+    const rwDirs = settingsStore.get("sandboxUserDirsRW");
+    const roDirs = settingsStore.get("sandboxUserDirsRO");
+    const history = settingsStore.get("sandboxGrantHistory");
+
+    // System dirs come from toolSandbox (single source of truth)
+    const status = toolSandbox.getStatus();
+    const userRwSet = new Set(rwDirs.map((d: string) => normalizeDirPath(d).toLowerCase()));
+    const userRoSet = new Set(roDirs.map((d: string) => normalizeDirPath(d).toLowerCase()));
+    const systemDirsRW = status.sandboxDirsRW.filter(
+      (d) => !userRwSet.has(normalizeDirPath(d).toLowerCase()),
+    );
+    const systemDirsRO = status.sandboxDirsRO.filter(
+      (d) => !userRoSet.has(normalizeDirPath(d).toLowerCase()),
+    );
+
+    const missing: Array<{ dir: string; access: string; reason: string }> = [];
+    const ok: Array<{ dir: string; access: string }> = [];
+    const errors: Array<{ dir: string; error: string }> = [];
+
+    // Check all dirs: system + user
+    const allExpected = [
+      ...systemDirsRW.map((d) => ({ dir: d, access: "rw" as const })),
+      ...systemDirsRO.map((d) => ({ dir: d, access: "r" as const })),
+      ...rwDirs.map((d: string) => ({ dir: d, access: "rw" as const })),
+      ...roDirs.map((d: string) => ({ dir: d, access: "r" as const })),
+    ];
+
+    for (const { dir, access } of allExpected) {
+      const result = await toolSandbox.checkAcl(dir, access === "rw" ? "rw" : "r");
+      if (!result) {
+        errors.push({ dir, error: "check-acl command failed" });
+      } else if (result.exists === false) {
+        errors.push({ dir, error: "directory does not exist" });
+      } else if (result.error) {
+        errors.push({ dir, error: String(result.error) });
+      } else if (result.sufficient) {
+        ok.push({ dir, access });
+      } else {
+        missing.push({
+          dir,
+          access,
+          reason: result.hasAllAppPackages ? "ALL_APP_PACKAGES has access" : "no ACL entry",
+        });
+      }
+    }
+
+    // Scan for stale ACLs (dirs with our SID but not in settings)
+    const knownDirSet = new Set([
+      ...status.sandboxDirsRW.map((d) => normalizeDirPath(d)),
+      ...status.sandboxDirsRO.map((d) => normalizeDirPath(d)),
+      ...rwDirs.map((d: string) => normalizeDirPath(d)),
+      ...roDirs.map((d: string) => normalizeDirPath(d)),
+      ...history.map((d: string) => normalizeDirPath(d)),
+    ]);
+    // Drive roots are expected to have traverse (setup grants it)
+    for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+      knownDirSet.add(`${letter}:`);
+      knownDirSet.add(`${letter}:\\`);
+    }
+
+    const staleResults = await toolSandbox.scanStaleAcls([...knownDirSet], 4);
+    // Only flag as stale if the ACL has real data access (Read/Write/Modify),
+    // not just traverse (ReadAttributes + Traverse + ReadExtendedAttributes).
+    // Traverse-only ACLs are normal — GrantAncestorTraverse adds them to
+    // ancestor dirs so AppContainer can reach target paths.
+    const TRAVERSE_ONLY_FLAGS = [
+      "ReadAttributes",
+      "ReadExtendedAttributes",
+      "Traverse",
+      "Synchronize",
+    ];
+    function isTraverseOnly(rights: string): boolean {
+      const parts = rights.split(",").map((s) => s.trim());
+      return parts.every((p) => TRAVERSE_ONLY_FLAGS.includes(p));
+    }
+    const stale = staleResults
+      .filter((s) => !s.inherited && !isTraverseOnly(s.rights))
+      .map((s) => ({ dir: s.path, rights: s.rights }));
+
+    return { missing, stale, ok, errors };
+  });
+
+  // Repair ACL for a specific directory — re-grant the expected permission.
+  ipcMain.handle(
+    "sandbox:repair-acl",
+    async (_event, params: { dir: string; access: "rw" | "ro" }) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        if (!toolSandbox) return { ok: false };
+        const access = params.access === "rw" ? "rw" : ("r" as const);
+        const result = await grantAndVerifyAcl(params.dir, access);
+        const ok = result !== "failed";
+        if (ok) addToGrantHistory(params.dir);
+        return { ok };
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  // Revoke a stale ACL entry found by scan-acl.
+  // Also removes from settings lists + grant history to prevent re-grant.
+  ipcMain.handle("sandbox:revoke-stale-acl", async (_event, dir: string) => {
+    beginSandboxFolderPolicyMutation();
+    try {
+      if (!toolSandbox) return { ok: false };
+      const ok = await revokeWithUnshield(dir);
+      if (ok) {
+        removeFromGrantHistory(dir);
+        // Also remove from settings dirs to prevent re-grant
+        const normalDir = normalizeDirPath(dir).toLowerCase();
+        for (const key of ["sandboxUserDirsRW", "sandboxUserDirsRO"] as const) {
+          const dirs = settingsStore.get(key);
+          const filtered = dirs.filter(
+            (d: string) => normalizeDirPath(d).toLowerCase() !== normalDir,
+          );
+          if (filtered.length !== dirs.length) {
+            settingsStore.set(key, filtered);
+            if (key === "sandboxUserDirsRW") toolSandbox.removeDirRW(dir);
+            else toolSandbox.removeDirRO(dir);
+          }
+        }
+        notifySandboxDirsChanged();
+      }
+      return { ok };
+    } finally {
+      endSandboxFolderPolicyMutation();
+    }
+  });
+
+  // Handle renderer responses to in-app permission dialogs.
+  ipcMain.handle(
+    "sandbox:permission-respond",
+    async (_event, requestId: string, decision: string) => {
+      beginSandboxFolderPolicyMutation();
+      try {
+        const pending = pendingPermissionRequests.get(requestId);
+        if (!pending) return;
+        pendingPermissionRequests.delete(requestId);
+        const { type, msg } = pending;
+
+        if (type === "file") {
+          const { id, roDir, responseFile } = msg;
+          const reqPath = msg.filePath;
+          console.log(`[sandbox] File permission decision: ${decision} for ${reqPath}`);
+
+          const finishFilePermission = async () => {
+            if (decision === "grant-ro" || decision === "grant-rw") {
+              const isRW = decision === "grant-rw";
+              const normalDir = normalizeDirPath(roDir).toLowerCase();
+              const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+              const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
+              const otherDirs = settingsStore.get(otherKey);
+              const otherIdx = otherDirs.findIndex(
+                (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
+              );
+              let dirToAdd = normalizeDirPath(roDir);
+              if (otherIdx >= 0) {
+                dirToAdd = otherDirs[otherIdx];
+                otherDirs.splice(otherIdx, 1);
+                settingsStore.set(otherKey, otherDirs);
+                if (toolSandbox) {
+                  if (isRW) toolSandbox.removeDirRO(dirToAdd);
+                  else toolSandbox.removeDirRW(dirToAdd);
+                }
+              }
+              const targetDirs = settingsStore.get(targetKey);
+              if (
+                !targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)
+              ) {
+                targetDirs.push(dirToAdd);
+                settingsStore.set(targetKey, targetDirs);
+              }
+              if (toolSandbox) {
+                if (isRW) toolSandbox.addDirRW(dirToAdd);
+                else toolSandbox.addDirRO(dirToAdd);
+                // Grant ACL BEFORE writing response file — gateway retries the write
+                // immediately after picking up the response, so ACL must be in place.
+                const access = isRW ? "rw" : "r";
+                const t0 = Date.now();
+                console.log(
+                  `[sandbox:respond] file: starting grant for ${dirToAdd} access=${access}`,
+                );
+                const granted = await grantAndVerifyAcl(dirToAdd, access);
+                console.log(
+                  `[sandbox:respond] file: grant result=${granted} elapsed=${Date.now() - t0}ms`,
+                );
+                if (granted === "failed") {
+                  // ACL grant itself failed — rollback settings, write "timeout"
+                  console.warn(
+                    `[sandbox:respond] file: FAILED — rolling back settings for ${dirToAdd}`,
+                  );
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "failed",
+                    dir: dirToAdd,
+                    access,
+                  });
+                  const rollbackDirs = settingsStore
+                    .get(targetKey)
+                    .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
+                  settingsStore.set(targetKey, rollbackDirs);
+                  if (isRW) toolSandbox.removeDirRW(dirToAdd);
+                  else toolSandbox.removeDirRO(dirToAdd);
+                  if (otherIdx >= 0) {
+                    const restoredOther = settingsStore.get(otherKey);
+                    restoredOther.push(dirToAdd);
+                    settingsStore.set(otherKey, restoredOther);
+                    if (isRW) toolSandbox.addDirRO(dirToAdd);
+                    else toolSandbox.addDirRW(dirToAdd);
+                  }
+                  notifySandboxDirsChanged();
+                  mainWindow?.webContents.send("sandbox:acl-timeout", {
+                    dir: dirToAdd,
+                    access,
+                  });
+                  try {
+                    fs.writeFileSync(
+                      responseFile,
+                      JSON.stringify({ id, decision: "timeout" }),
+                      "utf-8",
+                    );
+                  } catch (err: any) {
+                    console.error(`[sandbox] Failed to write timeout response: ${err.message}`);
+                  }
+                  pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+                  return;
+                }
+                if (granted === "grant-ok-verify-timeout") {
+                  // ACL set on disk but verification timed out — keep settings, proceed optimistically
+                  console.log(
+                    `[sandbox:respond] file: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
+                  );
+                  mainWindow?.webContents.send("sandbox:acl-propagation-pending", {
+                    dir: dirToAdd,
+                    access,
+                  });
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "verify-timeout",
+                    dir: dirToAdd,
+                    access,
+                  });
+                } else {
+                  // Fully verified
+                  mainWindow?.webContents.send("sandbox:permission-completed", {
+                    requestId,
+                    result: "verified",
+                    dir: dirToAdd,
+                    access,
+                  });
+                }
+                addToGrantHistory(dirToAdd);
+              }
+              console.log(`[sandbox] Added "${dirToAdd}" to ${isRW ? "RW" : "RO"} permissions`);
+              // Silently clean up child dirs now covered by this parent grant
+              await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
+              notifySandboxDirsChanged();
+            }
+            // Write response file AFTER ACL is granted — unblocks gateway's Atomics.wait
+            try {
+              fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+            } catch (err: any) {
+              console.error(`[sandbox] Failed to write file permission response: ${err.message}`);
+            }
+            pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+          };
+          await finishFilePermission().catch(() => {
+            pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+          });
+        } else if (type === "shell") {
+          const { id, deniedPath, dirPath, responseFile } = msg;
+          console.log(`[sandbox] Shell permission decision: ${decision} for ${deniedPath}`);
+
+          if (decision === "grant-ro" || decision === "grant-rw") {
+            const isRW = decision === "grant-rw";
+            const normalDir = normalizeDirPath(dirPath).toLowerCase();
+            const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+            const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
+            const otherDirs = settingsStore.get(otherKey);
+            const otherIdx = otherDirs.findIndex(
+              (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
+            );
+            let dirToAdd = normalizeDirPath(dirPath);
+            if (otherIdx >= 0) {
+              dirToAdd = otherDirs[otherIdx];
+              otherDirs.splice(otherIdx, 1);
+              settingsStore.set(otherKey, otherDirs);
+              if (toolSandbox) {
+                if (isRW) toolSandbox.removeDirRO(dirToAdd);
+                else toolSandbox.removeDirRW(dirToAdd);
+              }
+            }
+            const targetDirs = settingsStore.get(targetKey);
+            if (!targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)) {
+              targetDirs.push(dirToAdd);
+              settingsStore.set(targetKey, targetDirs);
+            }
+            if (toolSandbox) {
+              if (isRW) toolSandbox.addDirRW(dirToAdd);
+              else toolSandbox.addDirRO(dirToAdd);
+              const access = isRW ? "rw" : "r";
+              const t0 = Date.now();
+              console.log(
+                `[sandbox:respond] shell: starting grant for ${dirToAdd} access=${access}`,
+              );
+              const granted = await grantAndVerifyAcl(dirToAdd, access as "rw" | "r");
+              console.log(
+                `[sandbox:respond] shell: grant result=${granted} elapsed=${Date.now() - t0}ms`,
+              );
+              if (granted === "failed") {
+                // ACL grant itself failed — rollback settings, write "timeout"
+                console.warn(
+                  `[sandbox:respond] shell: FAILED — rolling back settings for ${dirToAdd}`,
+                );
+                const rollbackDirs = settingsStore
+                  .get(targetKey)
+                  .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
+                settingsStore.set(targetKey, rollbackDirs);
+                if (isRW) toolSandbox.removeDirRW(dirToAdd);
+                else toolSandbox.removeDirRO(dirToAdd);
+                if (otherIdx >= 0) {
+                  const restoredOther = settingsStore.get(otherKey);
+                  restoredOther.push(dirToAdd);
+                  settingsStore.set(otherKey, restoredOther);
+                  if (isRW) toolSandbox.addDirRO(dirToAdd);
+                  else toolSandbox.addDirRW(dirToAdd);
+                }
+                notifySandboxDirsChanged();
+                mainWindow?.webContents.send("sandbox:acl-timeout", {
+                  dir: dirToAdd,
+                  access,
+                });
+                try {
+                  fs.writeFileSync(
+                    responseFile,
+                    JSON.stringify({ id, decision: "timeout" }),
+                    "utf-8",
+                  );
+                } catch {}
+                return;
+              }
+              if (granted === "grant-ok-verify-timeout") {
+                console.log(
+                  `[sandbox:respond] shell: OPTIMISTIC — grant OK but verify timed out, keeping settings for ${dirToAdd}`,
+                );
+                mainWindow?.webContents.send("sandbox:acl-propagation-pending", {
+                  dir: dirToAdd,
+                  access,
+                });
+              }
+            }
+            console.log(`[sandbox] Granted ${isRW ? "RW" : "RO"} to "${dirToAdd}" for shell retry`);
+            addToGrantHistory(dirToAdd);
+            // Silently clean up child dirs now covered by this parent grant
+            await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
+            notifySandboxDirsChanged();
+          }
+          try {
+            fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+          } catch (err: any) {
+            console.error(`[sandbox] Failed to write shell permission response: ${err.message}`);
+          }
+        } else if (type === "shell-async") {
+          const { deniedPath, dirPath, responseFile: asyncResponseFile } = msg;
+          console.log(`[sandbox] Async shell permission decision: ${decision} for ${deniedPath}`);
+
+          if (decision === "grant-ro" || decision === "grant-rw") {
+            const isRW = decision === "grant-rw";
+            const normalDir = normalizeDirPath(dirPath).toLowerCase();
+            const targetKey = isRW ? "sandboxUserDirsRW" : "sandboxUserDirsRO";
+            const otherKey = isRW ? "sandboxUserDirsRO" : "sandboxUserDirsRW";
+            const otherDirs = settingsStore.get(otherKey);
+            const otherIdx = otherDirs.findIndex(
+              (d: string) => normalizeDirPath(d).toLowerCase() === normalDir,
+            );
+            let dirToAdd = normalizeDirPath(dirPath);
+            if (otherIdx >= 0) {
+              dirToAdd = otherDirs[otherIdx];
+              otherDirs.splice(otherIdx, 1);
+              settingsStore.set(otherKey, otherDirs);
+              if (toolSandbox) {
+                if (isRW) toolSandbox.removeDirRO(dirToAdd);
+                else toolSandbox.removeDirRW(dirToAdd);
+              }
+            }
+            const targetDirs = settingsStore.get(targetKey);
+            if (!targetDirs.some((d: string) => normalizeDirPath(d).toLowerCase() === normalDir)) {
+              targetDirs.push(dirToAdd);
+              settingsStore.set(targetKey, targetDirs);
+            }
+            if (toolSandbox) {
+              if (isRW) toolSandbox.addDirRW(dirToAdd);
+              else toolSandbox.addDirRO(dirToAdd);
+              const access = isRW ? "rw" : "r";
+              await toolSandbox
+                .grantDirAsync(dirToAdd, access)
+                .then((ok) => {
+                  if (!ok) return toolSandbox!.grantDirElevated(dirToAdd, access);
+                  return true;
+                })
+                .then(() => {
+                  addToGrantHistory(dirToAdd);
+                  // Shield sensitive subdirs after grant
+                  const lp = toolSandbox!.getStatus().launcherPath;
+                  if (lp) return shieldIfNeeded(lp, "MicroClaw", dirToAdd).catch(() => {});
+                })
+                .then(async () => {
+                  console.log(`[sandbox] Async: granted ${isRW ? "RW" : "RO"} to "${dirToAdd}"`);
+                  // Silently clean up child dirs now covered by this parent grant
+                  await silentCleanupRedundantChildren(dirToAdd, isRW ? "rw" : "ro");
+                  notifySandboxDirsChanged();
+                  // Write response file AFTER ACL is granted — unblocks any sync poll
+                  if (asyncResponseFile) {
+                    try {
+                      fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
+                    } catch {}
+                  }
+                  // Nudge the model to retry — user granted permission but the original
+                  // command already failed, so the model doesn't know to try again.
+                  if (activeChatSession && gwClient?.connected) {
+                    const lang = settingsStore.get("language") ?? "en-US";
+                    const accessLabel = mainT(lang, isRW ? "perm.accessRW" : "perm.accessRO");
+                    const retryMsg = mainT(lang, "perm.retryNudge")
+                      .replace("{dir}", dirToAdd)
+                      .replace("{access}", accessLabel);
+                    gwClient.sendChat(activeChatSession, retryMsg).catch(() => {});
+                  }
+                })
+                .catch(() => {
+                  // ACL grant failed — rollback settings and write deny response
+                  console.error(`[sandbox] Async ACL grant failed for ${dirToAdd} — rolling back`);
+                  const rollbackDirs = settingsStore
+                    .get(targetKey)
+                    .filter((d: string) => normalizeDirPath(d).toLowerCase() !== normalDir);
+                  settingsStore.set(targetKey, rollbackDirs);
+                  if (toolSandbox) {
+                    if (isRW) toolSandbox.removeDirRW(dirToAdd);
+                    else toolSandbox.removeDirRO(dirToAdd);
+                    // Restore the 'other' list if we removed it during RO↔RW upgrade
+                    if (otherIdx >= 0) {
+                      const restoredOther = settingsStore.get(otherKey);
+                      restoredOther.push(dirToAdd);
+                      settingsStore.set(otherKey, restoredOther);
+                      if (isRW) toolSandbox.addDirRO(dirToAdd);
+                      else toolSandbox.addDirRW(dirToAdd);
+                    }
+                  }
+                  notifySandboxDirsChanged();
+                  if (asyncResponseFile) {
+                    try {
+                      fs.writeFileSync(
+                        asyncResponseFile,
+                        JSON.stringify({ decision: "deny" }),
+                        "utf-8",
+                      );
+                    } catch {}
+                  }
+                });
+            } else {
+              // No sandbox — write response immediately
+              if (asyncResponseFile) {
+                try {
+                  fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision }), "utf-8");
+                } catch {}
+              }
+            }
+          } else {
+            // Denied — write response to unblock any sync poll
+            if (asyncResponseFile) {
+              try {
+                fs.writeFileSync(asyncResponseFile, JSON.stringify({ decision: "deny" }), "utf-8");
+              } catch {}
+            }
+          }
+        } else if (type === "app-approval") {
+          const { id, app, responseFile } = msg;
+          const appLower = (app || "").toLowerCase();
+          console.log(`[sandbox] App approval decision: ${decision} for ${appLower}`);
+
+          if (decision === "deny") {
+            // Add to session deny list
+            if (!sessionDeniedApps.has(activeChatSession)) {
+              sessionDeniedApps.set(activeChatSession, new Set());
+            }
+            sessionDeniedApps.get(activeChatSession)!.add(appLower);
+            if (sessionDeniedApps.size > 20) {
+              const oldest = sessionDeniedApps.keys().next().value!;
+              sessionDeniedApps.delete(oldest);
+            }
+          } else if (decision === "allow-always") {
+            const current = settingsStore.get("sandboxExternalApps");
+            if (!current.includes(appLower)) {
+              current.push(appLower);
+              settingsStore.set("sandboxExternalApps", current);
+              toolSandbox?.setExternalApps(current);
+              writeExternalAppsFile(current);
+              console.log(`[sandbox] Added "${appLower}" to permanent whitelist`);
+            }
+          }
+          // Write response file to unblock the gateway's Atomics.wait loop
+          try {
+            fs.writeFileSync(responseFile, JSON.stringify({ id, decision }), "utf-8");
+          } catch (err: any) {
+            console.error(`[sandbox] Failed to write approval response: ${err.message}`);
+          }
+          pendingSyncPermissionRequests = Math.max(0, pendingSyncPermissionRequests - 1);
+        }
+      } finally {
+        endSandboxFolderPolicyMutation();
+      }
+    },
+  );
+
+  // --- CompanyClaw security core ---
+  // Registration only: task/approval/authorization decisions live in
+  // CompanyClawRuntime, so widening access requires changing the core.
+  try {
+    const deviceIdentity = loadOrCreateDeviceIdentity();
+    const companyClawUserDataDir = app.getPath("userData");
+    const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () => randomUUID());
+    companyClawOwnerSid = resolveOwnerSid();
+    // The broker must run on the bundled private Node runtime: in a packaged
+    // build process.execPath is CompanyClaw.exe, which cannot execute the
+    // broker's JavaScript entry point. Resolving the runtime and the entry
+    // point together keeps them from coming out of different installations.
+    const brokerPaths = resolveBrokerRuntimePaths({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      nodePath: resolveNodePath(),
+    });
+    const companyClawOptions = {
+      userDataDir: companyClawUserDataDir,
+      ticketSecret,
+      ownerSid: companyClawOwnerSid,
+      deviceId: deviceIdentity.deviceId,
+      ...(brokerPaths.nodePath ? { nodePath: brokerPaths.nodePath } : {}),
+      broker: {
+        brokerDir: brokerPaths.brokerDir,
+      },
+    };
+    companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
+    // Artifact delivery reaches the plugin's upload path through the gateway
+    // child process, so it can only be built once the runtime exists. The
+    // recipient is this installation's bound chat: a task never names its own
+    // destination, which is what stops one owner's report reaching another.
+    const artifactDelivery = new ArtifactDelivery({
+      resolveArtifactDir: (taskId, ownerSid) =>
+        companyClawRuntime
+          ? companyClawRuntime.runtime.resolveArtifactDir({ taskId, ownerSid })
+          : { ok: false, reason: "runtime-unavailable" },
+      sendFile: async ({ filePath, to }) => {
+        const channel =
+          typeof gatewayProcess?.send === "function" ? (gatewayProcess as never) : null;
+        const outcome = await requestPluginFileSend(channel, { filePath, to });
+        if (!outcome.ok) throw new Error(outcome.reason);
+        return { messageId: outcome.messageId };
+      },
+      artifactHash: async (filePath) => {
+        const data = await fs.promises.readFile(filePath);
+        return createHash("sha256").update(data).digest("hex");
+      },
+    });
+    registerCompanyClawIpcHandlers(
+      companyClawRuntime.runtime,
+      {
+        ...companyClawOptions,
+        boundChannelUserId: companyClawRuntime.runtime.getIdentityBinding()?.channelUserId ?? "",
+        artifactDelivery,
+        notifyApprovals: sendPendingApprovalCard,
+        recordModelCapability: (verdict) => {
+          lastProbedModelCapability = verdict;
+        },
+      },
+      companyClawRuntime.broker,
+      () => buildGuardianReport(collectGuardianProbes()),
+    );
+    console.log(
+      `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid}, broker=${companyClawOptions.broker.brokerDir})`,
+    );
+  } catch (error) {
+    // The core must never take the app down: if registration fails the
+    // handlers simply stay absent and the renderer reports "unsupported".
+    console.error("[companyclaw] Failed to register security-core IPC:", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    showAndFocusWindow(mainWindow);
+    // Ensure gateway is alive when user re-opens the app
+    ensureGatewayConnected().catch((err) =>
+      console.error("[second-instance] gateway reconnect failed:", err),
+    );
+  });
+}
+
+app.whenReady().then(async () => {
+  logStartupTiming("app-ready");
+  if (!settingsStore.has("language")) {
+    settingsStore.set("language", resolveSupportedLocale(app.getLocale()));
+  }
+
+  try {
+    const home = app.getPath("home");
+    const microclawRoot = path.join(home, ".microclaw");
+    // The upgrade transaction only ever manages this application's own state
+    // directory, never a separately installed OpenClaw's.
+    const expectedStateDir = getOpenClawStateDir();
+    const installerOwnsUpgrade =
+      typeof postInstallTransactionId === "string" &&
+      validateInstallerOwnedUpgrade(microclawRoot, postInstallTransactionId, {
+        expectedStateDir,
+      });
+    if (!installerOwnsUpgrade) {
+      const recovery = recoverInterruptedOpenClawUpgrade(microclawRoot, {
+        expectedStateDir,
+      });
+      if (recovery.status === "rolled-back") {
+        console.log("[upgrade] Restored the previous OpenClaw package and state");
+      }
+    } else {
+      console.log(`[upgrade] Installer owns verifying transaction ${postInstallTransactionId}`);
+    }
+  } catch (error) {
+    signalPostInstallFailure(error);
+    console.error("[upgrade] Startup recovery failed:", error);
+    const inProgress = error instanceof UpgradeInProgressError;
+    dialog.showErrorBox(
+      inProgress ? "MicroClaw upgrade in progress" : "OpenClaw recovery failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    app.quit();
+    return;
+  }
+
+  registerIpcHandlers();
+
+  // Sync auto-start with OS
+  app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
+
+  mainWindow = createMainWindow();
+
+  const trayCallbacks = {
+    onShowWindow: () => {
+      showAndFocusWindow(mainWindow);
+      // Ensure gateway is alive when user shows window from tray
+      ensureGatewayConnected().catch((err) =>
+        console.error("[tray-show] gateway reconnect failed:", err),
+      );
+    },
+    onRestartGateway: () => {
+      restartManagedGateway("Restart requested from system tray").catch((error) =>
+        console.error("[tray] Gateway restart failed:", error),
+      );
+    },
+  };
+  createTray(trayCallbacks, resolveSupportedLocale(settingsStore.get("language") ?? "en-US"));
+
+  // Skill integrity check — must run BEFORE loading renderer so
+  // pendingIntegrityResult is ready when App.vue calls the IPC.
+  if (migrateLegacySkillIntegritySnapshot()) {
+    console.log("Migrated skill integrity snapshot to the current root-aware schema");
+  }
+  const integrityResult = verifySkillIntegrity();
+  if (!integrityResult.snapshotExists) {
+    console.log(
+      "No skill integrity snapshot found — generating baseline (installer may not have run)...",
+    );
+    generateAndSignSnapshot();
+  } else if (!integrityResult.valid) {
+    console.log("Skill integrity check failed — changes detected");
+    pendingIntegrityResult = integrityResult;
+  }
+  logStartupTiming("integrity-complete");
+
+  // Gateway startup is independent of renderer loading. Starting it here lets
+  // the local UI and background service initialize concurrently.
+  logStartupTiming("gateway-requested");
+  startApplicationServices().catch((err) => {
+    signalPostInstallFailure(err);
+    console.error("Failed to start application services:", err);
+  });
+
+  // Load the Vue renderer UI.
+  if (isDev) {
+    // Poll until Vite dev server is ready (up to 60s).
+    const waitForVite = async () => {
+      for (let i = 0; i < 120; i++) {
+        try {
+          await mainWindow!.loadURL(VITE_DEV_URL);
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      await mainWindow!.loadURL(VITE_DEV_URL);
+    };
+    await waitForVite();
+  } else {
+    const indexPath = path.join(__dirname, "../renderer/dist/index.html");
+    try {
+      await mainWindow.loadFile(indexPath);
+    } catch (err) {
+      console.error("Failed to load renderer, retrying:", err);
+      await new Promise((r) => setTimeout(r, 1000));
+      await mainWindow.loadFile(indexPath);
+    }
+  }
+  logStartupTiming("renderer-loaded");
+
+  // Watch skill directories for mid-session changes
+  startSkillFileWatcher();
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  // Clean up skill file watchers
+  for (const w of skillWatchers) {
+    try {
+      w.close();
+    } catch {}
+  }
+  skillWatchers = [];
+  if (watcherDebounceTimer) {
+    clearTimeout(watcherDebounceTimer);
+    watcherDebounceTimer = null;
+  }
+  destroyTray();
+  githubCopilotAuthManager.stop();
+  gwClient?.stop();
+  stopGatewayProcess();
+  // Stop the broker so no UI Automation listener outlives the app.
+  void companyClawRuntime?.broker?.stop();
+});
+
+app.on("activate", () => {
+  showAndFocusWindow(mainWindow);
+  ensureGatewayConnected().catch((err) =>
+    console.error("[activate] gateway reconnect failed:", err),
+  );
+});

@@ -328,7 +328,10 @@ export class CompanyClawRuntime {
     ) {
       throw new Error(`ttlMinutes must be between ${MIN_TTL_MINUTES} and ${MAX_TTL_MINUTES}`);
     }
-    if (!input.ownerSid || !input.deviceId || !input.channelUserId) {
+    // The renderer may not know the paired channel user: the grant is bound to
+    // whoever this machine has actually paired. Fail closed when neither exists.
+    const channelUserId = input.channelUserId || this.identity.get()?.channelUserId || "";
+    if (!input.ownerSid || !input.deviceId || !channelUserId) {
       throw new Error(
         "ownerSid, deviceId and channelUserId are required to enable remote operation",
       );
@@ -336,7 +339,7 @@ export class CompanyClawRuntime {
     this.authorization.setEnabled({
       ownerSid: input.ownerSid,
       deviceId: input.deviceId,
-      channelUserId: input.channelUserId,
+      channelUserId,
       ttlMs: ttlMinutes * 60_000,
     });
     return this.getRemoteAuthorization();

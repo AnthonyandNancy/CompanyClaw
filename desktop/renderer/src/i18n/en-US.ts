@@ -205,8 +205,7 @@ export default {
     "The gateway must be restarted after enabling the plugin or logging in.",
   "plugins.restartGateway": "Restart Gateway",
   "plugins.gatewayRestarted": "✓ Gateway restarted",
-  "plugins.weixinEnabled":
-    "WeChat plugin enabled. Please restart the gateway for changes to take effect.",
+  "plugins.weixinEnabled": "WeChat plugin enabled. Restarting the gateway…",
   "plugins.weixinDisabled": "WeChat plugin disabled",
   "plugins.operationFailed": "Operation failed: {error}",
   "plugins.loginFailed": "Login failed: {error}",
@@ -516,6 +515,7 @@ export default {
   "settings.reasoningHigh": "High",
   "settings.reasoningXHigh": "XHigh",
   "settings.reasoningAdaptive": "Adaptive",
+  "settings.reasoningSaved": "Reasoning effort updated",
   "settings.testConnection": "Test Connection",
   "settings.cancel": "Cancel",
   "settings.add": "Add",

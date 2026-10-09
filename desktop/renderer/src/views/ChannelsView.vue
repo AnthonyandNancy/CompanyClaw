@@ -282,6 +282,12 @@ async function startLogin() {
     }
   } catch {}
 
+  if (qrError.value) {
+    // The CLI fallback runs without a TTY and cannot display a QR code, so a
+    // silent fallback would look like a stuck scan. Show the real reason first.
+    ElMessage.warning(t("plugins.loginFailed", { error: qrError.value }));
+  }
+
   useFallbackLogin.value = true;
   loginStarting.value = false;
 

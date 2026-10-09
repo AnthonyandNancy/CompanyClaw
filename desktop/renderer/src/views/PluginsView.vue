@@ -299,6 +299,12 @@ async function startLogin() {
     // Fast path failed — fall through to CLI
   }
 
+  if (qrError.value) {
+    // The CLI fallback runs without a TTY and cannot display a QR code, so a
+    // silent fallback would look like a stuck scan. Show the real reason first.
+    ElMessage.warning(t("plugins.loginFailed", { error: qrError.value }));
+  }
+
   // Fallback: use the old CLI-based login (spawns subprocess)
   console.log("[weixin-login] Fast path unavailable, falling back to CLI login");
   useFallbackLogin.value = true;

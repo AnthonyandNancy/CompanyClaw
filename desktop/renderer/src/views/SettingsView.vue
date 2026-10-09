@@ -290,6 +290,31 @@
                 </el-select>
               </div>
             </div>
+            <div class="card-row no-border">
+              <span class="row-label">{{ t("settings.reasoningEffort") }}</span>
+              <el-select
+                v-model="reasoningEffort"
+                size="small"
+                style="width: 180px"
+                :loading="reasoningSaving"
+                :disabled="
+                  reasoningSaving ||
+                  Boolean(switchingModelRef) ||
+                  Boolean(removingModelRef) ||
+                  copilotDisconnecting ||
+                  !selectedModelEntry ||
+                  selectedModelEntry.source === 'auth-managed'
+                "
+                @change="changeReasoningEffort"
+              >
+                <el-option
+                  v-for="option in reasoningEffortOptions"
+                  :key="option.value"
+                  :label="t(option.labelKey)"
+                  :value="option.value"
+                />
+              </el-select>
+            </div>
           </template>
           <div v-else-if="!copilotModelsLoading" class="card-row no-border">
             <span class="placeholder-text">{{ t("settings.noProviderConfigured") }}</span>
@@ -1256,6 +1281,7 @@ import {
   removeModelProviderConfig,
   selectPrimaryModelConfig,
   retainOnlyProvider,
+  updateModelProviderConfig,
   type ModelApiFormat,
   type ModelInputCapability,
   type ModelReasoningEffort,
@@ -1902,6 +1928,31 @@ const selectedModelIndex = computed(() =>
   customModels.value.findIndex((model) => getModelRef(model) === selectedModel.value),
 );
 
+/**
+ * Thinking level of the selected model.
+ *
+ * Synced from the stored config (via `selectedModelEntry`) so the selector
+ * always shows what the Gateway would actually use.
+ */
+const reasoningEffort = ref<ReasoningEffort>("off");
+const reasoningSaving = ref(false);
+const reasoningEffortOptions: Array<{ value: ReasoningEffort; labelKey: string }> = [
+  { value: "off", labelKey: "settings.reasoningOff" },
+  { value: "minimal", labelKey: "settings.reasoningMinimal" },
+  { value: "low", labelKey: "settings.reasoningLow" },
+  { value: "medium", labelKey: "settings.reasoningMedium" },
+  { value: "high", labelKey: "settings.reasoningHigh" },
+  { value: "xhigh", labelKey: "settings.reasoningXHigh" },
+  { value: "adaptive", labelKey: "settings.reasoningAdaptive" },
+];
+watch(
+  selectedModelEntry,
+  (entry) => {
+    reasoningEffort.value = entry?.reasoningEffort ?? "off";
+  },
+  { immediate: true },
+);
+
 // Display name of the configured provider shown in the Model section.
 const currentProviderName = computed(() => {
   const entry = selectedModelEntry.value;
@@ -2344,6 +2395,40 @@ async function selectModel(modelRef: string) {
     );
   } finally {
     switchingModelRef.value = "";
+  }
+}
+
+/**
+ * Writes the thinking level for the selected model.
+ *
+ * Reuses the shared config mutation so `params.thinking` and the provider
+ * model's `reasoning` flag are written together, then restarts the Gateway and
+ * re-reads the config — the selector must show what is actually stored.
+ */
+async function changeReasoningEffort(value: ReasoningEffort): Promise<void> {
+  const entry = selectedModelEntry.value;
+  if (!entry || entry.source === "auth-managed") {
+    reasoningEffort.value = entry?.reasoningEffort ?? "off";
+    return;
+  }
+  reasoningSaving.value = true;
+  try {
+    await persistAndRestart(
+      (config) =>
+        updateModelProviderConfig(config, {
+          providerKey: entry.providerKey,
+          baseUrl: entry.baseUrl ?? "",
+          apiKey: entry.apiKey ?? "",
+          apiFormat: entry.apiFormat ?? "openai-chat",
+          modelName: entry.id,
+          originalModelName: entry.id,
+          displayName: entry.name,
+          reasoningEffort: value,
+        }),
+      t("settings.reasoningSaved"),
+    );
+  } finally {
+    reasoningSaving.value = false;
   }
 }
 

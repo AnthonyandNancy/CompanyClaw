@@ -210,6 +210,9 @@ export function shouldHandleGatewayDisconnect(clientStopped: boolean): boolean {
 
 // ── Client ──────────────────────────────────────────────────────────────
 
+/** Channel plugin id that owns the WeChat QR login. */
+const WEIXIN_WEB_LOGIN_CHANNEL = "openclaw-weixin";
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, Pending>();
@@ -543,7 +546,7 @@ export class GatewayClient {
     force?: boolean;
     timeoutMs?: number;
   }): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
-    return this.request("web.login.start", params);
+    return this.request("web.login.start", { channel: WEIXIN_WEB_LOGIN_CHANNEL, ...params });
   }
 
   /** Wait for WeChat QR scan result (long-poll). */
@@ -552,7 +555,7 @@ export class GatewayClient {
     accountId?: string;
     timeoutMs?: number;
   }): Promise<{ connected: boolean; message: string; accountId?: string }> {
-    return this.request("web.login.wait", params);
+    return this.request("web.login.wait", { channel: WEIXIN_WEB_LOGIN_CHANNEL, ...params });
   }
 
   // ── Internal ──

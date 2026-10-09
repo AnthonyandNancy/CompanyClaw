@@ -77,6 +77,22 @@ describe("CompanyClawRuntime authorization", () => {
     expect(granted.expiresAt).toBe("2026-10-08T01:00:00.000Z");
   });
 
+  it("uses the bound WeChat identity when the caller omits channelUserId", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.bindIdentity({
+      channelType: "weixin",
+      channelUserId: "wx-owner",
+      deviceId: "device-a",
+    });
+    const granted = runtime.setRemoteAuthorization({
+      enabled: true,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      ttlMinutes: 60,
+    });
+    expect(granted).toMatchObject({ state: "enabled", channelUserId: "wx-owner" });
+  });
+
   it("revokes immediately", () => {
     const { runtime } = makeRuntime();
     runtime.setRemoteAuthorization({

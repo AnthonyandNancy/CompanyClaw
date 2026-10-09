@@ -59,6 +59,8 @@ import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
 import {
   ensureWeixinPluginInstalled,
   planWeixinPluginEnable,
+  WEIXIN_PLUGIN_RESOURCE_DIR,
+  weixinPluginInstalled,
 } from "./companyclaw/plugins/weixin-plugin-install";
 import { buildGuardianReport, type GuardianProbes } from "./companyclaw/guardian";
 import {
@@ -369,6 +371,8 @@ let gatewayToken = "";
 let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
 /** Windows user SID this installation serves; set with the security core. */
 let companyClawOwnerSid = "";
+/** Device id WeChat identities are paired with; set with the security core. */
+let companyClawDeviceId = "";
 const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
@@ -1579,6 +1583,18 @@ function reportRuntimeIntegrity(): void {
 }
 
 /**
+ * Where this build's WeChat plugin payload lives.
+ *
+ * A packaged build uses the staged resources; a source checkout uses the same
+ * staged directory produced by `npm run prepare-production-resources`, so dev
+ * and packaged runs load the identical compiled plugin.
+ */
+function resolveWeixinPluginSourceDir(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, WEIXIN_PLUGIN_RESOURCE_DIR);
+  return path.join(app.getAppPath(), "resources", WEIXIN_PLUGIN_RESOURCE_DIR);
+}
+
+/**
  * Makes the bundled WeChat plugin available to the Gateway.
  *
  * The plugin ships inside the installer but OpenClaw only loads plugins from
@@ -1600,8 +1616,7 @@ function ensureWeixinPluginAvailable(): void {
   let outcome;
   try {
     outcome = ensureWeixinPluginInstalled({
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
+      pluginSourceDir: resolveWeixinPluginSourceDir(),
       nodePath,
       openClawEntry,
       stateDir: getOpenClawStateDir(),
@@ -1616,12 +1631,19 @@ function ensureWeixinPluginAvailable(): void {
   if (outcome.ok) {
     if (outcome.state === "installed") {
       console.log("[companyclaw] WeChat plugin installed from the bundled payload");
+    } else if (outcome.state === "refreshed") {
+      // A copy from an older build is replaced here; without the replacement a
+      // fixed plugin never reaches a machine that already has the broken one.
+      console.log("[companyclaw] WeChat plugin payload refreshed from the bundled payload");
+      mainWindow?.webContents.send("gateway:log", "[info] 已更新微信插件到当前版本");
     }
     return;
   }
   const message =
     outcome.reason === "PLUGIN_RESOURCE_MISSING"
-      ? `微信插件资源缺失（${outcome.detail ?? ""}）。请重新运行 CompanyClaw 安装包修复安装。`
+      ? app.isPackaged
+        ? `微信插件资源缺失（${outcome.detail ?? ""}）。请重新运行 CompanyClaw 安装包修复安装。`
+        : `微信插件资源缺失（${outcome.detail ?? ""}）。请在 desktop 目录运行 npm run prepare-production-resources 后重启应用。`
       : `微信插件未能安装：${outcome.detail ?? outcome.reason}。可在任务中心重新尝试，或重新运行安装包修复安装。`;
   console.error(`[companyclaw] ${message}`);
   mainWindow?.webContents.send("gateway:log", `[warn] ${message}`);
@@ -1641,7 +1663,12 @@ function readWeixinPluginStatus(): {
 } {
   const config = readConfig();
   const enabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
-  const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
+  // OpenClaw 2026.9.3 records installs in its own state database rather than in
+  // `plugins.installs`; the extensions directory is what "installed" means. The
+  // config record is kept as a fallback for legacy layouts.
+  const installed =
+    weixinPluginInstalled(getOpenClawStateDir()) ||
+    !!config?.plugins?.installs?.["openclaw-weixin"];
   // Check if plugin is installed, enabled, AND has saved login accounts
   let loggedIn = false;
   if (installed && enabled) {
@@ -1661,6 +1688,58 @@ function readWeixinPluginStatus(): {
     } catch {}
   }
   return { enabled, installed, loggedIn, loginInProgress: !!weixinLoginProcess };
+}
+
+/**
+ * The WeChat user id of the account that logged in on this machine.
+ *
+ * OpenClaw's QR login result does not carry the platform user id, but the
+ * plugin persists it in its own account file; that file is the trusted source
+ * for the identity this device is paired with.
+ */
+function readWeixinAccountUserId(): string | null {
+  try {
+    const weixinDir = path.join(getOpenClawStateDir(), "openclaw-weixin");
+    const accountsIndexPath = path.join(weixinDir, "accounts.json");
+    if (!fs.existsSync(accountsIndexPath)) return null;
+    const accounts = JSON.parse(fs.readFileSync(accountsIndexPath, "utf-8"));
+    if (!Array.isArray(accounts)) return null;
+    for (const accountId of accounts) {
+      if (typeof accountId !== "string" || !accountId) continue;
+      const accountPath = path.join(weixinDir, "accounts", `${accountId}.json`);
+      if (!fs.existsSync(accountPath)) continue;
+      const account = JSON.parse(fs.readFileSync(accountPath, "utf-8"));
+      const userId = typeof account?.userId === "string" ? account.userId.trim() : "";
+      if (userId) return userId;
+    }
+  } catch (error) {
+    console.warn("[companyclaw] Cannot read the WeChat account identity:", error);
+  }
+  return null;
+}
+
+/**
+ * Pairs the WeChat account that logged in on this machine, once.
+ *
+ * Binding is what lets an inbound message prove who sent it, so nothing else
+ * (remote authorization included) works without it. A second call is a no-op:
+ * a restart must never overwrite an existing pairing.
+ */
+async function ensureWeixinIdentityBound(): Promise<void> {
+  if (!companyClawRuntime || !companyClawDeviceId) return;
+  try {
+    if (companyClawRuntime.runtime.getIdentityBinding()?.channelUserId) return;
+    const channelUserId = readWeixinAccountUserId();
+    if (!channelUserId) return;
+    await companyClawRuntime.runtime.bindIdentity({
+      channelType: "weixin",
+      channelUserId,
+      deviceId: companyClawDeviceId,
+    });
+    console.log("[companyclaw] Bound the WeChat identity to this device");
+  } catch (error) {
+    console.error("[companyclaw] WeChat identity binding failed:", error);
+  }
 }
 
 /**
@@ -1713,6 +1792,7 @@ async function startApplicationServices(): Promise<void> {
   ensureCompanyClawFirstRunConfiguration();
   reportRuntimeIntegrity();
   ensureWeixinPluginAvailable();
+  await ensureWeixinIdentityBound();
   if (!isWindowsNodeMxcDesired()) {
     await startGateway();
     return;
@@ -6010,6 +6090,12 @@ function registerIpcHandlers(): void {
     const stateDir = getOpenClawStateDir();
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    // A plugin entry only takes effect when the Gateway loads it: without the
+    // restart the next QR login finds no provider and silently falls back to a
+    // CLI that cannot show a QR code.
+    await restartManagedGateway(
+      enabled ? "Enabling the WeChat plugin" : "Disabling the WeChat plugin",
+    );
     return { ok: true };
   });
 
@@ -6067,6 +6153,7 @@ function registerIpcHandlers(): void {
         }
         // After successful login, restart gateway so weixin channel starts
         if (code === 0) {
+          void ensureWeixinIdentityBound();
           console.log("[weixin-login] Login succeeded — will restart gateway in 2s");
           mainWindow?.webContents.send(
             "gateway:log",
@@ -6139,6 +6226,7 @@ function registerIpcHandlers(): void {
       }
       try {
         const result = await gwClient.weixinLoginQrWait(params);
+        if (result?.connected) await ensureWeixinIdentityBound();
         return result;
       } catch (err: any) {
         console.error("[weixin:login-qr-wait] failed:", err.message);
@@ -8378,6 +8466,7 @@ function registerIpcHandlers(): void {
     const companyClawUserDataDir = app.getPath("userData");
     const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () => randomUUID());
     companyClawOwnerSid = resolveOwnerSid();
+    companyClawDeviceId = deviceIdentity.deviceId;
     // The broker must run on the bundled private Node runtime: in a packaged
     // build process.execPath is CompanyClaw.exe, which cannot execute the
     // broker's JavaScript entry point. Resolving the runtime and the entry

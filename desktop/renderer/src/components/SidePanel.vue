@@ -492,7 +492,9 @@ function selectSession(key: string) {
 }
 
 function createNewChat() {
-  ensureEmptySession();
+  // An explicit "new chat" always starts one: reusing the current session here
+  // made the button appear dead whenever the open chat was already empty.
+  chatStore.newSession(agentStore.currentAgentId);
   router.push(`/chat/${agentStore.currentAgentId}`);
 }
 

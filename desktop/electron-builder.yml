@@ -80,6 +80,12 @@ extraResources:
   # source tree would let the packaged payload and the manifest drift apart.
   - from: resources/openclaw-weixin/
     to: openclaw-weixin/
+  # electron-builder skips the root `node_modules` of a directory mapping
+  # (util/filter.js returns false for `relative === "node_modules"`), which
+  # silently dropped the plugin's runtime dependencies. They are shipped as
+  # their own source so the packaged plugin can load with no npm on the machine.
+  - from: resources/openclaw-weixin/node_modules/
+    to: openclaw-weixin/node_modules/
   - from: resources/agent-skills/
     to: agent-skills/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe

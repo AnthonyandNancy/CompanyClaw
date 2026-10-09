@@ -34,6 +34,9 @@ const PRODUCED_BY_PIPELINE = [
   // them. Shipping either straight from the source tree would leave the
   // packaged copy outside the startup integrity check.
   "resources/openclaw-weixin/",
+  // electron-builder drops the root `node_modules` of a directory mapping, so
+  // the plugin's runtime dependencies are declared as their own source.
+  "resources/openclaw-weixin/node_modules/",
   "resources/agent-skills/",
 ];
 
@@ -92,6 +95,17 @@ describe("installer extraResources contract", () => {
     // The unpacked OpenClaw tree is created and then removed while building the
     // archive; bundled-runtime.ts reads openclaw.asar instead.
     expect(extraResourceSources()).not.toContain("resources/openclaw/");
+  });
+
+  it("ships the WeChat plugin's runtime dependencies next to the plugin", () => {
+    // The plugin's compiled dist/ imports zod (and qrcode-terminal) at runtime.
+    // electron-builder's directory mapping skips the root `node_modules`
+    // (`createFilter` returns false for `relative === "node_modules"`), which
+    // dropped 743 payload files from the installer while the pipeline itself
+    // looked correct — and the employee machine has no npm to recover them.
+    const sources = extraResourceSources();
+    expect(sources).toContain("resources/openclaw-weixin/");
+    expect(sources).toContain("resources/openclaw-weixin/node_modules/");
   });
 
   it("ships the broker so a packaged app can start it", () => {

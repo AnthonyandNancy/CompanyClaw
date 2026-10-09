@@ -54,6 +54,10 @@ describe("unified production resource pipeline", () => {
     ]) {
       expect(script).toContain(required);
     }
+    // The plugin's dist/ imports zod and qrcode-terminal at runtime; a payload
+    // without them still builds, and only fails on the employee machine, where
+    // no npm exists to install them.
+    expect(script).toContain("WeChat plugin staging is missing dependency");
   });
 
   it("compiles the plugin from this repository instead of trusting the tarball", () => {
@@ -64,6 +68,15 @@ describe("unified production resource pipeline", () => {
     expect(script).toContain("--omit=peer");
     expect(script).toContain("--legacy-peer-deps");
     expect(script).toContain("vendor");
+    // Without `--offline`, npm silently falls back to the registry when a
+    // vendored tarball is missing or out of range (a renamed zod tarball pulled
+    // zod 4.6.5 instead of the vendored 4.4.3), so the same product version
+    // could ship different dependency code from different build machines.
+    expect(script).toContain("--offline");
+    // `--offline` only blocks the network, not npm's local cache: a renamed
+    // vendored tarball still installed a cached zod 4.6.5. The vendored
+    // tarballs are therefore checked up front, which is deterministic.
+    expect(script).toContain("No vendored tarball for plugin dependency");
   });
 
   it("keeps the staged skills aligned with the product catalog", () => {

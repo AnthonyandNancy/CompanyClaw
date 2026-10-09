@@ -224,6 +224,16 @@ function buildWeixinPluginDist() {
  * `--omit=peer` plus `--legacy-peer-deps` is what keeps this step offline: the
  * plugin declares `openclaw` as a peer, and npm would otherwise reach the
  * registry for it. The host always provides its own OpenClaw.
+ *
+ * `--offline` is what makes that promise enforceable: without it a missing or
+ * out-of-range vendored tarball makes npm silently fetch a different version
+ * from the registry, so two build machines could ship different dependency code
+ * under the same product version.
+ *
+ * `--offline` alone is not enough — npm still satisfies the request from its
+ * local cache (a renamed zod tarball installed a cached zod 4.6.5), so the
+ * vendored tarballs are checked up front: every declared runtime dependency must
+ * have one, and a missing tarball fails the build here.
  */
 function installWeixinPluginDeps() {
   const vendorDir = path.join(weixinPluginSourceDir, "vendor");
@@ -235,6 +245,15 @@ function installWeixinPluginDeps() {
   if (tarballs.length === 0) {
     throw new Error(`No vendored plugin dependencies found in ${vendorDir}`);
   }
+  const pluginManifest = JSON.parse(
+    readFileSync(path.join(weixinPluginSourceDir, "package.json"), "utf8"),
+  );
+  const vendoredNames = tarballs.map((tarball) => path.basename(tarball));
+  for (const dependency of Object.keys(pluginManifest.dependencies ?? {})) {
+    if (!vendoredNames.some((name) => name.startsWith(`${dependency}-`))) {
+      throw new Error(`No vendored tarball for plugin dependency ${dependency} in ${vendorDir}`);
+    }
+  }
   run(process.execPath, [
     resolveNpmCli(),
     "install",
@@ -243,6 +262,7 @@ function installWeixinPluginDeps() {
     "--omit=dev",
     "--omit=peer",
     "--legacy-peer-deps",
+    "--offline",
     "--no-package-lock",
     "--no-save",
     "--ignore-scripts",
@@ -384,6 +404,17 @@ for (const required of [
 ]) {
   if (!existsSync(path.join(weixinPluginStagingDir, required))) {
     throw new Error(`WeChat plugin staging is missing ${required}`);
+  }
+}
+// The plugin's compiled dist/ imports its dependencies at runtime, and nobody
+// on the employee machine can install them: a staging directory without
+// `node_modules` must fail the build instead of shipping a dead plugin.
+const weixinPluginManifest = JSON.parse(
+  readFileSync(path.join(weixinPluginStagingDir, "package.json"), "utf8"),
+);
+for (const dependency of Object.keys(weixinPluginManifest.dependencies ?? {})) {
+  if (!existsSync(path.join(weixinPluginStagingDir, "node_modules", dependency, "package.json"))) {
+    throw new Error(`WeChat plugin staging is missing dependency ${dependency}`);
   }
 }
 

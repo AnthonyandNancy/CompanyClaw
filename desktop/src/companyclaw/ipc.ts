@@ -166,12 +166,17 @@ export function registerCompanyClawIpcHandlers(
       },
     ) => {
       // The renderer cannot choose its own ownership: the main process supplies
-      // the SID and device the grant is bound to.
+      // the SID, the device and the paired channel user the grant is bound to.
+      const channelUserId =
+        input?.channelUserId || runtime.getIdentityBinding()?.channelUserId || "";
+      if (input?.enabled === true && !channelUserId) {
+        throw new Error("微信身份未绑定：请先在「微信连接」完成扫码登录，再开启远程操作。");
+      }
       return runtime.setRemoteAuthorization({
         enabled: input?.enabled === true,
         ownerSid: options.ownerSid,
         deviceId: options.deviceId,
-        channelUserId: input?.channelUserId ?? "",
+        channelUserId,
         ttlMinutes: input?.ttlMinutes,
       });
     },

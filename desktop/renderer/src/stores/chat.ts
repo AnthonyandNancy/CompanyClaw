@@ -746,15 +746,40 @@ export const useChatStore = defineStore("chat", () => {
     return true;
   }
 
+  /**
+   * Qualifies a session key with its owning agent.
+   *
+   * Sidebar entries created before multi-agent routing existed (and any draft
+   * key from an older build) carry no agent. The Gateway rejects those with
+   * "has no explicit owner" as soon as a second agent is configured, so they
+   * are re-qualified on use — the key it accepts for `session-X` is
+   * `agent:main:session-X`, which is the same transcript server-side.
+   */
+  function qualifySessionKey(key: string, agentId?: string): string {
+    if (!key || key.startsWith("agent:")) return key;
+    return `agent:${agentId || "main"}:${key}`;
+  }
+
   /** Switch to a different session. */
   async function switchSession(key: string) {
-    const targetKey = key === "main" ? mainSessionKey.value || key : key;
+    const sessionStore = useSessionStore();
+    const storedAgentId = sessionStore.sessions.find((session) => session.key === key)?.agentId;
+    const targetKey =
+      key === "main"
+        ? mainSessionKey.value || "agent:main:main"
+        : qualifySessionKey(key, storedAgentId);
     // Save the current session's volatile state (including streaming)
     _syncToSessionStore();
     _saveCurrentState();
 
+    if (targetKey !== key) {
+      // A legacy card and its qualified form are the same transcript, so the
+      // sidebar must not keep both: leaving the old card behind looked like the
+      // chat had been duplicated.
+      _canonicalizeSessionKey(key, targetKey);
+    }
+
     sessionKey.value = targetKey;
-    const sessionStore = useSessionStore();
     sessionStore.ensureSession(targetKey);
 
     // Try to restore cached state (streaming session we switched away from)
@@ -1324,16 +1349,16 @@ export const useChatStore = defineStore("chat", () => {
   /** Start a new session (preserves the old one). */
   function newSession(agentId?: string) {
     // Save the current session before switching
-    // Save the current session before switching
     _syncToSessionStore();
     _saveCurrentState();
 
     const suffix = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Encode the agent into the session key so the gateway routes the message
-    // to the selected agent. Bare keys (and "main") are normalised to the
-    // default (main) agent server-side, so only non-default agents are prefixed.
-    const key = agentId && agentId !== "main" ? `agent:${agentId}:${suffix}` : suffix;
-    pendingSessionAgentId.value = agentId;
+    // Always qualify the key with its agent. An agent-less key is only valid
+    // while a single agent is configured: with two or more, the Gateway rejects
+    // it ("has no explicit owner") and the message never reaches a session.
+    const effectiveAgentId = agentId ?? "main";
+    const key = `agent:${effectiveAgentId}:${suffix}`;
+    pendingSessionAgentId.value = effectiveAgentId;
     sessionKey.value = key;
     resolvedSessionKey.value = null;
     messages.value = [];
@@ -1521,8 +1546,9 @@ export const useChatStore = defineStore("chat", () => {
         // Without a canonical key, keep the generated draft in memory until
         // its first message instead of persisting an empty sidebar entry.
         const newKey =
-          mainSessionKey.value ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        pendingSessionAgentId.value = mainSessionKey.value ? "main" : undefined;
+          mainSessionKey.value ??
+          `agent:main:session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        pendingSessionAgentId.value = "main";
         sessionKey.value = newKey;
         resolvedSessionKey.value = mainSessionKey.value ? newKey : null;
         messages.value = [];
@@ -1560,8 +1586,9 @@ export const useChatStore = defineStore("chat", () => {
     // 4. Return to the reset main session. If its canonical key is not known,
     // keep a generated draft in memory until the first message.
     const newKey =
-      mainSessionKey.value ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    pendingSessionAgentId.value = undefined;
+      mainSessionKey.value ??
+      `agent:main:session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    pendingSessionAgentId.value = "main";
     sessionKey.value = newKey;
     resolvedSessionKey.value = mainSessionKey.value ? newKey : null;
     messages.value = [];

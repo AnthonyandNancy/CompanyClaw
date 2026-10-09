@@ -569,7 +569,7 @@ describe("useChatStore — draft sessions", () => {
     store.newSession();
 
     const persisted = JSON.parse(storage["openclaw-sessions"] ?? "[]");
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
     expect(store.messages).toEqual([]);
     expect(persisted.some((s: { key: string }) => s.key === store.sessionKey)).toBe(false);
   });
@@ -597,10 +597,19 @@ describe("useChatStore — draft sessions", () => {
     expect(store.currentSessionAgentId).toBe("coder");
   });
 
-  it("keeps a bare session key for the default (main) agent", () => {
+  it("keeps the default (main) agent in the session key", () => {
+    // An agent-less key is rejected once more than one agent is configured
+    // ("has no explicit owner"), so even the default agent is qualified.
     const store = useChatStore();
     store.newSession("main");
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
+    expect(store.currentSessionAgentId).toBe("main");
+  });
+
+  it("qualifies a session created without an explicit agent", () => {
+    const store = useChatStore();
+    store.newSession();
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
     expect(store.currentSessionAgentId).toBe("main");
   });
 
@@ -630,6 +639,69 @@ describe("useChatStore — draft sessions", () => {
     store.newSession("painter");
     expect(store.sessionKey).toMatch(/^agent:painter:session-/);
     expect(store.currentSessionAgentId).toBe("office-artisan");
+  });
+});
+
+describe("useChatStore — switching to sessions kept from older builds", () => {
+  beforeEach(() => {
+    Object.keys(storage).forEach((k) => delete storage[k]);
+    setActivePinia(createPinia());
+    vi.restoreAllMocks();
+    mockLoadHistory.mockResolvedValue({ messages: [] });
+  });
+
+  it("qualifies a bare sidebar key before asking the gateway for its history", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-1791536153880-capfil", "main");
+
+    await store.switchSession("session-1791536153880-capfil");
+
+    expect(store.sessionKey).toBe("agent:main:session-1791536153880-capfil");
+    expect(mockLoadHistory).toHaveBeenCalledWith("agent:main:session-1791536153880-capfil");
+  });
+
+  it("merges the legacy card into the qualified key instead of keeping both", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-1791536153880-capfil", "main");
+    sessionStore.ensureSession("agent:main:session-1791536153880-capfil", "main");
+
+    await store.switchSession("session-1791536153880-capfil");
+
+    expect(sessionStore.sessions.filter((s) => s.key.endsWith("1791536153880-capfil"))).toHaveLength(
+      1,
+    );
+    expect(store.sessionKey).toBe("agent:main:session-1791536153880-capfil");
+  });
+
+  it("uses the agent recorded on the session, not the default one", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("session-old-coder", "coder");
+
+    await store.switchSession("session-old-coder");
+
+    expect(store.sessionKey).toBe("agent:coder:session-old-coder");
+  });
+
+  it("keeps an already qualified key untouched", async () => {
+    const store = useChatStore();
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession("agent:main:session-kept");
+
+    await store.switchSession("agent:main:session-kept");
+
+    expect(store.sessionKey).toBe("agent:main:session-kept");
+  });
+
+  it("never resolves the main alias to a bare key", async () => {
+    const store = useChatStore();
+    store.mainSessionKey = null;
+
+    await store.switchSession("main");
+
+    expect(store.sessionKey).toBe("agent:main:main");
   });
 });
 
@@ -1060,7 +1132,7 @@ describe("useChatStore — session deletion", () => {
 
     await store.deleteSession("session-123");
 
-    expect(store.sessionKey).toMatch(/^session-/);
+    expect(store.sessionKey).toMatch(/^agent:main:session-/);
     expect(sessionStore.sessions).toEqual([]);
     expect(JSON.parse(storage["openclaw-sessions"] ?? "[]")).toEqual([]);
   });

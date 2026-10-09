@@ -6,7 +6,10 @@ import {
   ensureWeixinPluginInstalled,
   planWeixinPluginEnable,
   WEIXIN_PLUGIN_ID,
+  WEIXIN_PLUGIN_PAYLOAD_CONTRACT,
+  WEIXIN_PLUGIN_PAYLOAD_FILE,
   weixinPluginInstalled,
+  weixinPluginPayloadFingerprint,
 } from "./weixin-plugin-install";
 
 const temporaryRoots: string[] = [];
@@ -15,6 +18,22 @@ function temporaryRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "companyclaw-plugin-"));
   temporaryRoots.push(root);
   return root;
+}
+
+/**
+ * Copies a staged payload into the state directory the way a successful
+ * `plugins install` leaves it, fingerprint record included.
+ */
+function installPayloadCopy(pluginDir: string, stateDir: string): void {
+  const installedDir = path.join(stateDir, "extensions", WEIXIN_PLUGIN_ID);
+  fs.mkdirSync(installedDir, { recursive: true });
+  fs.cpSync(pluginDir, installedDir, { recursive: true });
+  const fingerprint = weixinPluginPayloadFingerprint(pluginDir);
+  fs.writeFileSync(
+    path.join(installedDir, WEIXIN_PLUGIN_PAYLOAD_FILE),
+    `${JSON.stringify({ contract: WEIXIN_PLUGIN_PAYLOAD_CONTRACT, fingerprint }, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 /** Lays out the resources directory as the installer ships it. */
@@ -34,27 +53,11 @@ afterEach(() => {
 });
 
 describe("ensureWeixinPluginInstalled", () => {
-  it("does nothing in a source checkout", () => {
-    const runCli = vi.fn();
-    const outcome = ensureWeixinPluginInstalled({
-      isPackaged: false,
-      resourcesPath: "C:/repo/desktop/resources",
-      nodePath: "C:/node/node.exe",
-      openClawEntry: "C:/repo/desktop/openclaw.mjs",
-      stateDir: temporaryRoot(),
-      runCli,
-    });
-    expect(outcome).toEqual({ ok: true, state: "skipped", detail: "not-packaged" });
-    // A developer's own state directory must not be touched.
-    expect(runCli).not.toHaveBeenCalled();
-  });
-
   it("reports a missing payload instead of installing nothing", () => {
     const root = temporaryRoot();
     const runCli = vi.fn();
     const outcome = ensureWeixinPluginInstalled({
-      isPackaged: true,
-      resourcesPath: path.join(root, "resources"),
+      pluginSourceDir: path.join(root, "resources", "openclaw-weixin"),
       nodePath: "C:/node/node.exe",
       openClawEntry: "C:/node/openclaw.mjs",
       stateDir: root,
@@ -66,14 +69,13 @@ describe("ensureWeixinPluginInstalled", () => {
     expect(runCli).not.toHaveBeenCalled();
   });
 
-  it("installs the packaged plugin through OpenClaw", () => {
+  it("installs the staged plugin through OpenClaw", () => {
     const root = temporaryRoot();
     const resourcesPath = stagedResources(root);
     const stateDir = path.join(root, "state");
     const calls: string[][] = [];
     const outcome = ensureWeixinPluginInstalled({
-      isPackaged: true,
-      resourcesPath,
+      pluginSourceDir: path.join(resourcesPath, "openclaw-weixin"),
       nodePath: "C:/node/node.exe",
       openClawEntry: "C:/node/openclaw.mjs",
       stateDir,
@@ -84,13 +86,84 @@ describe("ensureWeixinPluginInstalled", () => {
     });
     expect(outcome).toEqual({ ok: true, state: "installed" });
     // The host is asked to install the staged directory itself; nothing is
-    // fetched from a registry on an employee machine.
+    // fetched from a registry on an employee machine. Capability consent is
+    // acknowledged because the payload is this application's own plugin.
     expect(calls).toEqual([
-      ["plugins", "install", "--force", path.join(resourcesPath, "openclaw-weixin")],
+      [
+        "plugins",
+        "install",
+        "--force",
+        "--accept-capabilities",
+        path.join(resourcesPath, "openclaw-weixin"),
+      ],
     ]);
   });
 
-  it("skips an installation that is already present", () => {
+  it("skips a copy that is already installed from this exact payload", () => {
+    const root = temporaryRoot();
+    const resourcesPath = stagedResources(root);
+    const stateDir = path.join(root, "state");
+    const pluginDir = path.join(resourcesPath, "openclaw-weixin");
+    installPayloadCopy(pluginDir, stateDir);
+    const runCli = vi.fn();
+    const outcome = ensureWeixinPluginInstalled({
+      pluginSourceDir: pluginDir,
+      nodePath: "C:/node/node.exe",
+      openClawEntry: "C:/node/openclaw.mjs",
+      stateDir,
+      runCli,
+    });
+    expect(outcome).toEqual({ ok: true, state: "already-present" });
+    // Reinstalling on every launch would be slow and could disturb a bound
+    // account, so an unchanged payload is left alone.
+    expect(runCli).not.toHaveBeenCalled();
+    expect(weixinPluginInstalled(stateDir)).toBe(true);
+  });
+
+  it("replaces an installed copy whose payload is older than the shipped one", () => {
+    const root = temporaryRoot();
+    const resourcesPath = stagedResources(root);
+    const stateDir = path.join(root, "state");
+    const pluginDir = path.join(resourcesPath, "openclaw-weixin");
+    installPayloadCopy(pluginDir, stateDir);
+    // The shipped payload changes: a fixed dist file is what a rebuilt plugin
+    // looks like on disk.
+    fs.writeFileSync(
+      path.join(pluginDir, "dist", "index.js"),
+      '// plugin, fixed for openclaw 2026.9.3\n',
+      "utf8",
+    );
+    const calls: string[][] = [];
+    const outcome = ensureWeixinPluginInstalled({
+      pluginSourceDir: pluginDir,
+      nodePath: "C:/node/node.exe",
+      openClawEntry: "C:/node/openclaw.mjs",
+      stateDir,
+      runCli: (args) => {
+        calls.push(args);
+        return { status: 0, output: "installed" };
+      },
+    });
+    expect(outcome).toEqual({ ok: true, state: "refreshed" });
+    expect(calls).toEqual([
+      ["plugins", "install", "--force", "--accept-capabilities", pluginDir],
+    ]);
+    // The new fingerprint is recorded, so the next launch does not reinstall.
+    const second = ensureWeixinPluginInstalled({
+      pluginSourceDir: pluginDir,
+      nodePath: "C:/node/node.exe",
+      openClawEntry: "C:/node/openclaw.mjs",
+      stateDir,
+      runCli: () => {
+        throw new Error("must not reinstall an unchanged payload");
+      },
+    });
+    expect(second).toEqual({ ok: true, state: "already-present" });
+  });
+
+  it("repairs an installed copy that carries no payload record", () => {
+    // This is the shape left behind by builds that predate the fingerprint: the
+    // directory exists, so it used to be trusted forever.
     const root = temporaryRoot();
     const resourcesPath = stagedResources(root);
     const stateDir = path.join(root, "state");
@@ -100,28 +173,23 @@ describe("ensureWeixinPluginInstalled", () => {
       "{}\n",
       "utf8",
     );
-    const runCli = vi.fn();
+    const runCli = vi.fn(() => ({ status: 0 as number | null, output: "installed" }));
     const outcome = ensureWeixinPluginInstalled({
-      isPackaged: true,
-      resourcesPath,
+      pluginSourceDir: path.join(resourcesPath, "openclaw-weixin"),
       nodePath: "C:/node/node.exe",
       openClawEntry: "C:/node/openclaw.mjs",
       stateDir,
       runCli,
     });
-    expect(outcome).toEqual({ ok: true, state: "already-present" });
-    // Reinstalling on every launch would be slow and could disturb a bound
-    // account, so an existing installation is left alone.
-    expect(runCli).not.toHaveBeenCalled();
-    expect(weixinPluginInstalled(stateDir)).toBe(true);
+    expect(outcome).toEqual({ ok: true, state: "refreshed" });
+    expect(runCli).toHaveBeenCalledTimes(1);
   });
 
   it("reports a failing installation with its output", () => {
     const root = temporaryRoot();
     const resourcesPath = stagedResources(root);
     const outcome = ensureWeixinPluginInstalled({
-      isPackaged: true,
-      resourcesPath,
+      pluginSourceDir: path.join(resourcesPath, "openclaw-weixin"),
       nodePath: "C:/node/node.exe",
       openClawEntry: "C:/node/openclaw.mjs",
       stateDir: path.join(root, "state"),
@@ -138,8 +206,7 @@ describe("ensureWeixinPluginInstalled", () => {
     const resourcesPath = stagedResources(root);
     const runCli = vi.fn();
     const outcome = ensureWeixinPluginInstalled({
-      isPackaged: true,
-      resourcesPath,
+      pluginSourceDir: path.join(resourcesPath, "openclaw-weixin"),
       nodePath: null,
       openClawEntry: null,
       stateDir: path.join(root, "state"),

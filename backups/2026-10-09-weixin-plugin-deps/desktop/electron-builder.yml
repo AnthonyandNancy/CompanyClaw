@@ -1,0 +1,107 @@
+appId: com.companyclaw.desktop
+productName: CompanyClaw
+copyright: Copyright © 2026 CompanyClaw
+
+directories:
+  output: release
+
+afterSign: scripts/update-signed-windows-node-manifest.mjs
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/microclaw.ico
+  signExts:
+    # These are unmodified third-party MXC binaries. MicroClaw-owned helpers,
+    # including microclaw-mxc-host-prep.exe, remain eligible for product signing.
+    - "!mxc-diagnostic-console.exe"
+    - "!winhttp-proxy-shim.exe"
+    - "!wxc-exec.exe"
+    - "!wxc-host-prep.exe"
+    - "!wxc-test-proxy.exe"
+    - "!wxc-windows-sandbox-daemon.exe"
+    - "!wxc-windows-sandbox-guest.exe"
+
+appx:
+  artifactName: CompanyClaw-${version}-${arch}.msix
+  identityName: CompanyClaw.Desktop
+  publisher: CN=CompanyClaw
+  publisherDisplayName: CompanyClaw
+  applicationId: CompanyClaw
+  displayName: CompanyClaw
+  languages:
+    - en-US
+    - zh-CN
+  minVersion: 10.0.19041.0
+  maxVersionTested: 10.0.26100.0
+  capabilities:
+    - runFullTrust
+
+nsis:
+  # The employee artifact name is quoted in build.ps1 and in the employee /
+  # IT guides; without this the builder default ("CompanyClaw Setup <ver>.exe")
+  # would not match any of them.
+  artifactName: CompanyClaw-Setup-${version}-${arch}.exe
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # Requirement V1.1 (conflict 2): everyday use must not need administrator
+  # rights. A per-machine install would require elevation, so the installer
+  # installs into the current user's own directory and never asks for admin.
+  perMachine: false
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CompanyClaw
+
+extraResources:
+  - from: dist/github-copilot-auth-worker.js
+    to: github-copilot-auth-worker.js
+  - from: src/openclaw-approval-replay-compat.mjs
+    to: openclaw-approval-replay-compat.mjs
+  - from: resources/node.exe
+    to: node.exe
+  # The unified pipeline builds this archive from the unpacked tree and then
+  # deletes the tree, so only the archive is ever shipped.
+  - from: resources/openclaw.asar
+    to: openclaw.asar
+  - from: resources/windows-node/
+    to: windows-node/
+  # broker-paths.ts resolves resources/companyclaw-broker in a packaged build.
+  - from: resources/companyclaw-broker/dist/
+    to: companyclaw-broker/dist/
+  - from: resources/companyclaw-broker/scripts/
+    to: companyclaw-broker/scripts/
+  - from: resources/runtime-manifest.json
+    to: runtime-manifest.json
+  # The WeChat plugin and the agent skills come from the unified pipeline
+  # (prepare-production-resources.mjs). Shipping a second copy straight from the
+  # source tree would let the packaged payload and the manifest drift apart.
+  - from: resources/openclaw-weixin/
+    to: openclaw-weixin/
+  - from: resources/agent-skills/
+    to: agent-skills/
+  - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
+    to: AppContainerLauncher.exe
+  - from: ../appcontainer/sandbox-preload.js
+    to: sandbox-preload.js
+  - from: ../appcontainer/sandbox-state.js
+    to: sandbox-state.js
+  - from: ../appcontainer/sandbox-permission.js
+    to: sandbox-permission.js
+  - from: ../appcontainer/sandbox-fs-hooks.js
+    to: sandbox-fs-hooks.js
+  - from: ../appcontainer/sandbox-cp-hooks.js
+    to: sandbox-cp-hooks.js
+  - from: ../appcontainer/sandbox-sensitive.js
+    to: sandbox-sensitive.js
+  - from: ../appcontainer/path-extraction.js
+    to: path-extraction.js
+
+files:
+  - dist/**/*
+  - renderer/dist/**/*
+  - assets/**/*
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,README,readme}"
+  - "!**/node_modules/.cache"
