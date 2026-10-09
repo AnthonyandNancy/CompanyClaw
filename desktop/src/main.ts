@@ -48,6 +48,12 @@ import {
 } from "./companyclaw/ipc";
 import { resolveBrokerDir } from "./companyclaw/broker-paths";
 import { resolveOwnerSid } from "./companyclaw/owner-sid";
+import {
+  findEdgeExecutable,
+  planBrowserConfig,
+  planFirstRunConfig,
+} from "./companyclaw/first-run-init";
+import { RUNTIME_MANIFEST_FILE, verifyRuntimeManifest } from "./companyclaw/runtime-manifest";
 import { loadOrCreateDeviceIdentity } from "./device-identity";
 import {
   recoverInterruptedOpenClawUpgrade,
@@ -1438,7 +1444,92 @@ async function runAutomaticWindowsNodeMxcReadiness(): Promise<WindowsNodeMxcRunt
   });
 }
 
+/**
+ * Writes the configuration the packaged app needs before the Gateway starts.
+ *
+ * The NSIS package ships no pre-generated `openclaw.json`; without this step
+ * the Gateway would start with an empty auth token, and browser automation
+ * would have no executable configured. Both used to be written by the legacy
+ * Python installer.
+ *
+ * Only the default (non-MXC) security mode is handled here: the Windows Node +
+ * MXC path pins and validates `openclaw.json` itself, and rewriting the file
+ * underneath it would fight that policy.
+ */
+function ensureCompanyClawFirstRunConfiguration(): void {
+  if (isWindowsNodeMxcDesired()) return;
+  const configPath = getConfigPath();
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (error) {
+    console.error("[companyclaw] Cannot create the OpenClaw state directory:", error);
+    return;
+  }
+  const existing = readConfig();
+  const planned = planFirstRunConfig({
+    existing,
+    // Two UUIDs give a 64-hex-character token without adding a dependency; the
+    // legacy installer used secrets.token_hex(24) for the same purpose.
+    createToken: () => `${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`,
+  });
+  const withBrowser = planBrowserConfig(
+    planned.config,
+    findEdgeExecutable(process.env, (candidate) => fs.existsSync(candidate)),
+  );
+  const changed = [...planned.changed, ...withBrowser.changed];
+  if (changed.length === 0) return;
+  try {
+    assertConfigWriteAllowed(withBrowser.config, existing);
+    writeConfigTextAtomically(JSON.stringify(withBrowser.config, null, 2));
+    console.log(`[companyclaw] First-run configuration written: ${changed.join(", ")}`);
+  } catch (error) {
+    // A failure here must not take the app down; the Gateway reports the
+    // missing token through the existing gateway log instead.
+    console.error("[companyclaw] First-run configuration failed:", error);
+  }
+}
+
+/**
+ * Reports missing or altered bundled resources in plain Chinese.
+ *
+ * Runs only in a packaged build: a source checkout has no manifest and is not
+ * an employee installation.
+ */
+function reportRuntimeIntegrity(): void {
+  if (!app.isPackaged) return;
+  const manifestPath = path.join(process.resourcesPath, RUNTIME_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[warn] 安装资源清单缺失（${RUNTIME_MANIFEST_FILE}）。请重新运行 CompanyClaw 安装包修复安装。`,
+    );
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  } catch (error) {
+    mainWindow?.webContents.send(
+      "gateway:log",
+      `[warn] 安装资源清单无法读取：${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  const verification = verifyRuntimeManifest(parsed, process.resourcesPath);
+  if (verification.ok) {
+    console.log(`[companyclaw] Runtime manifest verified (${verification.checked} entries)`);
+    return;
+  }
+  mainWindow?.webContents.send(
+    "gateway:log",
+    `[warn] 运行资源校验未通过：${verification.problems.join("; ")}。` +
+      "请重新运行 CompanyClaw 安装包修复安装（无需手动安装任何组件）。",
+  );
+}
+
 async function startApplicationServices(): Promise<void> {
+  ensureCompanyClawFirstRunConfiguration();
+  reportRuntimeIntegrity();
   if (!isWindowsNodeMxcDesired()) {
     await startGateway();
     return;
