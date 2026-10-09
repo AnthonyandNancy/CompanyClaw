@@ -1,4 +1,4 @@
-﻿# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
+# One-click build: desktop app + appcontainer launcher -> portable zip -> installer exe
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -189,15 +189,18 @@ if (-not (Test-Path $outDist)) {
 }
 
 # -- Step 3: Build & pack desktop --
+# Official employee artifact: the NSIS per-user installer, built from the
+# unified runtime pipeline (private node.exe + openclaw.asar + compiled broker +
+# runtime-manifest.json). Employees never run npm, dotnet or Node themselves.
 Write-Host "`n=== Step 3/7: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
 try {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    npm run pack:prepared 2>&1 | ForEach-Object { Write-Host "  $_" }
+    npm run release:win 2>&1 | ForEach-Object { Write-Host "  $_" }
     $ErrorActionPreference = $prev
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: desktop build failed" -ForegroundColor Red
+        Write-Host "  ERROR: desktop release build failed" -ForegroundColor Red
         exit 1
     }
 } finally {
@@ -253,6 +256,14 @@ $installManifest | ConvertTo-Json | Set-Content $manifestPath -Encoding utf8
 Write-Host "  Install manifest: $manifestPath" -ForegroundColor DarkGray
 
 # Step 5: Build installer (onedir mode to avoid WDAC blocking DLLs from temp)
+#
+# --- Legacy channel (kept for compatibility, NOT the employee artifact) ------
+# The supported employee distribution is
+#   desktop\release\CompanyClaw-Setup-<version>.exe   (NSIS, per-user)
+# produced by Step 3. The PyInstaller + installer\microclaw-setup.nsi path below
+# historically installed Node.js system-wide through the inner installer, which
+# the V2 requirement forbids for everyday users. Keep it only for the legacy
+# channel and never validate the employee flow against it.
 Write-Host "`n=== Step 5/7: Build installer ===" -ForegroundColor Cyan
 Push-Location $root
 $installerBuilt = $false
@@ -481,7 +492,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
-Write-Host "  Setup (one-exe): $setupExe"
-Write-Host "  Installer dir:   $root\dist\MicroClawInstaller\"
-Write-Host "  Installer zip:   $installerZip"
-Write-Host "  Portable:        $zipPath"
+Write-Host "  EMPLOYEE ARTIFACT (NSIS per-user, self-contained):" -ForegroundColor Green
+Write-Host "    $root\desktop\release\CompanyClaw-Setup-*.exe"
+Write-Host "    Employees install this and configure only their model + WeChat." -ForegroundColor DarkGray
+Write-Host "  Legacy channel (not for employee distribution):" -ForegroundColor DarkYellow
+Write-Host "    Setup (one-exe): $setupExe"
+Write-Host "    Installer dir:   $root\dist\MicroClawInstaller\"
+Write-Host "    Installer zip:   $installerZip"
+Write-Host "    Portable:        $zipPath"
