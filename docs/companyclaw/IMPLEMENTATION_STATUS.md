@@ -2,7 +2,8 @@
 
 上游基线：`microsofthackathons/MicroClaw` @ `6f080a07f43bd65b8b27ec6f859438fc038bb912`
 分支：`feat/companyclaw-foundation`
-最后更新：2026-10-09
+最后更新：2026-10-09（V2 自包含安装实施）
+本轮基线：`929a995`
 
 **中断恢复入口**。新接手者请按序阅读：
 1. 本文件（进度与下一步）
@@ -11,7 +12,8 @@
 4. `docs/companyclaw/00-source-audit.md`（真实调用链与关键事实）
 5. `docs/companyclaw/ADR/0001-security-core-modules.md`（安全内核边界决策）
 6. `docs/superpowers/plans/2026-10-08-companyclaw-security-core.md`（安全内核实施计划）
-7. `BLOCKERS.md`（9 项阻塞及解除条件）
+7. `docs/superpowers/plans/2026-10-09-companyclaw-v2-selfcontained-installer.md`（V2 自包含安装实施计划）
+8. `BLOCKERS.md`（9 项阻塞及解除条件，含责任主体分类）
 
 > **完成状态声明**：整体项目**未完成**。已完成并在本机验证的是安全内核、Broker 策略与读取探针、安装器安全策略、产品标识。需要真实微信账号/内网系统的验收项全部记为 `BLOCKED`。
 
@@ -28,6 +30,15 @@
 | 安全内核 | **PASS** | 15 files / 113 passed |
 | 安全内核接线 | **PASS** | `main.ts` IPC + `preload.ts` 命名空间，5 项契约测试通过 |
 | Broker 策略、读取与写入操作 | **PASS** | 8 files / 54 passed，**含 9 项真实 UIA 实机验证** |
+| V2 运行时清单契约 | **PASS** | `runtime-manifest.ts`，9 项负向/正向用例 |
+| V2 统一资源流水线 | **PARTIAL** | 脚本与契约测试 PASS；本机构建机实跑在 `dotnet publish` 处 `BLOCKED`（B4），Node 与 OpenClaw 阶段已实测成功（527MB staging 产出） |
+| V2 打包契约对齐 | **PASS** | `extraResources` 加 6 项契约测试；发现并归类 2 个未分类来源 |
+| V2 首次运行初始化 | **PASS** | `first-run-init.ts`，17 项用例；`main.ts` 接线 |
+| V2 Broker 生产启动 | **PASS** | 10 项用例（命令、令牌不落 argv、中文空格路径、回退） |
+| V2 构建入口收敛 | **PASS**（静态） | `build.ps1` Step 3 → `release:win`；完整构建受 B4 阻塞 |
+| V2 首次向导补齐 | **PASS** | 探针结果 + 微信入口；renderer 27 files / 320 passed |
+| V2 Broker 可操作性区分 | **PASS** | 状态字段 + IPC + UI；desktop 75 files / 1451 passed |
+| V2 微信桥接 | **PASS**（逻辑层） | 桥接 12 项 + 桌面接线 2 项；**真机 E2E 仍 BLOCKED（B1）** |
 | 安装器安全策略（冲突 2） | **PASS** | Defender 排除项默认关闭；卸载默认保留用户数据；8 tests |
 | 产品标识（P1 部分） | **PASS** | `com.companyclaw.desktop` / `CompanyClaw`；4 tests |
 | P1 产品标识 | **PASS** | 已品牌化；**版本迁移未实现** |
@@ -118,12 +129,18 @@
 
 1. **P0-B / V4**：Windows-MCP 专项评估（离线可做）。
 2. **P0-B / V2**：Broker 通信机制选型（命名管道 / loopback / stdio）。
-1. **浏览器实际驱动**：策略层与 UI 完备，但无受控的 OpenClaw Browser 调用器。
-2. **微信插件接入**：审批卡片出站与回复入站拦截（最小 patch + ADR 0002 已备方案）。
-3. **`session-source` 生产者**：全库缺失。
-4. **`describe-element` / `wait-for-window`**：仍为 `not-implemented`（不伪造成功）。
-5. **安装包产出**：需完整工具链与签名证书。
-6. **E01–E20 与 S1–S9**：需目标环境（微信账号 / 内网系统 / 目标机）。
+3. **浏览器实际驱动**：策略层与 UI 完备，但**无执行器**（`skills/` 无 playwright/chromium）。
+   `browser.*` 配置已由首次运行初始化补齐，但真实 Web 自动化仍需接入 OpenClaw 原生 Browser 或另行裁定。
+4. **任务编排接线**：`TaskOrchestrator` 与 `CompanyClawRuntime.execute()` 仍无生产调用方（仅测试引用）。
+5. **`describe-element` / `wait-for-window`**：仍为 `not-implemented`（不伪造成功）。
+6. **微信审批出站卡片**：入站拦截与 `session-source` 已接通（ADR 0003）；
+   主动推送审批卡片（`buildApprovalMessage` → 真实发送）尚需与任务编排一并接入。
+7. **安装包产出**：脚本链已收敛为 NSIS Per-User 主线；完整产出受 B4（构建机 .NET SDK）与 B6（签名）影响。
+8. **E01–E20 与 S1–S9**：需目标环境（微信账号 / 内网系统 / 目标机）。
+
+**V2 本轮已关闭的缺口**：`dist` 不装配运行时资源、`extraResources` 死引用与 Broker 缺项、
+Broker 用 `process.execPath` 启动、首次运行无人生成 Gateway 令牌与浏览器配置、
+`session-source` 无生产者、审批回复无入站拦截、构建入口不产 NSIS 安装包。
 
 ---
 

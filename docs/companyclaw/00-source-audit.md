@@ -102,3 +102,20 @@ settings.securityMode = "windows-node-mxc"
 | `lastInputFromRemote` | 裁决明令废弃 |
 | `notifyRemotePermissionNeeded()` | 无生产者，且只做单向通知 |
 | MXC 的 ingress 隔离 | 裁决要求原样保留，不通过放开它满足需求 |
+
+---
+
+## V2 一致性修正（基线 `929a995`）
+
+V2 实施书基于较早的 SHA 编写，以下引用与结论已按当前源码修正。定位统一采用
+「Commit SHA + 文件路径 + 函数/符号」，行号仅作辅助。
+
+| 原表述 | 实测（含符号） | 结论 |
+|---|---|---|
+| `main.ts:543`、`main.ts:4106` | 失效。实为 `desktop/src/main.ts` 的 `cachedRemoteSource` 声明与 `startGatewayInner()` 内的 `child.on("message")` 分支 | 引用已修正 |
+| §1.1「已有 Browser 配置/目标限制逻辑」 | **生产功能缺失**。`browser.executablePath` 仅由旧 Python 安装器 `deployer/windows_setup.py` 写入；桌面端只有 `desktop/src/companyclaw/policy/browser-policy.ts` 策略层，**无执行器**；`skills/` 内无 playwright/chromium；`README.md` 记为 `Optional: Microsoft Edge` | 需求保留，实现待补（见 12-known-limitations） |
+| `dist` 已备好资源 | **不成立**。修正前 `desktop/package.json` 的 `dist` 只跑 `prepare-windows-node-resources`；`desktop/resources/` 被 `.gitignore` 忽略且在干净检出中不存在 | 已由统一流水线修复 |
+| `extraResources` 含 `resources/openclaw/` | 该目录由流水线装配后立即删除，且 `desktop/src/bundled-runtime.ts` 只读 `openclaw.asar` —— 属**死引用**；同时**缺少** `companyclaw-broker` | 已修复并加契约测试 |
+| Broker 启动用 `process.execPath` | 确认属实：`desktop/src/companyclaw/broker-client.ts` 的 `startInternal()`。打包后该值为 `CompanyClaw.exe` | 已改为 `resolveNodePath()` |
+| 首次运行已生成 Gateway 令牌 | **不成立**。`desktop/src/main.ts` 只读 `gateway.auth.token`；唯一写入者是 `deployer/windows_setup.py`（`auth["token"] = secrets.token_hex(24)`） | 已由 `ensureCompanyClawFirstRunConfiguration()` 补齐 |
+| 任务链已完成 | `desktop/src/companyclaw/tasks/task-orchestrator.ts` 的 `TaskOrchestrator` 与 `CompanyClawRuntime.execute()` **无生产调用方**，仅测试引用 | 需求保留，接线待补 |

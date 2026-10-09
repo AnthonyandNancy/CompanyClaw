@@ -1,5 +1,14 @@
 # BLOCKERS
 
+> **责任主体说明（V2，基线 `929a995`）**
+>
+> 本文件区分两类阻塞，处理方式完全不同：
+>
+> - **[构建方]**：开发/CI 构建环境缺件。由构建流程或 CI 解决，**绝不转化为员工安装前置要求**。
+> - **[验证方]**：缺少外部账号、内网系统、目标机或签名证书。属于验收条件，保留 `BLOCKED`/`UNVERIFIED`。
+>
+> 员工侧的唯一要求是：安装一个 EXE → 配置个人大模型 → 微信扫码。任何"请员工先装 Node/Python/.NET SDK/Git/OpenClaw"的结论都判为不合格。
+
 上游基线：`6f080a07f43bd65b8b27ec6f859438fc038bb912`
 分支：`feat/companyclaw-foundation`
 最后更新：2026-10-08
@@ -38,23 +47,32 @@
 - **阻塞**：`appcontainer`（net9.0-windows）与 `windows-node-host`（net10.0-windows）的编译。
 - **证据**：`dotnet --list-sdks` 无输出；仅存在 runtime `8.0.27`；`dotnet --version` 报 "The application '--version' does not exist"。
 - **影响**：`windows-node-host` 无法构建 → MXC 路径无法回归验证（基线 A 相关项）；若 Broker 选 .NET 亦受阻。
-- **解除条件**：安装 .NET 9 与 .NET 10 SDK。
-- **规避**：Broker 采用 Node.js 实现可绕过此阻塞（Node v26.7.0 已具备）。
+- **责任主体**：**[构建方]** —— 构建机/CI 需要 .NET SDK 才能 `dotnet publish`。
+- **解除条件**：构建机安装 .NET SDK（工作负载见 `windows-node-host`/`appcontainer` 目标框架）。
+- **规避**：Broker 采用 Node.js 实现可绕过此阻塞（Node v26.7.0 已具备），且 .NET 产物以 `--self-contained -p:PublishSingleFile=true` 发布，**员工机器永不需要 .NET 运行时或 SDK**。
+- **对员工的影响**：无。MXC 组件预编译进包，员工不需要任何 .NET 组件。
 
 ## B5｜上游子模块未初始化
 
 - **阻塞**：`windows-node-host` 编译（依赖 `third_party/openclaw-windows-node/source`）。
 - **证据**：`git submodule status` → `-fc9add75eda78daf548d80a55ffb64e63b159961`（前缀 `-` 表示未 checkout）。
 - **影响**：MXC 路径构建与回归（基线 A）。
+- **责任主体**：**[构建方]** —— 构建流程须自动初始化子模块（`build.ps1` 已含该步骤）。
 - **解除条件**：`git submodule update --init --recursive`（需网络访问 github.com/openclaw/openclaw-windows-node）。
+- **状态**：已于本轮在开发机验证可初始化（`fc9add75eda78daf548d80a55ffb64e63b159961`）。
+- **对员工的影响**：无。发行包内不含仓库或子模块，员工不需要 Git。
 
 ## B6｜无代码签名证书（阻塞安装包交付）
 
 - **阻塞**：§10-2 要求的签名状态可核验。
 - **影响**：§10 第 2 项；P11 发布。
-- **解除条件**：提供公司代码签名证书，或明确接受"未签名 + SHA-256 + 构建配方"的交付形式。
+- **责任主体**：**[发布方]** —— 不阻塞内部试用包产出。
+- **解除条件**：提供公司代码签名证书，或明确接受"未签名 + SHA-256 + 构建配方"的交付形式（产物上必须明示未签名）。
+- **对员工的影响**：安装时可能出现 SmartScreen 提示；不影响功能。
 
-## B7｜非管理员会话（阻塞 Per-User 安装实测）
+## B7｜非管理员会话（限制实测范围，不改设计）
+
+- **责任主体**：**[验证方]** —— Per-User 正是目标设计，本机非管理员并不阻塞它。
 
 - **阻塞**：安装器 Per-User 化后的真实安装/卸载验证；Defender 相关验证。
 - **证据**：当前进程 `IsAdmin=False`；系统为中文 Windows 11 专业版（`10.0.26100`）。
@@ -83,13 +101,15 @@
 |---|---|
 | 1 公司 Fork | B3 |
 | 2 安装包签名 | B6 |
-| 3 无依赖首次运行 | B7 |
+| 3 无依赖首次运行 | B4/B5（**[构建方]**，须在构建阶段解决）、B7（实测范围） |
 | 5 微信真实可用 | B1 |
 | 6 Browser 自主操作 | B2 |
-| 7 Windows UIA | B4（若用 .NET）、B2 |
+| 7 Windows UIA | B4/B5（**[构建方]**） |
 | 8 混合任务 | B1、B2 |
 | 10 异常提示 | B1、B2 |
 | 13 E01–E20 | B1、B2、B6、B7、B9 |
 | 14 手册 | 无（可离线完成） |
 
-**可离线完成、不受阻塞的项**：文档体系（§8）、冲突 2 的三项修复、P1 品牌化、安全内核接线、任务中心 UI、Broker 主体、冲突 3 的 UIA 执行器骨架。
+**可离线完成、不受阻塞的项**：统一资源流水线、Broker 生产启动、首次运行初始化、任务中心与向导、微信桥接、文档体系（§8）、安全内核接线、Broker 主体、UIA 执行器。
+
+**本轮（V2 自包含安装）已解决的构建方阻塞**：B5（子模块已可自动初始化）。**仍未解决的构建方阻塞**：B4（需构建机 .NET SDK）——它只影响 `dotnet publish`，不影响员工侧任何步骤。

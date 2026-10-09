@@ -76,3 +76,61 @@
 - 未修改 `plugins/openclaw-weixin/src/**` 核心逻辑
 - 未修改 `skills/**`
 - 未重构 `main.ts` 既有逻辑（仅追加接线）
+
+---
+
+## V2 自包含安装与运行时闭环（2026-10-09，基线 `929a995`）
+
+目标：普通同事只需"安装一个 EXE → 填自己的模型 Key → 微信扫码"，其余依赖全部在构建阶段装配进包内。
+
+### 构建与打包
+
+| 改动 | 文件 |
+|---|---|
+| 新增统一资源流水线（私有 Node + OpenClaw asar + Windows Node/MXC + Broker + 清单），失败即中止并清理 staging | `desktop/scripts/prepare-production-resources.mjs` |
+| `dist` 改走 `release:win`；新增 `prepare-production-resources` 脚本 | `desktop/package.json` |
+| `extraResources` 移除死引用 `resources/openclaw/`，新增 `companyclaw-broker/{dist,scripts}` 与 `runtime-manifest.json` | `desktop/electron-builder.yml` |
+| 正式入口改为产出 NSIS Per-User 安装包；PyInstaller/旧 NSIS 壳降级为兼容渠道并显式标注 | `build.ps1` |
+| 新增 3 项契约测试（清单完整性、流水线产物、extraResources 分类） | `runtime-manifest.test.ts`、`production-resources.test.ts`、`extra-resources-contract.test.ts` |
+
+### 运行时
+
+| 改动 | 文件 |
+|---|---|
+| 资源完整性契约与失败关闭校验（缺文件/哈希不符/越界路径/重复项） | `companyclaw/runtime-manifest.ts` |
+| 首次运行自动生成 `gateway.auth.token`/`mode`/`port` 与 `browser.{enabled,executablePath}`（幂等、不覆盖用户值、MXC 模式跳过） | `companyclaw/first-run-init.ts` |
+| 打包版启动时校验资源清单并用中文提示修复方式 | `main.ts` |
+| Broker 改用私有 Node 运行时启动（`nodePath`），令牌始终只走环境变量 | `companyclaw/broker-client.ts`、`companyclaw/ipc.ts`、`main.ts` |
+| Broker 状态区分"进程存活"与"最近一次真实 UIA 成功" | `companyclaw/broker-client.ts` + IPC/preload/store/UI |
+
+### 首次使用向导
+
+| 改动 | 文件 |
+|---|---|
+| 保存模型后执行真实能力探针并展示结论（未验证不冒充可用） | `views/SetupWizard.vue` |
+| 复用既有微信扫码页作为绑定入口 | `views/SetupWizard.vue` |
+| 任务中心展示 Broker 存活/可操作性/失败原因 | `views/TasksView.vue`、`stores/companyclaw.ts` |
+| 双语新增键（探针 6 项 + Broker 状态 6 项） | `i18n/zh-CN.ts`、`i18n/en-US.ts` |
+
+### 微信远程闭环
+
+| 改动 | 文件 |
+|---|---|
+| 插件新增桌面桥（发布可信来源、转发审批回复、超时放行） | `plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` |
+| 入站路径**纯追加**分支（+32 行，无删除） | `process-message.ts`、`index.ts` |
+| 桌面侧应答处理，裁决仍留在 `applyApprovalReply` 之后 | `main.ts` |
+| 决策记录 | `docs/companyclaw/ADR/0003-weixin-plugin-bridge.md` |
+
+### 文档
+
+`docs/superpowers/plans/2026-10-09-companyclaw-v2-selfcontained-installer.md`（实施计划）、
+`docs/companyclaw/13-employee-install-guide.md`（员工说明书，零命令行）、
+`IMPLEMENTATION_STATUS.md`（V2 里程碑）、`12-known-limitations.md`（V2 增补）、
+`00-source-audit.md`（V2 一致性修正）、`BLOCKERS.md`（责任主体分类）。
+
+### 未做的改动（有意）
+
+- 未修改 `appcontainer/**`、`windows-node-host/**`、`desktop/src/windows-node-mxc*.ts`、`skills/**`
+- 未实现浏览器执行器（保持 `UNVERIFIED`，见 `12-known-limitations.md`）
+- 未把 `TaskOrchestrator` 接入生产路径（超出本轮范围）
+- 未产出真实安装包（受构建机 .NET SDK 与签名证书影响）

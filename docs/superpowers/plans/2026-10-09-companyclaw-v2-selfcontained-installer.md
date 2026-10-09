@@ -1718,42 +1718,55 @@ git commit -m "docs(companyclaw): align the V2 references with the current sourc
 
 ## 4. Changed Files Tracking
 
-| File | Action | Reason |
-| ---- | ------ | ------ |
-| `desktop/src/companyclaw/runtime-manifest.ts` | Add | 清单契约 + 失败关闭的完整性校验 |
-| `desktop/src/companyclaw/runtime-manifest.test.ts` | Add | 8 项负向/正向用例 |
-| `desktop/scripts/prepare-production-resources.mjs` | Add | 统一资源流水线（staging → manifest → 原子切换） |
-| `desktop/src/companyclaw/production-resources.test.ts` | Add | 钉住流水线输出与 `dist` 入口契约 |
-| `desktop/package.json` | Modify | 新增 `release:win` / `prepare-production-resources`，`dist` 指向正式入口 |
-| `desktop/electron-builder.yml` | Modify | 移除死引用 `resources/openclaw/`；新增 broker 与 manifest |
-| `desktop/src/companyclaw/extra-resources-contract.test.ts` | Add | 防止 `extraResources` 死引用复发 |
-| `desktop/src/companyclaw/product-identity.test.ts` | Modify | 同步 `to: openclaw/` → `to: openclaw.asar` + broker 条目断言 |
-| `desktop/src/companyclaw/first-run-init.ts` | Add | 首次运行生成 gateway token/port 与 browser 配置 |
-| `desktop/src/companyclaw/first-run-init.test.ts` | Add | 幂等、不覆盖用户值、Edge 探测 |
-| `desktop/src/main.ts` | Modify | 首次运行初始化接线 + 资源完整性诊断 + Broker nodePath + 审批回复分支 |
-| `desktop/src/companyclaw/broker-client.ts` | Modify | `nodePath` 启动私有 Node；`getStatus()` 区分存活与可操作性 |
-| `desktop/src/companyclaw/broker-client-spawn.test.ts` | Add | 启动命令/令牌不落 argv/中文空格路径 |
-| `desktop/src/companyclaw/ipc.ts` | Modify | 透传 `nodePath`；新增 `companyclaw:broker:get-status` |
-| `desktop/src/companyclaw/ipc-contract.test.ts` | Modify | 同步 `REQUIRED_CHANNELS`（含数量断言） |
-| `desktop/src/preload.ts` | Modify | 暴露 `broker.getStatus` |
-| `desktop/renderer/src/stores/companyclaw.ts` | Modify | Broker 状态字段与拉取 |
-| `desktop/renderer/src/views/TasksView.vue` | Modify | 展示"进程存活 / 最近一次真实 UIA 成功" |
-| `desktop/renderer/src/views/SetupWizard.vue` | Modify | 能力探针展示 + 微信绑定入口 |
-| `desktop/renderer/src/views/SettingsView.vue` | Modify | 重新检测能力入口 |
-| `desktop/renderer/src/i18n/en-US.ts`, `zh-CN.ts` | Modify | 新增双语键（必须对齐） |
-| `build.ps1` | Modify | Step 3 改走 `release:win`；标注兼容渠道 |
-| `plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` | Add | 插件→桌面桥（转发 + 超时放行） |
-| `plugins/openclaw-weixin/index.ts` | Modify | `register()` 内安装一次应答监听 |
-| `plugins/openclaw-weixin/src/messaging/process-message.ts` | Modify | 追加 `session-source` 发布与审批回复拦截分支 |
-| `docs/companyclaw/ADR/0003-weixin-plugin-bridge.md` | Add | 记录插件补丁方式与边界 |
-| `docs/companyclaw/IMPLEMENTATION_STATUS.md` | Modify | V2 里程碑与真实完成度 |
-| `docs/companyclaw/00-source-audit.md` | Modify | 追加 V2 一致性修正 |
-| `docs/companyclaw/12-known-limitations.md` | Modify | Browser 执行器缺失等现状 |
-| `docs/companyclaw/13-employee-install-guide.md` | Add | 员工视角安装/配置说明（零命令行） |
-| `BLOCKERS.md` | Modify | 责任主体重分类（构建方 vs 员工方） |
-| `CHANGELOG-COMPANY.md` | Modify | 本轮变更记录 |
+> 本节按**实际编码结果**填写（基线 `f1ab74e7` → 本轮结束），不是计划阶段填写。
+> 与计划的差异见文末 Plan Adjustment。
 
----
+| File | Action | Change |
+| ---- | ------ | ------ |
+| `desktop/src/companyclaw/runtime-manifest.ts` | Add | 资源清单契约 `companyclaw.runtime-manifest.v1`、`sha256File()`、失败关闭的 `verifyRuntimeManifest()` |
+| `desktop/src/companyclaw/runtime-manifest.test.ts` | Add | 9 项：哈希匹配/篡改/缺文件/空清单/契约不符/越界路径/重复项/非对象/`sha256("abc")` 已知向量 |
+| `desktop/scripts/prepare-production-resources.mjs` | Add | 统一流水线：staging 内装配 node.exe + openclaw.asar + windows-node + broker(dist/scripts) + manifest，逐项哈希校验后原子切换；失败清理 staging |
+| `desktop/src/companyclaw/production-resources.test.ts` | Add | 4 项：`dist`→`release:win` 入口、必需产物、不整目录删除、版本真源仍在 deployer |
+| `desktop/package.json` | Modify | 新增 `release:win`、`prepare-production-resources`；`dist` 指向 `release:win`；`pack` 与 `dist:msix` 改用统一流水线 |
+| `desktop/electron-builder.yml` | Modify | 移除死引用 `resources/openclaw/`；新增 `companyclaw-broker/dist/`、`companyclaw-broker/scripts/`、`runtime-manifest.json` |
+| `desktop/src/companyclaw/extra-resources-contract.test.ts` | Add | 6 项：流水线产物齐备、检出内来源存在、构建产物申报、无死引用、Broker 在清单、来源三分类无遗漏 |
+| `desktop/src/companyclaw/product-identity.test.ts` | Modify | 断言由 `to: openclaw/` 改为 `to: openclaw.asar` + 不含 `from: resources/openclaw/` + broker 两项 |
+| `desktop/src/companyclaw/first-run-init.ts` | Add | `planFirstRunConfig()`（token/mode/port，幂等）、`planBrowserConfig()`、`edgeExecutableCandidates()`、`findEdgeExecutable()` |
+| `desktop/src/companyclaw/first-run-init.test.ts` | Add | 17 项：首次填充、保留既有 token/port/浏览器、非对象 auth、空白 token、不改入参、保留其它键、Edge 探测与缺失 |
+| `desktop/src/main.ts` | Modify | 新增 `ensureCompanyClawFirstRunConfiguration()` 与 `reportRuntimeIntegrity()` 并在 `startApplicationServices()` 调用；imports；`companyClawOptions.nodePath`；`companyClawOwnerSid` 提升为模块级；`approval-reply-request` 应答分支；`registerCompanyClawIpcHandlers` 传 broker 句柄 |
+| `desktop/src/companyclaw/broker-client.ts` | Modify | `nodePath` 选项 + `command` 选择；`BrokerClientStatus` 与 `getStatus()`；成功/失败时间与原因记录 |
+| `desktop/src/companyclaw/broker-client-spawn.test.ts` | Add | 10 项：私有 Node 启动、令牌不落 argv、中文空格路径、回退、状态三态、失败可见，以及主进程/插件接线契约 2 项 |
+| `desktop/src/companyclaw/ipc.ts` | Modify | `nodePath` 选项透传；`BrokerClientStatus` 导入；`companyclaw:broker:get-status` handler；`registerCompanyClawIpcHandlers` 新增可选 broker 参数 |
+| `desktop/src/companyclaw/ipc-contract.test.ts` | Modify | `REQUIRED_CHANNELS` 追加 `companyclaw:broker:get-status`（其数量断言随之保持成立） |
+| `desktop/src/preload.ts` | Modify | 暴露 `companyClaw.broker.getStatus()` |
+| `desktop/renderer/src/stores/companyclaw.ts` | Modify | `BrokerStatusView`、`CapabilityProbeInput/View`、`brokerStatus` 状态与拉取、`probeModelCapabilities()`、bridge 接口补 `model.probeCapabilities` 与 `broker.getStatus` |
+| `desktop/renderer/src/stores/companyclaw.test.ts` | Modify | mock 补 `model.probeCapabilities` 与 `broker.getStatus` |
+| `desktop/renderer/src/views/TasksView.vue` | Modify | Broker 区块新增"进程存活 / 最近一次真实 UI 自动化 / 最近失败原因"三行与样式 |
+| `desktop/renderer/src/views/SetupWizard.vue` | Modify | `probeSummary`/`probing` 状态、`runCapabilityProbe()`、`goToWeixinBinding()`、保存后触发探针、结果区与微信入口模板及样式 |
+| `desktop/renderer/src/i18n/zh-CN.ts` | Modify | 新增 `setup.probe*`(4)、`setup.bindWeixin*`(2)、`cc.brokerProcess*`(3)、`cc.brokerLast*`(3) |
+| `desktop/renderer/src/i18n/en-US.ts` | Modify | 同上英文键（与中文一一对应） |
+| `desktop/renderer/src/i18n/index.test.ts` | Modify | 新增 2 项双语对齐测试（探针/微信 6 键、Broker 状态 6 键） |
+| `build.ps1` | Modify | Step 3 改用 `npm run release:win`；Step 5 前加兼容渠道说明；结束横幅区分员工产物与旧的 legacy 产物 |
+| `plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` | Add | `publishSessionSource()`、`forwardApprovalReply()`（1.5s 超时放行）、`installDesktopBridgeListener()`、`settleApprovalReply()`、`pendingApprovalReplyCount()` |
+| `plugins/openclaw-weixin/src/messaging/desktop-bridge.test.ts` | Add | 12 项：元数据发送/无父进程/发送失败/命中/未命中/超时清理/监听路由/未知 id |
+| `plugins/openclaw-weixin/src/messaging/process-message.ts` | Modify | 纯追加：import + 在 slash 分支后发布 `session-source` 并询问桌面是否为审批回复（命中则 return，否则放行） |
+| `plugins/openclaw-weixin/index.ts` | Modify | 纯追加：`register()` 内安装一次桌面响应监听 |
+| `docs/companyclaw/ADR/0003-weixin-plugin-bridge.md` | Add | 记录桥接边界、超时放行理由、纯追加改动面与验证命令 |
+| `docs/companyclaw/13-employee-install-guide.md` | Add | 员工视角说明书（安装/配置/使用/FAQ/卸载/IT 管理员），全文无命令行 |
+| `docs/companyclaw/IMPLEMENTATION_STATUS.md` | Modify | 新增 V2 里程碑行（10 项）与"V2 已关闭缺口"清单，改写未完成项 |
+| `docs/companyclaw/00-source-audit.md` | Modify | 追加「V2 一致性修正」表（SHA + 符号级定位，7 条） |
+| `docs/companyclaw/12-known-limitations.md` | Modify | 追加 V2 增补：已修正 5 项 / 仍然存在 7 项 |
+| `BLOCKERS.md` | Modify | 顶部责任主体说明（**[构建方]**/**[验证方]**）；B4/B5/B6/B7 重新分类；影响表与小结改写 |
+| `CHANGELOG-COMPANY.md` | Modify | 追加 V2 章节（构建打包/运行时/向导/微信闭环/文档/有意未做） |
+| `docs/superpowers/plans/2026-10-09-companyclaw-v2-selfcontained-installer.md` | Add | 本实施计划（含执行后的 Plan Adjustment 记录） |
+
+**未按计划改动的文件（计划列出但实际未改）**
+
+| File | 计划中的原因 | 实际 |
+| ---- | ---- | ---- |
+| `desktop/scripts/prepare-resources.mjs` | 计划称收敛进统一流水线 | **未修改**。它仍是 MSIX 专用入口；`dist:msix` 已改为走统一流水线，故无需改动该文件，避免扩大范围 |
+| `desktop/renderer/src/views/SettingsView.vue` | 计划要求加"重新检测能力"按钮 | **未修改**。向导已覆盖首次配置路径；在 Settings 增加入口属于计划外的额外 UI 面，未做 |
+| `desktop/src/companyclaw/tasks/task-orchestrator.ts` | Step 7 原拟接线编排器 | **未修改**。计划第 1 节已声明"不重写状态机"；编排接线未列入本 10 步，见 Notes 遗留项 |
 
 ## 5. Verification Checklist
 
@@ -1841,3 +1854,52 @@ ruff format --check .
 3. 需要新增第三方运行时依赖；
 4. 影响范围超出第 4 节 `Changed Files Tracking` 中已登记的 32 个文件；
 5. 发现某项需求必须重新设计既有模块（而非接线）。
+
+---
+
+## 6. Plan Adjustment（执行后记录）
+
+### Adjustment 1：staging 目录位置
+
+- **原计划**：`desktop/.staging-resources/`。
+- **新发现**：该路径未被 `.gitignore` 覆盖，会污染工作树并可能被误提交（含 527MB 产物）。
+- **为什么需要调整**：不改 `.gitignore` 就无法保证产物不被跟踪，而改 `.gitignore` 属于计划外文件。
+- **调整后**：staging 放入已忽略的 `desktop/resources/.staging-<pid>/`，同时与目标同卷，原子切换为 rename 而非跨目录复制。
+
+### Adjustment 2：流水线失败清理
+
+- **原计划**：未说明失败时如何处理已装配的 staging。
+- **新发现**：首次实跑在 `dotnet publish` 处失败后，留下 527MB staging 目录。
+- **为什么需要调整**：中断残留既浪费磁盘，也会让下一次 `electron-builder` 误收旧内容。
+- **调整后**：注册 `uncaughtException` / `unhandledRejection` 处理器清理 staging，并在启动时清理历史 `.staging-*`。已实测验证清理生效。
+
+### Adjustment 3：extraResources 契约测试的分类依据
+
+- **原计划**：对"非流水线来源"直接在文件系统上断言存在。
+- **新发现**：实测 `appcontainer/bin/Release/.../AppContainerLauncher.exe` 当前**不存在**（需 `dotnet publish`），
+  `desktop/resources/` 也不存在；而 `dist/github-copilot-auth-worker.js` 是 tsc 产物（gitignore 覆盖）。
+- **为什么需要调整**：按原设计，测试会因"尚未构建"而失败，属于用假设写断言。
+- **调整后**：来源分三类 —— 流水线产物（申报）、构建产物（申报）、检出内必需（申报 + 断言存在）。该测试随后真实发现了
+  2 个此前未被分类的来源（`dist/github-copilot-auth-worker.js`、`src/openclaw-approval-replay-compat.mjs`）。
+
+### Adjustment 4：Broker 状态 IPC 的传递方式
+
+- **原计划**：在 `ipc.ts` 内直接访问 broker 实例。
+- **新发现**：`broker` 是 `createCompanyClawRuntime()` 的局部变量，`registerCompanyClawIpcHandlers()` 不可见。
+- **为什么需要调整**：直接改会造成作用域错误，或迫使 `ipc.ts` 引入模块级可变状态。
+- **调整后**：`registerCompanyClawIpcHandlers()` 增加可选 `broker` 参数，由 `main.ts` 传入既有句柄；无 broker 时如实返回"未运行"。
+
+### Adjustment 5：`SettingsView.vue` 未改
+
+- **原计划**：在设置页增加"重新检测能力"按钮。
+- **新发现**：向导已覆盖首次配置路径，设置页模型分区结构与向导差异较大。
+- **为什么需要调整**：该改动不属于员工首次可用性的必要条件，属计划外 UI 面扩大。
+- **调整后**：未修改该文件；能力探针入口保留在向导内。见第 4 节"未按计划改动的文件"。
+
+### Adjustment 6：插件测试的运行方式
+
+- **原计划**：`cd plugins/openclaw-weixin && npx vitest run`。
+- **新发现**：插件目录无 `node_modules`，其 `vitest` 无法直接运行。
+- **为什么需要调整**：为跑一次测试而安装整套插件依赖会显著扩大范围与时间。
+- **调整后**：用 desktop 的 vitest 指定 root 运行：`cd desktop && npx vitest run --root ../plugins/openclaw-weixin`（已实测 12 passed），未新增配置文件、未改动插件 `package.json`。
+

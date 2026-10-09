@@ -57,3 +57,29 @@
 ## F. 文档
 
 `docs/companyclaw/` 下架构、数据安全、模型、微信、浏览器、Windows、编排、打包、E2E、运维、限制等文档已补齐。**员工操作手册与开发手册**尚未单独成文。
+
+---
+
+## V2 增补（基线 `929a995`）
+
+### 已修正（此前记录为缺口）
+
+| 项 | 现状 |
+|---|---|
+| `session-source` 生产者 | **已补齐**：`plugins/openclaw-weixin/src/messaging/desktop-bridge.ts` 的 `publishSessionSource()`，由 `process-message.ts` 在入站时调用（ADR 0003） |
+| 微信审批回复入站拦截 | **已接通**：插件先询问桌面，`CompanyClawRuntime.applyApprovalReply` 裁决；未命中文本原样进 AI |
+| Broker 生产启动 | **已修正**：`BrokerClientOptions.nodePath`，由 `main.ts` 传 `resolveNodePath()` |
+| 首次运行 Gateway 令牌 | **已补齐**：`desktop/src/companyclaw/first-run-init.ts` 的 `planFirstRunConfig()` |
+| Broker 可操作性展示 | **已补齐**：`BrokerClientStatus`，UI 明确显示"尚未发生（不能视为可用）" |
+
+### 仍然存在
+
+| 项 | 说明 |
+|---|---|
+| **浏览器执行器** | 仍无受控执行器。`skills/` 内无 playwright/chromium；上游设计为复用系统 Edge（`README.md`）。首次运行会写入 `browser.executablePath`，但**真实 Web 自动化未实现、未验证** |
+| **任务编排未接线** | `desktop/src/companyclaw/tasks/task-orchestrator.ts` 的 `TaskOrchestrator` 仅被测试引用，无生产调用方；`CompanyClawRuntime.execute()` 同理 |
+| **主动审批卡片** | 桌面侧 `buildApprovalMessage()` 已实现，但尚无调用方主动推送（需与任务编排一并接入） |
+| **`describe-element` / `wait-for-window`** | `broker/server.ts` 仍返回 `not-implemented`；这是诚实占位，不伪造成功 |
+| **构建机 .NET SDK** | 统一流水线的 `dotnet publish` 阶段需 SDK（`BLOCKERS.md` B4 **[构建方]**）；**员工侧永不需要 .NET** |
+| **安装包与签名** | 脚本链已收敛，但未产出真实 NSIS 安装包；无签名证书（B6） |
+| **E01–E20 / PKG-01–10** | 需干净 Win11、微信账号、内网脱敏系统；全部保持 `UNVERIFIED`/`BLOCKED` |
