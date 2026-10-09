@@ -58,12 +58,19 @@ extraResources:
     to: openclaw-approval-replay-compat.mjs
   - from: resources/node.exe
     to: node.exe
-  - from: resources/openclaw/
-    to: openclaw/
+  # The unified pipeline builds this archive from the unpacked tree and then
+  # deletes the tree, so only the archive is ever shipped.
   - from: resources/openclaw.asar
     to: openclaw.asar
   - from: resources/windows-node/
     to: windows-node/
+  # broker-paths.ts resolves resources/companyclaw-broker in a packaged build.
+  - from: resources/companyclaw-broker/dist/
+    to: companyclaw-broker/dist/
+  - from: resources/companyclaw-broker/scripts/
+    to: companyclaw-broker/scripts/
+  - from: resources/runtime-manifest.json
+    to: runtime-manifest.json
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js

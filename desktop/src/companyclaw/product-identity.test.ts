@@ -40,10 +40,15 @@ describe("CompanyClaw product identity", () => {
 
   it("keeps resolving bundled resources from their upstream paths", () => {
     const config = readBuilderConfig();
-    // Path contracts relied on by desktop/src/bundled-runtime.ts and
-    // tool-sandbox provisioning must not change during branding.
-    expect(config).toContain("to: openclaw/");
+    // bundled-runtime.ts reads openclaw.asar from process.resourcesPath; the
+    // unpacked resources/openclaw/ directory is built and then removed by the
+    // resource pipeline, so shipping it would declare a source that can never
+    // be found.
     expect(config).toContain("to: openclaw.asar");
+    expect(config).not.toContain("from: resources/openclaw/");
+    // broker-paths.ts resolves resources/companyclaw-broker in a packaged build.
+    expect(config).toContain("to: companyclaw-broker/dist/");
+    expect(config).toContain("to: companyclaw-broker/scripts/");
     expect(config).toContain("to: AppContainerLauncher.exe");
     expect(config).toContain("to: sandbox-preload.js");
   });
