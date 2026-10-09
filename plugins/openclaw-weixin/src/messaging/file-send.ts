@@ -21,8 +21,8 @@ interface FileSendRequestEnvelope {
   request?: { filePath?: string; to?: string; text?: string };
 }
 
-/** Resolves the account that owns this chat, preferring a logged-in one. */
-function resolveSendingAccount(to: string): { accountId: string; baseUrl: string; token: string } | null {
+/** Resolves the logged-in account to send from. */
+function resolveSendingAccount(): { accountId: string; baseUrl: string; token: string } | null {
   for (const accountId of listIndexedWeixinAccountIds()) {
     const data = loadWeixinAccount(accountId);
     if (!data?.token) continue;
@@ -59,7 +59,7 @@ export async function handleFileSendRequest(
     return;
   }
 
-  const account = resolveSendingAccount(to);
+  const account = resolveSendingAccount();
   if (!account) {
     reply({ ok: false, reason: "no-sending-account" });
     return;
