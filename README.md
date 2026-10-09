@@ -19,8 +19,12 @@ MicroClaw is designed to remove the usual Windows setup friction around OpenClaw
 ### Instant Availability
 
 - **Familiar Windows install flow**: packaged installer with desktop shortcut, Start menu entry, and one-click uninstall
-- **One run sets up the runtime**: Git, managed Node.js, OpenClaw Gateway, the MicroClaw desktop app, managed skills, and AppContainer provisioning
+- **One run sets up the runtime**: a private Node runtime, the OpenClaw Gateway, the desktop app, the WeChat channel plugin, agent skills and the AppContainer resources — all pre-assembled inside the package
 - **Ready after install**: launch the app immediately after setup instead of building a local OpenClaw environment by hand
+
+> **End users install one EXE and configure a model and their own WeChat account.** Nothing else is required on their machine: no Node.js, npm, Python, Git, .NET SDK or OpenClaw. The build prerequisites listed further down apply to **building** the package, never to using it. See `docs/companyclaw/v3/04-employee-guide.md`.
+
+> Current status: the V3 closure work is complete in code and covered by automated tests, but a signed installer has not been produced yet (no .NET SDK / code-signing certificate on the build machine). See `docs/companyclaw/v3/06-release-evidence.md` before promising any end-to-end capability.
 
 ### Ready-to-Use Experience
 

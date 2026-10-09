@@ -19,8 +19,14 @@ MicroClaw 的设计重点，是把 OpenClaw 在 Windows 上常见的安装和配
 ### 即装即用
 
 - **熟悉的 Windows 安装流程**：带桌面快捷方式、开始菜单入口和一键卸载
-- **一次安装补齐运行环境**：自动准备 Git、受管 Node.js、OpenClaw Gateway、MicroClaw 桌面端、托管技能和 AppContainer 配置
+- **一次安装补齐运行环境**：私有 Node 运行时、OpenClaw Gateway、桌面端、微信渠道插件、Agent 技能与 AppContainer 资源全部预装在包内
 - **安装完成即可启动**：不需要先手动搭本地 OpenClaw 运行环境
+
+> **员工侧只需要安装一个 EXE，然后配置模型并扫码绑定本人微信。** 不需要 Node.js、npm、Python、Git、.NET SDK 或 OpenClaw。
+> 下文列出的构建前置条件只用于**构建**发行包，与使用无关。详见 `docs/companyclaw/v3/04-employee-guide.md`。
+
+> 当前状态：V3 收口已在代码层完成并有自动化测试覆盖，但**尚未产出签名安装包**（构建机缺 .NET SDK 与代码签名证书）。
+> 在按"端到端可用"对外承诺之前，请先阅读 `docs/companyclaw/v3/06-release-evidence.md`。
 
 ### 真正可用，而不是只装了个壳
 

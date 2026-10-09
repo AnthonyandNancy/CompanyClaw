@@ -2,8 +2,9 @@
 
 上游基线：`microsofthackathons/MicroClaw` @ `6f080a07f43bd65b8b27ec6f859438fc038bb912`
 分支：`feat/companyclaw-foundation`
-最后更新：2026-10-09（V2 自包含安装实施）
-本轮基线：`929a995`
+最后更新：2026-10-09（V3 闭环收口）
+本轮基线：`aa60430`（V3 各步提交见 `docs/superpowers/plans/2026-10-09-companyclaw-v3-closure.md`）
+上一轮基线：`929a995`（V2 自包含安装）
 
 **中断恢复入口**。新接手者请按序阅读：
 1. 本文件（进度与下一步）
@@ -14,8 +15,13 @@
 6. `docs/superpowers/plans/2026-10-08-companyclaw-security-core.md`（安全内核实施计划）
 7. `docs/superpowers/plans/2026-10-09-companyclaw-v2-selfcontained-installer.md`（V2 自包含安装实施计划）
 8. `BLOCKERS.md`（9 项阻塞及解除条件，含责任主体分类）
+9. `docs/companyclaw/v3/01-current-baseline.md`（V3 起点基线：HEAD、G01–G08 现状、符号定位）
+10. `docs/companyclaw/v3/06-release-evidence.md`（PKG-01–10 / E01–20 真实状态）
 
-> **完成状态声明**：整体项目**未完成**。已完成并在本机验证的是安全内核、Broker 策略与读取探针、安装器安全策略、产品标识。需要真实微信账号/内网系统的验收项全部记为 `BLOCKED`。
+> **完成状态声明**：整体项目**未完成**。V3 收口已把"策略层完备但无生产调用方"的缺口补上（资源装配、Broker 生命周期、
+> 插件安装、健康诊断、可信来源→任务、受控 Browser 适配器、Broker 执行通路、产物回传、升级判定），但这些只在本机自动化测试
+> 层面得到验证。**仍未产出安装包**（缺 .NET SDK 与签名证书），需要真实微信账号/内网系统/清洁目标机的验收项全部记为
+> `BLOCKED`/`UNVERIFIED`，详见 `docs/companyclaw/v3/06-release-evidence.md`。
 
 ---
 
@@ -146,4 +152,30 @@ Broker 用 `process.execPath` 启动、首次运行无人生成 Gateway 令牌�
 
 ## 5. 阻塞
 
-见 `BLOCKERS.md`（B1–B9）。核心是 B1（无微信测试账号）与 B2（无内网系统/脱敏数据）——二者直接决定 P0-C、P3、P4、P7、P11 能否真实验收。
+见 `BLOCKERS.md`（B1–B9）与 `docs/companyclaw/v3/06-release-evidence.md`。核心是 B1（无微信测试账号）、B2（无内网系统/脱敏数据）、
+B4（构建机无 .NET SDK，使流水线在 `dotnet publish` 处中止）、B6（无签名证书）。四者直接决定 P0-C、P3、P4、P7、P11 与 PKG/E 矩阵
+能否真实验收。本轮**未**解除任何一项。
+
+---
+
+## 6. V3 收口新增（本轮实测）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| 发行资源装配 | `desktop/scripts/prepare-production-resources.mjs` | 新增微信插件（本仓库源码编译 `dist/` + vendor 离线依赖）与 agent-skills 装配；windows-node 逐文件登记 manifest；缺件即构建失败 |
+| extraResources 契约 | `desktop/electron-builder.yml` | 改为引用流水线产物，杜绝源码树直拷造成第二事实来源 |
+| Broker 生产启动 | `desktop/src/companyclaw/broker-paths.ts`、`broker-client.ts` | 运行时与入口一并解析并前置校验（`BROKER_RUNTIME_NOT_FOUND` / `BROKER_ENTRY_INVALID`）；退出检测、重启上限、stop 收口 |
+| 插件安装 | `desktop/src/companyclaw/plugins/weixin-plugin-install.ts` | 首启经 OpenClaw 自身安装到 state dir；失败给中文可诊断原因 |
+| 健康诊断 | `desktop/src/companyclaw/guardian.ts` | 按 7 个组件分别报告；未测项为 `unknown`，不计入 overall |
+| 首次向导 | `desktop/renderer/src/views/SetupWizard.vue` | 四步：环境自检 / 我的模型 / 绑定微信 / 开启远程操作（默认关闭） |
+| 受控 Browser | `desktop/src/companyclaw/browser/browser-adapter.ts`、`ADR/0004` | 唯一放行入口；高风险恒拒绝，写需票据，回读不匹配报 partial |
+| Broker 执行通路 | `desktop/src/companyclaw/bridge/broker-transport.ts` | 动作映射到封闭操作集；不可表达即拒绝；票据透传 |
+| UIA 能力 | `broker/server.ts` | `describe-element`（复用控件树，报告歧义）、`wait-for-window`（专用 `wait-timeout`）|
+| 桌面独占锁 | `desktop/src/companyclaw/locks/desktop-execution-lock.ts` | 焦点敏感动作一次一个任务，占用即拒绝 |
+| 可信来源 | `desktop/src/companyclaw/remote/trusted-context.ts` | 每条消息的 sender/device/SID 来自本地绑定；messageId 去重与幂等 |
+| 产物回传 | `desktop/src/companyclaw/results/weixin-delivery.ts`、`plugin-file-send.ts` | 校验→收件人锁定→经插件上传；超时记 UNKNOWN 而非 FAILED |
+| 升级判定 | `desktop/src/companyclaw/upgrade/upgrade-guard.ts` | 复用各 store 的 schemaVersion；不可读则拒绝并保留旧安装 |
+
+本轮清理的真实缺陷：`lastInputFromRemote` 全局布尔（已由可信上下文取代并删除）、`buildApprovalMessage` 无调用方、
+`lastProbedModelCapability` 从未写入、编排器仅在启动时检查授权（撤销后仍继续派发）。
+
