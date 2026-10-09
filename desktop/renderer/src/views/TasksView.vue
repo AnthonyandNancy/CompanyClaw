@@ -139,6 +139,28 @@
             />
             <el-button size="small" @click="addProcess">{{ t("cc.brokerAdd") }}</el-button>
           </div>
+          <!-- A live process is not proof that UI Automation works in this
+               Windows session, so the two are reported separately. -->
+          <div class="cc-broker-status">
+            <div>
+              {{ t("cc.brokerProcess") }}
+              <strong>{{
+                store.brokerStatus?.running
+                  ? t("cc.brokerProcessRunning")
+                  : t("cc.brokerProcessStopped")
+              }}</strong>
+            </div>
+            <div>
+              {{ t("cc.brokerLastCall") }}
+              <strong>{{
+                store.brokerStatus?.lastSuccessfulCallAt ??
+                t("cc.brokerLastCallNever")
+              }}</strong>
+            </div>
+            <div v-if="store.brokerStatus?.lastFailureReason" class="cc-alert-inline">
+              {{ t("cc.brokerLastFailure") }}{{ store.brokerStatus.lastFailureReason }}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -564,6 +586,15 @@ watch(
 .cc-empty-desc {
   margin-top: 6px;
   font-size: 12px;
+}
+
+.cc-broker-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .cc-alert-inline {

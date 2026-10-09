@@ -8009,7 +8009,11 @@ function registerIpcHandlers(): void {
       },
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
-    registerCompanyClawIpcHandlers(companyClawRuntime.runtime, companyClawOptions);
+    registerCompanyClawIpcHandlers(
+      companyClawRuntime.runtime,
+      companyClawOptions,
+      companyClawRuntime.broker,
+    );
     console.log(
       `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid}, broker=${companyClawOptions.broker.brokerDir})`,
     );

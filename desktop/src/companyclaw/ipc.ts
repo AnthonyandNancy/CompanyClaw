@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ipcMain } from "electron";
-import { BrokerClient } from "./broker-client";
+import { BrokerClient, type BrokerClientStatus } from "./broker-client";
 import {
   buildCapabilityProbeRequest,
   interpretCapabilityProbe,
@@ -41,7 +41,7 @@ interface CompanyClawIpcOptions {
 /** Handle returned to `main.ts` so it can stop the broker on quit. */
 export interface CompanyClawRuntimeHandle {
   runtime: CompanyClawRuntime;
-  broker: { stop(): Promise<void> } | null;
+  broker: { stop(): Promise<void>; getStatus(): BrokerClientStatus } | null;
 }
 
 export const COMPANYCLAW_TICKET_SECRET_FILE = "companyclaw-ticket-secret";
@@ -119,7 +119,17 @@ export function createCompanyClawRuntime(
 export function registerCompanyClawIpcHandlers(
   runtime: CompanyClawRuntime,
   options: CompanyClawIpcOptions,
+  broker?: { getStatus(): BrokerClientStatus } | null,
 ): void {
+  // Without a broker the honest answer is "not running", never "fine".
+  const brokerStatus = (): BrokerClientStatus =>
+    broker?.getStatus() ?? {
+      running: false,
+      nodePath: options.nodePath ?? null,
+      lastSuccessfulCallAt: null,
+      lastFailureReason: null,
+    };
+
   ipcMain.handle("companyclaw:get-remote-authorization", () => runtime.getRemoteAuthorization());
 
   ipcMain.handle(
@@ -223,6 +233,10 @@ export function registerCompanyClawIpcHandlers(
   );
 
   ipcMain.handle("companyclaw:broker:get-targets", () => runtime.getBrokerTargets());
+
+  // Liveness is not the same as controllability: the desktop needs to tell the
+  // user whether UI Automation actually worked last time.
+  ipcMain.handle("companyclaw:broker:get-status", () => brokerStatus());
 
   ipcMain.handle(
     "companyclaw:broker:set-targets",

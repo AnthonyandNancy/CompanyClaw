@@ -30,6 +30,7 @@ const REQUIRED_CHANNELS = [
   "companyclaw:model:probe-capabilities",
   "companyclaw:broker:get-targets",
   "companyclaw:broker:set-targets",
+  "companyclaw:broker:get-status",
 ] as const;
 
 describe("CompanyClaw IPC contract", () => {

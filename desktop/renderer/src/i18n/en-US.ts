@@ -721,6 +721,12 @@ export default {
   "cc.identityBoundAt": "Bound at",
   "cc.identityUnbind": "Unbind",
   "cc.identityEmpty": "No WeChat identity is bound yet. Complete the scan-and-bind flow under WeChat connection first.",
+  "cc.brokerProcess": "Broker process: ",
+  "cc.brokerProcessRunning": "running",
+  "cc.brokerProcessStopped": "not started",
+  "cc.brokerLastCall": "Last real UI Automation call: ",
+  "cc.brokerLastCallNever": "has not happened yet (not proof it can run)",
+  "cc.brokerLastFailure": "Last failure reason: ",
   "cc.browserTitle": "Websites allowed",
   "cc.browserDesc":
     "Only the domains listed here may be visited, including the company intranet. Empty by default: while the list is empty no site will be visited.",

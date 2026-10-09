@@ -56,6 +56,12 @@ function installApi(overrides: Record<string, unknown> = {}) {
     },
     broker: {
       getTargets: vi.fn(async () => ({ allowedProcesses: [], allowedWindowTitles: [] })),
+      getStatus: vi.fn(async () => ({
+        running: false,
+        nodePath: null,
+        lastSuccessfulCallAt: null,
+        lastFailureReason: null,
+      })),
       setTargets: vi.fn(async (input: { allowedProcesses?: string[] }) => ({
         allowedProcesses: input.allowedProcesses ?? [],
         allowedWindowTitles: [],

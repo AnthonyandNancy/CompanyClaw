@@ -122,3 +122,35 @@ describe("broker node runtime wiring", () => {
     expect(mainSource).toContain("nodePath: resolveNodePath()");
   });
 });
+
+describe("broker status reporting", () => {
+  it("starts with no successful call and no failure recorded", async () => {
+    const { client } = clientWith(path.join("C:", "app", "resources", "node.exe"));
+    const status = client.getStatus();
+    expect(status.running).toBe(false);
+    expect(status.lastSuccessfulCallAt).toBeNull();
+    expect(status.lastFailureReason).toBeNull();
+    client.getToken();
+  });
+
+  it("reports the configured node runtime so diagnostics can name it", () => {
+    const nodePath = path.join("C:", "app", "resources", "node.exe");
+    const { client } = clientWith(nodePath);
+    expect(client.getStatus().nodePath).toBe(nodePath);
+  });
+
+  it("records a failure reason when the broker is unreachable", async () => {
+    const { client } = clientWith(path.join("C:", "app", "resources", "node.exe"));
+    const result = await client.call({
+      operation: "list-windows",
+      taskId: "t1",
+      stepId: "s1",
+      payloadHash: "0".repeat(64),
+      timeoutMs: 40,
+    });
+    expect(result.ok).toBe(false);
+    // A transport failure must be visible in the status, not silently retried.
+    expect(client.getStatus().lastFailureReason).toBeTruthy();
+    await client.stop();
+  });
+});

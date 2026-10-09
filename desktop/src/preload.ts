@@ -550,6 +550,13 @@ contextBridge.exposeInMainWorld("openclaw", {
           allowedProcesses: string[];
           allowedWindowTitles: string[];
         }>,
+      getStatus: () =>
+        ipcRenderer.invoke("companyclaw:broker:get-status") as Promise<{
+          running: boolean;
+          nodePath: string | null;
+          lastSuccessfulCallAt: string | null;
+          lastFailureReason: string | null;
+        }>,
       setTargets: (input: { allowedProcesses?: string[]; allowedWindowTitles?: string[] }) =>
         ipcRenderer.invoke("companyclaw:broker:set-targets", input) as Promise<{
           allowedProcesses: string[];

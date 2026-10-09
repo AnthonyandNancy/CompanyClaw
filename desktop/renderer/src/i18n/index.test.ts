@@ -42,6 +42,24 @@ describe("i18n", () => {
     setLocale("en-US"); // restore
   });
 
+  it("broker liveness wording exists in both locales", () => {
+    const keys = [
+      "cc.brokerProcess",
+      "cc.brokerProcessRunning",
+      "cc.brokerProcessStopped",
+      "cc.brokerLastCall",
+      "cc.brokerLastCallNever",
+      "cc.brokerLastFailure",
+    ];
+    for (const key of keys) {
+      expect(t(key), `missing en-US translation: ${key}`).not.toBe(key);
+      setLocale("zh-CN");
+      expect(t(key), `missing zh-CN translation: ${key}`).not.toBe(key);
+      setLocale("en-US");
+    }
+    setLocale("en-US"); // restore
+  });
+
   it("setup capability and WeChat keys exist in both locales", () => {
     const keys = [
       "setup.probeTitle",

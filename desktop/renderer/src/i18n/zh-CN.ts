@@ -688,6 +688,12 @@ export default {
   "cc.identityBoundAt": "绑定时间",
   "cc.identityUnbind": "解绑",
   "cc.identityEmpty": "尚未绑定微信身份。请先在上方「微信连接」完成扫码绑定。",
+  "cc.brokerProcess": "Broker 进程：",
+  "cc.brokerProcessRunning": "存活",
+  "cc.brokerProcessStopped": "未启动",
+  "cc.brokerLastCall": "最近一次真实 UI 自动化：",
+  "cc.brokerLastCallNever": "尚未发生（不能视为可用）",
+  "cc.brokerLastFailure": "最近一次失败原因：",
   "cc.browserTitle": "允许访问的网站",
   "cc.browserDesc":
     "只有在此列出的域名才允许访问，包括公司内网。默认为空：未列出时不会访问任何网站。",

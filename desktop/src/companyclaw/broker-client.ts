@@ -57,12 +57,27 @@ export type BrokerCallResult =
   | { ok: true; data: unknown }
   | { ok: false; reason: string; unavailable?: boolean };
 
+/**
+ * Distinguishes "the broker process is alive" from "UI Automation actually
+ * worked in this Windows session": a live process whose last real call failed
+ * means the desktop cannot be driven right now, and the UI must say so rather
+ * than imply the machine is controllable.
+ */
+export interface BrokerClientStatus {
+  running: boolean;
+  nodePath: string | null;
+  lastSuccessfulCallAt: string | null;
+  lastFailureReason: string | null;
+}
+
 export class BrokerClient {
   private child: ChildProcess | null = null;
   private port = 0;
   private starting: Promise<void> | null = null;
   private readonly token = createBrokerExecutionToken();
   private readonly now: () => Date;
+  private lastSuccessfulCallAt: string | null = null;
+  private lastFailureReason: string | null = null;
 
   constructor(private readonly options: MutableBrokerOptions) {
     this.now = options.now ?? (() => new Date());
@@ -71,6 +86,16 @@ export class BrokerClient {
   /** True once the broker announced a port and is reachable. */
   isRunning(): boolean {
     return this.port > 0 && this.child !== null;
+  }
+
+  /** Liveness plus the outcome of the most recent real call. */
+  getStatus(): BrokerClientStatus {
+    return {
+      running: this.isRunning(),
+      nodePath: this.options.nodePath ?? null,
+      lastSuccessfulCallAt: this.lastSuccessfulCallAt,
+      lastFailureReason: this.lastFailureReason,
+    };
   }
 
   getToken(): string {
@@ -197,10 +222,12 @@ export class BrokerClient {
       try {
         await this.start();
       } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.lastFailureReason = reason;
         return {
           ok: false,
           unavailable: true,
-          reason: error instanceof Error ? error.message : String(error),
+          reason,
         };
       }
     }
@@ -227,15 +254,23 @@ export class BrokerClient {
       response = (await this.send(request, options.timeoutMs ?? 120_000)) as BrokerResponse;
     } catch (error) {
       // A transport failure must not look like a policy decision.
+      const reason = error instanceof Error ? error.message : String(error);
+      this.lastFailureReason = reason;
       return {
         ok: false,
         unavailable: true,
-        reason: error instanceof Error ? error.message : String(error),
+        reason,
       };
     }
 
-    if (response.status === "ok") return { ok: true, data: response.data };
-    return { ok: false, reason: response.reason ?? response.status };
+    if (response.status === "ok") {
+      this.lastSuccessfulCallAt = this.now().toISOString();
+      this.lastFailureReason = null;
+      return { ok: true, data: response.data };
+    }
+    const reason = response.reason ?? response.status;
+    this.lastFailureReason = reason;
+    return { ok: false, reason };
   }
 
   private send(request: BrokerRequest, timeoutMs: number): Promise<unknown> {
