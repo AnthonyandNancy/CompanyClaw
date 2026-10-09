@@ -272,6 +272,26 @@ interface OpenClawAPI {
       channels?: { id: string; name: string; icon: string; type: string; connected: boolean }[];
     }>;
   };
+  /**
+   * CompanyClaw security core. Present only when the desktop bridge registered;
+   * a missing namespace means the feature is unsupported, never that it is
+   * allowed.
+   */
+  companyClaw?: {
+    getRemoteAuthorization(): Promise<{ state: string }>;
+    artifacts: {
+      resolve(input: { taskId: string }):
+        | { ok: true; dir: string }
+        | { ok: false; reason: string };
+      deliver(input: { taskId: string; filePath: string }): Promise<{
+        outcome: "sent" | "failed" | "unknown";
+        state: string;
+        fileName: string;
+        mayHaveBeenSent?: boolean;
+        reason?: string;
+      }>;
+    };
+  };
   plugin: {
     weixin: {
       getStatus(): Promise<{

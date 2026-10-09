@@ -5,7 +5,7 @@ import * as http from "http";
 import * as net from "net";
 import * as os from "os";
 import { pathToFileURL } from "node:url";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import {
@@ -54,6 +54,8 @@ import {
   planFirstRunConfig,
 } from "./companyclaw/first-run-init";
 import { RUNTIME_MANIFEST_FILE, verifyRuntimeManifest } from "./companyclaw/runtime-manifest";
+import { ArtifactDelivery } from "./companyclaw/results/weixin-delivery";
+import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
 import {
   ensureWeixinPluginInstalled,
   planWeixinPluginEnable,
@@ -8264,9 +8266,35 @@ function registerIpcHandlers(): void {
       },
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
+    // Artifact delivery reaches the plugin's upload path through the gateway
+    // child process, so it can only be built once the runtime exists. The
+    // recipient is this installation's bound chat: a task never names its own
+    // destination, which is what stops one owner's report reaching another.
+    const artifactDelivery = new ArtifactDelivery({
+      resolveArtifactDir: (taskId, ownerSid) =>
+        companyClawRuntime
+          ? companyClawRuntime.runtime.resolveArtifactDir({ taskId, ownerSid })
+          : { ok: false, reason: "runtime-unavailable" },
+      sendFile: async ({ filePath, to }) => {
+        const channel =
+          typeof gatewayProcess?.send === "function" ? (gatewayProcess as never) : null;
+        const outcome = await requestPluginFileSend(channel, { filePath, to });
+        if (!outcome.ok) throw new Error(outcome.reason);
+        return { messageId: outcome.messageId };
+      },
+      artifactHash: async (filePath) => {
+        const data = await fs.promises.readFile(filePath);
+        return createHash("sha256").update(data).digest("hex");
+      },
+    });
     registerCompanyClawIpcHandlers(
       companyClawRuntime.runtime,
-      companyClawOptions,
+      {
+        ...companyClawOptions,
+        boundChannelUserId:
+          companyClawRuntime.runtime.getIdentityBinding()?.channelUserId ?? "",
+        artifactDelivery,
+      },
       companyClawRuntime.broker,
       () => buildGuardianReport(collectGuardianProbes()),
     );

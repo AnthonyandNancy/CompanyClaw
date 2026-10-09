@@ -336,12 +336,35 @@
           </el-table-column>
         </el-table>
       </section>
+
+      <!-- Artifact delivery. The state shown is the delivery state machine's
+           own value: SENT means the platform accepted the send, and a result
+           nobody observed is never displayed as delivered. -->
+      <section class="cc-card">
+        <div class="cc-card-head">
+          <div class="cc-card-title">{{ t("cc.artifactTitle") }}</div>
+        </div>
+        <div class="cc-card-desc">{{ t("cc.artifactDesc") }}</div>
+        <div v-if="artifactTaskId" class="cc-artifact-row">
+          <span class="cc-label">{{ t("cc.artifactName") }}</span>
+          <span class="cc-value">{{ artifact.fileName || "—" }}</span>
+        </div>
+        <div v-if="artifactMessage" class="cc-artifact-row">{{ artifactMessage }}</div>
+        <el-button
+          v-if="artifactTaskId"
+          size="small"
+          :loading="delivering"
+          @click="deliverArtifact"
+        >
+          {{ t("cc.artifactDeliver") }}
+        </el-button>
+      </section>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref, watch } from "vue";
+import { computed, onActivated, onMounted, reactive, ref, watch } from "vue";
 import { locale, t } from "@/i18n";
 import { useCompanyClawStore } from "@/stores/companyclaw";
 
@@ -356,7 +379,12 @@ const allowUploads = ref(false);
 async function addProcess(): Promise<void> {
   const candidate = newProcess.value.trim();
   if (!candidate) return;
-  const next = [...new Set([...store.brokerTargets.allowedProcesses, candidate.toLowerCase().replace(/\.exe$/i, "")])];
+  const next = [
+    ...new Set([
+      ...store.brokerTargets.allowedProcesses,
+      candidate.toLowerCase().replace(/\.exe$/i, ""),
+    ]),
+  ];
   newProcess.value = "";
   await store.setBrokerTargets({
     allowedProcesses: next,
@@ -375,6 +403,63 @@ const TERMINAL_STATES = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELLED", 
 
 function isTerminal(state: string): boolean {
   return TERMINAL_STATES.has(state);
+}
+
+/**
+ * Artifact delivery state for the selected task.
+ *
+ * `SENT` is shown as "platform accepted, delivery not confirmed" on purpose:
+ * the plugin's message id is a local client id, so claiming the owner received
+ * the file would be a claim nobody made.
+ */
+const artifact = reactive({
+  fileName: "",
+  state: "",
+  outcome: "" as "" | "sent" | "failed" | "unknown",
+  mayHaveBeenSent: false,
+  reason: "",
+});
+const delivering = ref(false);
+const artifactMessage = ref("");
+const artifactTaskId = computed(() => {
+  const first = store.tasks.find((task) => !isTerminal(task.state)) ?? store.tasks[0];
+  return first?.taskId ?? "";
+});
+
+async function deliverArtifact(): Promise<void> {
+  const api = window.openclaw?.companyClaw?.artifacts;
+  if (!api?.deliver || !artifactTaskId.value) {
+    artifactMessage.value = t("cc.artifactFailed", { reason: "unavailable" });
+    return;
+  }
+  const resolved = await api.resolve({ taskId: artifactTaskId.value });
+  if (!resolved.ok) {
+    artifactMessage.value = t("cc.artifactFailed", { reason: resolved.reason });
+    return;
+  }
+  delivering.value = true;
+  artifactMessage.value = "";
+  try {
+    // The task's own artifact directory is the only place a report may come
+    // from; the main process re-checks containment before sending.
+    const result = await api.deliver({
+      taskId: artifactTaskId.value,
+      filePath: resolved.dir,
+    });
+    artifact.fileName = result.fileName;
+    artifact.state = result.state;
+    artifact.outcome = result.outcome;
+    artifact.mayHaveBeenSent = result.mayHaveBeenSent === true;
+    artifact.reason = result.reason ?? "";
+    artifactMessage.value =
+      result.outcome === "sent"
+        ? t("cc.artifactSent")
+        : result.outcome === "unknown"
+          ? t("cc.artifactUnknown")
+          : t("cc.artifactFailed", { reason: result.reason ?? "" });
+  } finally {
+    delivering.value = false;
+  }
 }
 
 function stateLabel(state: string): string {

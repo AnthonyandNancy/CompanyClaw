@@ -684,6 +684,14 @@ export default {
   "tasks.disabled": "Disabled",
 
   // ── CompanyClaw: remote operation, task centre, approvals ──
+  "cc.artifactTitle": "Task artifacts and delivery",
+  "cc.artifactDesc": "State SENT means the platform accepted it, not that it arrived.",
+  "cc.artifactNone": "This task has no artifacts yet.",
+  "cc.artifactDeliver": "Send to my WeChat",
+  "cc.artifactSent": "Submitted (platform accepted, delivery not confirmed)",
+  "cc.artifactUnknown": "Outcome unknown - it may have been sent; do not send again.",
+  "cc.artifactFailed": "Send failed: {reason}",
+  "cc.artifactName": "File name",
   "cc.remoteTitle": "Remote operation authorization",
   "cc.remoteDesc":
     "While off, WeChat can only chat — it cannot act on your PC. Enabling requires an expiry and can be revoked at any time.",

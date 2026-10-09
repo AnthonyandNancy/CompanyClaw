@@ -37,6 +37,18 @@ interface CompanyClawIpcOptions {
    * `process.execPath` is CompanyClaw.exe and cannot run the broker entry.
    */
   nodePath?: string;
+  /** Chat bound to this installation's owner; artifact sends target it. */
+  boundChannelUserId?: string;
+  /** Sends a validated artifact; owned by main.ts so it can reach the plugin. */
+  artifactDelivery?: {
+    deliver(input: {
+      taskId: string;
+      ownerSid: string;
+      filePath: string;
+      boundChannelUserId: string;
+      targetChannelUserId: string;
+    }): Promise<unknown>;
+  };
 }
 
 /** Handle returned to `main.ts` so it can stop the broker on quit. */
@@ -76,9 +88,7 @@ export function loadOrCreateTicketSecret(userDataDir: string, createSecret: () =
   return secret;
 }
 
-export function createCompanyClawRuntime(
-  options: CompanyClawIpcOptions,
-): CompanyClawRuntimeHandle {
+export function createCompanyClawRuntime(options: CompanyClawIpcOptions): CompanyClawRuntimeHandle {
   const paths = resolveCompanyClawPaths(options.userDataDir);
   fs.mkdirSync(path.dirname(paths.tasksFile), { recursive: true, mode: 0o700 });
   const broker = options.broker
@@ -123,6 +133,7 @@ export function registerCompanyClawIpcHandlers(
   broker?: { getStatus(): BrokerClientStatus } | null,
   healthReport: () => GuardianReport = () => buildGuardianReport({}),
 ): void {
+  const artifactDelivery = options.artifactDelivery ?? null;
   // Without a broker the honest answer is "not running", never "fine".
   const brokerStatus = (): BrokerClientStatus =>
     broker?.getStatus() ?? {
@@ -172,7 +183,11 @@ export function registerCompanyClawIpcHandlers(
     "companyclaw:tasks:control",
     (
       _event,
-      input: { taskId: string; control: "pause" | "resume" | "cancel" | "emergency-stop"; reason?: string },
+      input: {
+        taskId: string;
+        control: "pause" | "resume" | "cancel" | "emergency-stop";
+        reason?: string;
+      },
     ) =>
       runtime.controlTask({
         taskId: input?.taskId ?? "",
@@ -287,13 +302,28 @@ export function registerCompanyClawIpcHandlers(
   // tell the user which part of the installation is at fault.
   ipcMain.handle("companyclaw:health:report", () => healthReport());
 
+  ipcMain.handle("companyclaw:artifacts:resolve", (_event, input: { taskId: string }) =>
+    runtime.resolveArtifactDir({
+      taskId: input?.taskId ?? "",
+      ownerSid: options.ownerSid,
+    }),
+  );
+
+  // Delivers a produced artifact to the owner's bound chat. The owner comes
+  // from the main-process options, never from the renderer, and the recipient
+  // is checked against the task's own binding inside ArtifactDelivery.
   ipcMain.handle(
-    "companyclaw:artifacts:resolve",
-    (_event, input: { taskId: string }) =>
-      runtime.resolveArtifactDir({
+    "companyclaw:artifacts:deliver",
+    async (_event, input: { taskId: string; filePath: string }) => {
+      if (!artifactDelivery) return { outcome: "failed", reason: "delivery-unavailable" };
+      return await artifactDelivery.deliver({
         taskId: input?.taskId ?? "",
         ownerSid: options.ownerSid,
-      }),
+        filePath: input?.filePath ?? "",
+        boundChannelUserId: options.boundChannelUserId ?? "",
+        targetChannelUserId: options.boundChannelUserId ?? "",
+      });
+    },
   );
 
   ipcMain.handle(

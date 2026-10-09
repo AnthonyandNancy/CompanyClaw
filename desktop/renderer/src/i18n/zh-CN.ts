@@ -649,6 +649,14 @@ export default {
   "tasks.disabled": "禁用",
 
   // ── CompanyClaw: remote operation, task centre, approvals ──
+  "cc.artifactTitle": "任务产物与回传",
+  "cc.artifactDesc": "阶段：SENT 表示平台已受理，不等于对方已收到。",
+  "cc.artifactNone": "该任务暂无产物。",
+  "cc.artifactDeliver": "发送到我的微信",
+  "cc.artifactSent": "已提交发送（平台已受理，未确认送达）",
+  "cc.artifactUnknown": "发送结果未知，可能已发送，请勿重复发送。",
+  "cc.artifactFailed": "发送失败：{reason}",
+  "cc.artifactName": "文件名",
   "cc.remoteTitle": "远程操作授权",
   "cc.remoteDesc":
     "关闭时，微信只能聊天，无法在你的电脑上执行任何操作。开启需要指定有效期，可随时撤销。",

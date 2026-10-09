@@ -205,3 +205,27 @@ describe("installDesktopBridgeListener", () => {
     expect(() => installDesktopBridgeListener(null)).not.toThrow();
   });
 });
+
+describe("file send bridge", () => {
+  it("dispatches a file-send request to the injected handler", () => {
+    const listeners: Array<(message: unknown) => void> = [];
+    const channel = channelWith({ on: (_event, listener) => listeners.push(listener) });
+    const sendFile = vi.fn();
+    installDesktopBridgeListener(channel, { sendFile });
+    listeners[0]({ type: "file-send-request", requestId: "r1", request: { filePath: "a", to: "b" } });
+    // The plugin performs the send; the bridge itself decides nothing.
+    expect(sendFile).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file-send-request", requestId: "r1" }),
+      channel,
+    );
+  });
+
+  it("leaves a request unanswered when no handler is installed", () => {
+    const listeners: Array<(message: unknown) => void> = [];
+    const channel = channelWith({ on: (_event, listener) => listeners.push(listener) });
+    installDesktopBridgeListener(channel);
+    // Silence is safe: the desktop falls back to its own timeout and reports an
+    // indeterminate outcome rather than a fabricated success.
+    expect(() => listeners[0]({ type: "file-send-request", requestId: "r1" })).not.toThrow();
+  });
+});

@@ -79,11 +79,39 @@ export function settleApprovalReply(requestId: string, handled: boolean): boolea
 }
 
 /** Installs the desktop response listener. Safe to call when there is none. */
-export function installDesktopBridgeListener(channel: DesktopChannel | null): void {
+export interface DesktopBridgeHandlers {
+  /**
+   * Performs a file send. Injected by the plugin entry point so this module
+   * keeps depending on nothing but `process`: importing the sender here would
+   * pull the host SDK into every unit test of the bridge.
+   */
+  sendFile?: (envelope: unknown, channel: DesktopChannel | null) => void;
+}
+
+export function installDesktopBridgeListener(
+  channel: DesktopChannel | null,
+  handlers: DesktopBridgeHandlers = {},
+): void {
   channel?.on?.("message", (message: unknown) => {
-    const envelope = message as { type?: string; requestId?: string; handled?: boolean };
-    if (envelope?.type !== "approval-reply-response") return;
-    settleApprovalReply(envelope.requestId ?? "", envelope.handled === true);
+    const envelope = message as {
+      type?: string;
+      requestId?: string;
+      handled?: boolean;
+      ok?: boolean;
+      messageId?: string;
+      reason?: string;
+      indeterminate?: boolean;
+    };
+    if (envelope?.type === "approval-reply-response") {
+      settleApprovalReply(envelope.requestId ?? "", envelope.handled === true);
+      return;
+    }
+    if (envelope?.type === "file-send-request") {
+      // The plugin performs the send itself and answers separately; there is
+      // nothing here that could authorize one. Without a handler the request is
+      // left unanswered and the desktop times out, which is the safe direction.
+      handlers.sendFile?.(message, channel);
+    }
   });
 }
 

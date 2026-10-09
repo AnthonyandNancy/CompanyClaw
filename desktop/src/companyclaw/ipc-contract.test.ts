@@ -22,6 +22,7 @@ const REQUIRED_CHANNELS = [
   "companyclaw:approvals:list-pending",
   "companyclaw:approvals:resolve",
   "companyclaw:artifacts:resolve",
+  "companyclaw:artifacts:deliver",
   "companyclaw:identity:get",
   "companyclaw:identity:bind",
   "companyclaw:identity:unbind",

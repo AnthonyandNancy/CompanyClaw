@@ -97,6 +97,15 @@ export interface GuardianItemView {
   detail: string;
 }
 
+export interface ArtifactDeliveryView {
+  outcome: "sent" | "failed" | "unknown";
+  state: string;
+  fileName: string;
+  /** Present when the send may or may not have happened. */
+  mayHaveBeenSent?: boolean;
+  reason?: string;
+}
+
 export interface GuardianReportView {
   overall: GuardianItemState;
   items: GuardianItemView[];
@@ -140,6 +149,9 @@ interface CompanyClawBridge {
   };
   model: {
     probeCapabilities: (input: CapabilityProbeInput) => Promise<CapabilityProbeView>;
+  };
+  artifacts: {
+    deliver: (input: { taskId: string; filePath: string }) => Promise<ArtifactDeliveryView>;
   };
   browser: {
     getPolicy: () => Promise<BrowserPolicyView>;

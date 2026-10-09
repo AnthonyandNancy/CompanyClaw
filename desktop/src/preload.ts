@@ -531,6 +531,18 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("companyclaw:artifacts:resolve", input) as Promise<
           { ok: true; dir: string } | { ok: false; reason: string }
         >,
+      /**
+       * Sends a produced artifact to this owner's bound WeChat chat. The
+       * recipient is decided in the main process, not here.
+       */
+      deliver: (input: { taskId: string; filePath: string }) =>
+        ipcRenderer.invoke("companyclaw:artifacts:deliver", input) as Promise<{
+          outcome: "sent" | "failed" | "unknown";
+          state: string;
+          fileName: string;
+          mayHaveBeenSent?: boolean;
+          reason?: string;
+        }>,
     },
     model: {
       probeCapabilities: (input: {
