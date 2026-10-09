@@ -26,7 +26,7 @@
 | PKG-01 | 断网 Per-User 安装 | `BLOCKED` | 需清洁 Win11 + 已构建安装包（B4/B6/B7）。装配侧已保证不执行 npm/pip/git：`prepare-production-resources.mjs` 的插件依赖来自 `vendor/*.tgz`（离线），OpenClaw 在构建机预装。 |
 | PKG-02 | payload 完整性 | `UNVERIFIED` | 构建期逐文件 hash 校验与失败即中止已实现并有负向单测（`resource-pipeline.test.ts`：缺件/篡改/重复）；**从未在完整 payload 上实跑**（B4 使流水线在 `dotnet publish` 处中止）。 |
 | PKG-03 | 生产 Broker 启动 | `UNVERIFIED` | 私有 Node 解析 + 前置校验 + 错误码有单测覆盖；UIA 实机用例（9 项）在开发态通过。打包态未验证（B4）。 |
-| PKG-04 | 生产 Gateway 启动 | `UNVERIFIED` | 首启配置生成与插件安装有单测；打包态启动与真实鉴权未验证（B4/B1）。 |
+| PKG-04 | 生产 Gateway 启动 | `UNVERIFIED` | 首启配置生成与插件安装有单测；打包态启动与真实鉴权未验证（B4/B1）。2026-10-09 修复：`resolveNodePath()` 打包态仅认 `resources/node.exe`（不再回退系统 Node/全局 npm/`.openclaw-node`），`resolveOpenClawEntry()` 打包态缺 `openclaw.asar` 即报明路径；启动失败改为 `[stage=…]` 阶段化诊断（`resolve-runtime`/`extract-runtime`/`verify-manifest`/`spawn`/`auth`/`health`）。新增/更新单测：`path-resolver.test.ts`（含"打包态拒绝回退系统 Node"）、`gateway-startup-diagnostics.test.ts`、`guardian.test.ts`。**打包态实跑仍需 .NET SDK 与目标机（B4/B7）。** |
 | PKG-05 | 双员工隔离 | `BLOCKED` | 需两个真实 Windows 账户/微信身份（B1/B7）。代码侧按 SID 隔离（`owner-sid.ts`、per-user userData）。 |
 | PKG-06 | 升级与回滚 | `UNVERIFIED` | 升级判定逻辑有 12 条单测（schema 更新即拒绝、manifest 契约不符即拒绝）；需两个版本产物才能实测（B4/B6）。 |
 | PKG-07 | 关闭/后台/重启 | `BLOCKED` | 需目标机与托盘实测；Broker 生命周期（退出检测/重启上限/停止收口）已有单测。 |
@@ -70,6 +70,10 @@
 | 类型检查 | `npx tsc --noEmit`（desktop、broker）与 `vue-tsc --noEmit`（renderer） | 均 clean |
 | Lint | `npx eslint src/companyclaw`、`npm run lint:weixin` | 0 errors（既有 warning 除外） |
 | 装配失败路径 | `cd desktop && npm run prepare-production-resources` | 在 `dotnet publish` 处失败（B4），旧 `resources/` 完好、无 `.staging-*` 残留 |
+| 启动链路修复回归（2026-10-09） | `cd desktop && npx vitest run` | 86 files / 1569 passed, 2 skipped（较上轮 +1 file / +7 tests） |
+| 启动链路修复回归（2026-10-09） | `cd desktop && npx tsc --noEmit`、`cd broker && npx tsc --noEmit`、`cd desktop/renderer && npx vue-tsc -b --force` | 均 clean |
+| 启动链路修复回归（2026-10-09） | `cd desktop && npm run lint` | 我引入的 `preserve-caught-error` 已修；剩余 2 errors（`chat-attachments.ts`、`openclaw-upgrade-recovery.ts`）为本轮之前既有，未改动这两个文件 |
+| 启动链路修复回归（2026-10-09） | `dotnet --list-sdks`（本机） | 空 → `npm run release:win` 仍无法产出安装包（B4 未解除），打包态启动维持 `UNVERIFIED` |
 
 ## 分级放行（§15.5 对照）
 

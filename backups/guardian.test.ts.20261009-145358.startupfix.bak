@@ -116,20 +116,4 @@ describe("guardian report", () => {
     expect(item(empty, "browser-binary").state).toBe("unknown");
     expect(item(empty, "plugin-installed").state).toBe("unknown");
   });
-
-  it("names the failed startup stage instead of a bare status", () => {
-    const report = buildGuardianReport({
-      ...healthy,
-      gatewayStatus: "failed",
-      gatewayFailureStage: "spawn",
-      gatewayFailureReason: "Gateway 进程创建失败：spawn ENOENT",
-    });
-    expect(item(report, "gateway-process").state).toBe("failed");
-    expect(item(report, "gateway-process").detail).toContain("失败阶段 spawn");
-  });
-
-  it("keeps the status-only detail when no stage was recorded", () => {
-    const report = buildGuardianReport({ ...healthy, gatewayStatus: "stopped" });
-    expect(item(report, "gateway-process").detail).toBe("Gateway stopped");
-  });
 });

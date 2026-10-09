@@ -14,32 +14,20 @@ import { resolveBundledOpenClawDir } from "./bundled-runtime";
 /**
  * Resolve the OpenClaw state directory.
  *
- * CompanyClaw ships its own OpenClaw runtime, so it also owns its own state:
- * sharing `~/.openclaw` with a separately installed OpenClaw would let the two
- * overwrite each other's `openclaw.json`, adopt or kill each other's Gateway,
- * and inherit a legacy workspace that this product must not touch.
- *
  * Priority:
- *  1. `OPENCLAW_STATE_DIR` environment variable (explicit operator override)
- *  2. `<userData>/openclaw-state` (this application's private directory)
- *
- * The directory is created on demand so callers can rely on it existing.
+ *  1. `OPENCLAW_STATE_DIR` environment variable
+ *  2. `~/.openclaw` (if it contains `openclaw.json`)
+ *  3. `%APPDATA%/openclaw` (deployer default)
  */
 export function getOpenClawStateDir(): string {
   if (process.env.OPENCLAW_STATE_DIR) {
     return process.env.OPENCLAW_STATE_DIR;
   }
-  const stateDir = path.join(app.getPath("userData"), "openclaw-state");
-  try {
-    if (!fs.existsSync(stateDir)) {
-      fs.mkdirSync(stateDir, { recursive: true });
-    }
-  } catch (error) {
-    // Resolution must stay usable on a read-only or locked profile; the write
-    // path that needs the directory surfaces its own error.
-    console.warn(`[path-resolver] Cannot create the state directory ${stateDir}:`, error);
+  const homeDir = path.join(app.getPath("home"), ".openclaw");
+  if (fs.existsSync(path.join(homeDir, "openclaw.json"))) {
+    return homeDir;
   }
-  return stateDir;
+  return path.join(app.getPath("appData"), "openclaw");
 }
 
 /**
@@ -90,84 +78,29 @@ export function isSupportedNodeVersion(value: string): boolean {
 }
 
 /**
- * Every `node` (or `node.exe`) found on PATH, as absolute paths, in PATH order.
- *
- * `execFileSync("node", …)` works with a bare command name but
- * `fs.existsSync("node")` does not, so a bare name can never be handed to a
- * caller that verifies the file.
- */
-function resolveExecutablesOnPath(name: string): string[] {
-  const extensions = process.platform === "win32" ? [".exe", ".cmd", ""] : [""];
-  const found: string[] = [];
-  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = path.join(directory, `${name}${extension}`);
-      if (fs.existsSync(candidate) && !found.includes(candidate)) found.push(candidate);
-    }
-  }
-  return found;
-}
-
-/**
  * Resolve the path to `node.exe`.
  *
- * A packaged build uses only the private runtime that ships inside the
- * installer: a system Node or a global npm install would make "works on the
- * build machine" indistinguishable from "works for an employee".
- *
- * A development build uses, skipping unsupported or unreadable runtimes:
- *  1. Explicit `OPENCLAW_NODE_DIR`
- *  2. Deployer-installed `~/.openclaw-node/node.exe`
- *  3. Per-machine and per-user MSI installations
- *  4. Whatever `node` resolves to on PATH, as an absolute path
+ * Priority (skipping unsupported or unreadable runtimes):
+ *  1. Bundled in packaged app resources
+ *  2. Explicit `OPENCLAW_NODE_DIR`
+ *  3. Deployer-installed `~/.openclaw-node/node.exe`
+ *  4. Per-machine and per-user MSI installations
+ *  5. Bare `"node"` (rely on PATH)
  */
 export function resolveNodePath(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "node.exe");
-    if (!fs.existsSync(bundled)) {
-      throw new Error(
-        `安装包内置的私有 Node 运行时缺失（${bundled}）。请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 Node.js 或其他组件。`,
-      );
-    }
-    let version: string;
-    try {
-      version = execFileSync(bundled, ["--version"], {
-        encoding: "utf-8",
-        windowsHide: true,
-        timeout: 5_000,
-      }).trim();
-    } catch (error) {
-      throw new Error(
-        `安装包内置的 Node 运行时无法执行（${bundled}）：${
-          error instanceof Error ? error.message : String(error)
-        }。请重新运行 CompanyClaw 安装包执行修复安装。`,
-        { cause: error },
-      );
-    }
-    if (!isSupportedNodeVersion(version)) {
-      throw new Error(
-        `安装包内置的 Node ${version} 不在支持范围（>=24.16.0 <25 || >=26.1.0）。` +
-          "安装包已损坏或版本不匹配，请重新运行 CompanyClaw 安装包执行修复安装。",
-      );
-    }
-    return bundled;
-  }
-
   const override = process.env.OPENCLAW_NODE_DIR || "";
   const candidates = [
+    app.isPackaged ? path.join(process.resourcesPath, "node.exe") : "",
     path.isAbsolute(override) ? path.join(override, "node.exe") : "",
     process.env.USERPROFILE ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe") : "",
     path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "node.exe"),
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe")
       : "",
-    // Never return a bare command name: callers check the value with
-    // fs.existsSync(), which is always false for "node".
-    ...resolveExecutablesOnPath("node"),
+    "node",
   ];
   for (const candidate of new Set(candidates.filter(Boolean))) {
-    if (!fs.existsSync(candidate)) continue;
+    if (candidate !== "node" && !fs.existsSync(candidate)) continue;
     let version: string;
     try {
       version = execFileSync(candidate, ["--version"], {
@@ -185,34 +118,25 @@ export function resolveNodePath(): string {
     console.warn(`[path-resolver] Skipping unsupported Node.js ${version} at ${candidate}`);
   }
   throw new Error(
-    "本机找不到可用的 Node.js 运行时（开发/构建环境需要 Node.js >=24.16.0 <25 || >=26.1.0）；" +
-      "员工机器不需要安装 Node.js —— 正式版使用安装包内置的私有运行时。",
+    "OpenClaw 2026.9.3 requires Node.js >=24.16.0 <25 || >=26.1.0. " +
+      "Run the MicroClaw installer or install Node.js 26.",
   );
 }
 
 /**
  * Resolve the path to the OpenClaw entry script (`openclaw.mjs` or `dist/index.js`).
  *
- * Packaged builds extract the bundled `openclaw.asar` and require it to be
- * present: falling back to a system installation would ship an employee a
- * runtime this product never validated.
- *
- * Development builds probe:
- *  1. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
- *  2. Global npm install under `%APPDATA%/npm`
- *  3. Per-machine Node at `%ProgramFiles%/nodejs`
- *  4. Per-user Node at `%LocalAppData%/Programs/nodejs`
+ * Priority:
+ *  1. Bundled in packaged app resources
+ *  2. Deployer-installed under `~/.openclaw-node` (classic & `lib/` npm layouts)
+ *  3. Global npm install under `%APPDATA%/npm`
+ *  4. Per-machine Node at `%ProgramFiles%/nodejs`
+ *  5. Per-user Node at `%LocalAppData%/Programs/nodejs`
  */
 export function resolveOpenClawEntry(): string {
   const bundledRoot = resolveBundledOpenClawDir();
   if (bundledRoot) {
     return path.join(bundledRoot, "node_modules", "openclaw", "openclaw.mjs");
-  }
-  if (app.isPackaged) {
-    throw new Error(
-      `安装包内置的 OpenClaw 运行资源缺失（${path.join(process.resourcesPath, "openclaw.asar")}）。` +
-        "请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 OpenClaw 或 npm。",
-    );
   }
   const home = process.env.USERPROFILE || "";
   const appData = process.env.APPDATA || "";

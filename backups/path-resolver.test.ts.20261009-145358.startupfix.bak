@@ -7,7 +7,6 @@ vi.mock("electron", () => ({
     getPath: vi.fn((name: string) => {
       if (name === "home") return "C:\\Users\\testuser";
       if (name === "appData") return "C:\\Users\\testuser\\AppData\\Roaming";
-      if (name === "userData") return "C:\\Users\\testuser\\AppData\\Roaming\\microclaw";
       return "";
     }),
     get isPackaged() {
@@ -68,24 +67,19 @@ describe("getOpenClawStateDir", () => {
     expect(getOpenClawStateDir()).toBe("D:\\custom\\state");
   });
 
-  it("keeps its own state directory instead of reusing a separate OpenClaw's", () => {
+  it("returns ~/.openclaw when openclaw.json exists there", () => {
     delete process.env.OPENCLAW_STATE_DIR;
-    // Even when a separately installed OpenClaw has a populated ~/.openclaw,
-    // this application must not read or write it: sharing the directory lets the
-    // two overwrite each other's config and adopt each other's Gateway.
     mockExistsSync.mockImplementation((p) => {
       return String(p) === path.join("C:\\Users\\testuser", ".openclaw", "openclaw.json");
     });
-    expect(getOpenClawStateDir()).toBe(
-      path.join("C:\\Users\\testuser\\AppData\\Roaming", "microclaw", "openclaw-state"),
-    );
+    expect(getOpenClawStateDir()).toBe(path.join("C:\\Users\\testuser", ".openclaw"));
   });
 
-  it("returns the private state directory even before it exists", () => {
+  it("falls back to %APPDATA%/openclaw", () => {
     delete process.env.OPENCLAW_STATE_DIR;
     mockExistsSync.mockReturnValue(false);
     expect(getOpenClawStateDir()).toBe(
-      path.join("C:\\Users\\testuser\\AppData\\Roaming", "microclaw", "openclaw-state"),
+      path.join("C:\\Users\\testuser\\AppData\\Roaming", "openclaw"),
     );
   });
 });
@@ -169,14 +163,12 @@ describe("resolveNodePath", () => {
     expect(resolveNodePath()).toBe(expected);
   });
 
-  it("returns a supported Node from PATH as an absolute path, never a bare name", () => {
+  it("falls back to a supported Node on PATH when standard locations are missing", () => {
     process.env.USERPROFILE = "C:\\Users\\testuser";
-    process.env.PATH = "D:\\nvm\\nodejs;C:\\Windows\\System32";
-    const onPath = path.join("D:\\nvm\\nodejs", "node.exe");
-    mockExistsSync.mockImplementation((p) => String(p) === onPath);
-    expect(resolveNodePath()).toBe(onPath);
+    mockExistsSync.mockReturnValue(false);
+    expect(resolveNodePath()).toBe("node");
     expect(mockExecFileSync).toHaveBeenCalledWith(
-      onPath,
+      "node",
       ["--version"],
       expect.objectContaining({ windowsHide: true, timeout: 5_000 }),
     );
@@ -229,46 +221,19 @@ describe("resolveNodePath", () => {
 
   it("does not execute a relative OPENCLAW_NODE_DIR override", () => {
     process.env.OPENCLAW_NODE_DIR = "relative-node";
-    process.env.PATH = "D:\\nvm\\nodejs";
-    const onPath = path.join("D:\\nvm\\nodejs", "node.exe");
-    mockExistsSync.mockImplementation((p) => String(p) === onPath);
-    expect(resolveNodePath()).toBe(onPath);
+    mockExistsSync.mockReturnValue(false);
+    expect(resolveNodePath()).toBe("node");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses to fall back to a system Node in a packaged build", () => {
+  it("skips an unsupported bundled runtime", () => {
     mockApp.isPackaged = true;
-    vi.stubGlobal("process", { ...process, resourcesPath: "C:\\CompanyClaw\\resources" });
-    try {
-      const legacy = "C:\\Users\\testuser\\.openclaw-node\\node.exe";
-      mockExistsSync.mockImplementation((p) => String(p) === legacy);
-      expect(() => resolveNodePath()).toThrow("安装包内置的私有 Node 运行时缺失");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("rejects an unsupported bundled runtime instead of using another Node", () => {
-    mockApp.isPackaged = true;
-    vi.stubGlobal("process", { ...process, resourcesPath: "C:\\CompanyClaw\\resources" });
+    vi.stubGlobal("process", { ...process, resourcesPath: "C:\\MicroClaw\\resources" });
     try {
       const bundled = path.join(process.resourcesPath, "node.exe");
       mockExistsSync.mockImplementation((p) => String(p) === bundled);
-      mockExecFileSync.mockImplementation(() => "v22.22.3");
-      expect(() => resolveNodePath()).toThrow("不在支持范围");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("uses the bundled runtime when it is present and supported", () => {
-    mockApp.isPackaged = true;
-    vi.stubGlobal("process", { ...process, resourcesPath: "C:\\CompanyClaw\\resources" });
-    try {
-      const bundled = path.join(process.resourcesPath, "node.exe");
-      const legacy = "C:\\Users\\testuser\\.openclaw-node\\node.exe";
-      mockExistsSync.mockImplementation((p) => [bundled, legacy].includes(String(p)));
-      mockExecFileSync.mockImplementation(() => "v26.1.0");
-      expect(resolveNodePath()).toBe(bundled);
+      mockExecFileSync.mockImplementation((p) => (p === bundled ? "v22.22.3" : "v26.1.0"));
+      expect(resolveNodePath()).toBe("node");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -282,11 +247,11 @@ describe("resolveNodePath", () => {
     },
   );
 
-  it("reports the development-machine requirement when no executable runs", () => {
+  it("reports how to install Node when no executable runs", () => {
     mockExecFileSync.mockImplementation(() => {
       throw new Error("ENOENT");
     });
-    expect(() => resolveNodePath()).toThrow("员工机器不需要安装 Node.js");
+    expect(() => resolveNodePath()).toThrow("Run the MicroClaw installer or install Node.js 26");
   });
 });
 

@@ -40,10 +40,6 @@ appx:
     - runFullTrust
 
 nsis:
-  # The employee artifact name is quoted in build.ps1 and in the employee /
-  # IT guides; without this the builder default ("CompanyClaw Setup <ver>.exe")
-  # would not match any of them.
-  artifactName: CompanyClaw-Setup-${version}-${arch}.exe
   oneClick: false
   allowToChangeInstallationDirectory: true
   # Requirement V1.1 (conflict 2): everyday use must not need administrator

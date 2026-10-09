@@ -49,18 +49,6 @@ if (process.platform !== "win32" || !rid) {
   );
 }
 
-// .NET SDK is a build-machine prerequisite: the bundled Windows Node host and
-// the MXC host-prep patch target net10.0-windows (see build.ps1 for the same
-// check). Nothing here may turn into an "install .NET" instruction for an
-// employee — the binaries ship prebuilt inside the installer.
-const dotnetProbe = spawnSync("dotnet", ["--list-sdks"], { encoding: "utf8" });
-if (dotnetProbe.error || dotnetProbe.status !== 0 || !/\d+\.\d+\./.test(dotnetProbe.stdout || "")) {
-  throw new Error(
-    "dotnet SDK not found on this build machine; install the .NET SDK (net9.0-windows / net10.0-windows workloads) " +
-      "or run this pipeline in CI. Employee machines never install .NET.",
-  );
-}
-
 const packageDir = path.join(desktopDir, "node_modules", "@microsoft", "mxc-sdk");
 const packageJsonPath = path.join(packageDir, "package.json");
 if (!existsSync(packageJsonPath)) {
@@ -136,18 +124,8 @@ const publish = spawnSync(
   ],
   { stdio: "inherit" },
 );
-if (publish.error) {
-  throw new Error(
-    `Failed to run "dotnet publish" for the Windows Node host: ${publish.error.message}. ` +
-      "The .NET SDK is a build-machine prerequisite.",
-  );
-}
-if (publish.status !== 0) {
-  throw new Error(
-    `dotnet publish failed for the Windows Node host (exit ${publish.status}). ` +
-      "Check the build machine's .NET SDK version against the net10.0-windows target.",
-  );
-}
+if (publish.error) throw publish.error;
+if (publish.status !== 0) process.exit(publish.status ?? 1);
 
 const hostPrepPublish = spawnSync(
   "dotnet",
@@ -175,18 +153,8 @@ const hostPrepPublish = spawnSync(
   ],
   { stdio: "inherit" },
 );
-if (hostPrepPublish.error) {
-  throw new Error(
-    `Failed to run "dotnet publish" for the MXC host-prep patch: ${hostPrepPublish.error.message}. ` +
-      "The .NET SDK is a build-machine prerequisite.",
-  );
-}
-if (hostPrepPublish.status !== 0) {
-  throw new Error(
-    `dotnet publish failed for the MXC host-prep patch (exit ${hostPrepPublish.status}). ` +
-      "Check the build machine's .NET SDK version against the net10.0-windows target.",
-  );
-}
+if (hostPrepPublish.error) throw hostPrepPublish.error;
+if (hostPrepPublish.status !== 0) process.exit(hostPrepPublish.status ?? 1);
 
 cpSync(sourceMxcDir, mxcOutput, { recursive: true });
 copyFileSync(path.join(packageDir, "LICENSE.md"), path.join(resourceRoot, "MXC-LICENSE.md"));

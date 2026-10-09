@@ -1,0 +1,61 @@
+npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> microclaw@1.0.0 dev
+> concurrently -n vite,electron "npm run dev:renderer" "npm run dev:electron"
+
+[electron] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] 
+[vite] > microclaw@1.0.0 dev:renderer
+[vite] > cd renderer && npm run dev
+[vite] 
+[electron] 
+[electron] > microclaw@1.0.0 dev:electron
+[electron] > tsc && electron .
+[electron] 
+[vite] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] 
+[vite] > openclaw-renderer@1.0.0 dev
+[vite] > vite
+[vite] 
+[vite] 
+[vite]   VITE v6.4.2  ready in 873 ms
+[vite] 
+[vite]   ➜  Local:   http://localhost:5174/
+[vite]   ➜  Network: use --host to expose
+[electron] D:\code\ai\MicroClaw\code\CompanyClaw\desktop\dist\main.js:138
+[electron]     throw err;
+[electron]     ^
+[electron] 
+[electron] TypeError: Cannot read properties of undefined (reading 'isPackaged')
+[electron]     at resolveBundledWindowsNodeResourceRoot (D:\code\ai\MicroClaw\code\CompanyClaw\desktop\dist\bundled-windows-node-host.js:655:27)
+[electron]     at <instance_members_initializer> (D:\code\ai\MicroClaw\code\CompanyClaw\desktop\dist\bundled-windows-node-host.js:84:20)
+[electron]     at new BundledWindowsNodeHost (D:\code\ai\MicroClaw\code\CompanyClaw\desktop\dist\bundled-windows-node-host.js:71:1)
+[electron]     at Object.<anonymous> (D:\code\ai\MicroClaw\code\CompanyClaw\desktop\dist\main.js:194:32)
+[electron]     at Module._compile (node:internal/modules/cjs/loader:1484:14)
+[electron]     at Module._extensions..js (node:internal/modules/cjs/loader:1564:10)
+[electron]     at Module.load (node:internal/modules/cjs/loader:1295:32)
+[electron]     at Module._load (node:internal/modules/cjs/loader:1111:12)
+[electron]     at c._load (node:electron/js2c/node_init:2:16955)
+[electron]     at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:188:12)
+[electron] 
+[electron] Node.js v20.18.3
+[electron] npm run dev:electron exited with code 7
+[vite] npm run dev:renderer exited with code 143

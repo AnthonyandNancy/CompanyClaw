@@ -57,10 +57,6 @@ const ENVIRONMENT_ITEM_IDS: readonly GuardianItemId[] = [
 export interface GuardianProbes {
   gatewayStatus?: string;
   gatewayConnected?: boolean;
-  /** Startup stage that failed, when one did (e.g. "spawn"). */
-  gatewayFailureStage?: string | null;
-  /** Cause reported for that stage, in plain Chinese. */
-  gatewayFailureReason?: string | null;
   manifestProblems?: string[];
   manifestChecked?: number | null;
   pluginInstalled?: boolean;
@@ -102,12 +98,7 @@ export function buildGuardianReport(probes: GuardianProbes): GuardianReport {
           : gatewayStatus === "unknown" || gatewayStatus === "stopped"
             ? "degraded"
             : "failed",
-    detail:
-      gatewayStatus === "running"
-        ? `Gateway ${gatewayStatus}`
-        : probes.gatewayFailureStage && probes.gatewayFailureReason
-          ? `Gateway ${gatewayStatus}（失败阶段 ${probes.gatewayFailureStage}）：${probes.gatewayFailureReason}`
-          : `Gateway ${gatewayStatus}`,
+    detail: `Gateway ${gatewayStatus}`,
   });
 
   items.push({

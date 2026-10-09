@@ -1,9 +1,4 @@
 @echo off
-REM Developer convenience script only. The employee distribution is the NSIS
-REM installer (desktop\release\CompanyClaw-Setup-<version>-<arch>.exe), which
-REM always runs its own bundled resources\node.exe — never a system Node and
-REM never the legacy %USERPROFILE%\.openclaw-node layout. Employee machines need
-REM no Node.js, no npm and no .openclaw-node directory.
 chcp 65001 >nul
 title OpenClaw Gateway
 set OPENCLAW_STATE_DIR=%USERPROFILE%\.openclaw
@@ -12,21 +7,14 @@ set NODE_COMPILE_CACHE=%OPENCLAW_STATE_DIR%\compile-cache
 if not exist "%NODE_COMPILE_CACHE%" mkdir "%NODE_COMPILE_CACHE%"
 
 echo ============================================
-echo   OpenClaw Gateway Launcher (development)
+echo   OpenClaw Gateway Launcher
 echo ============================================
 echo Config dir: %OPENCLAW_STATE_DIR%
 echo Node: %USERPROFILE%\.openclaw-node\node.exe
 echo.
-echo This script is for development machines that already installed OpenClaw
-echo under %%USERPROFILE%%\.openclaw-node. Employee installs do not use it.
-echo.
 
-REM Kill only the process listening on the gateway port. A bare
-REM "taskkill /IM node.exe" would also kill unrelated Node applications.
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr LISTENING ^| findstr ":18789"') do (
-    echo Stopping stale gateway process PID %%a on port 18789
-    taskkill /PID %%a /T /F >nul 2>&1
-)
+REM Kill any leftover gateway
+taskkill /F /IM node.exe /T >nul 2>&1
 timeout /t 3 /nobreak >nul
 
 REM Clean stale gateway lock files (survive force-kill)
@@ -35,13 +23,11 @@ if exist "%LOCALAPPDATA%\Temp\openclaw\gateway.*.lock" (
     echo Cleaned stale gateway lock files
 )
 
-REM Detect openclaw entry (classic vs lib/ layout) in the development layout
+REM Detect openclaw entry (classic vs lib/ layout)
 set ENTRY=%USERPROFILE%\.openclaw-node\node_modules\openclaw\openclaw.mjs
 if not exist "%ENTRY%" set ENTRY=%USERPROFILE%\.openclaw-node\lib\node_modules\openclaw\openclaw.mjs
 if not exist "%ENTRY%" (
     echo ERROR: openclaw.mjs not found in node_modules or lib/node_modules
-    echo This development script expects OpenClaw under %%USERPROFILE%%\.openclaw-node.
-    echo Employee installs never need this directory - the installer ships its own runtime.
     pause
     exit /b 1
 )

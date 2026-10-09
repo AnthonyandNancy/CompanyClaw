@@ -222,14 +222,14 @@
         <div v-if="store.pendingApprovals.length === 0" class="cc-empty">
           {{ t("cc.approvalsEmpty") }}
         </div>
+        <div v-else class="cc-approval-actions">
+          <!-- The card is built by the security core, so what the owner reads
+               is exactly the change the approval describes. -->
+          <el-button size="small" :loading="notifyingApprovals" @click="notifyApprovals">
+            {{ t("cc.approvalNotify") }}
+          </el-button>
+        </div>
         <div v-else class="cc-approval-list">
-          <div class="cc-approval-actions">
-            <!-- The card is built by the security core, so what the owner reads
-                 is exactly the change the approval describes. -->
-            <el-button size="small" :loading="notifyingApprovals" @click="notifyApprovals">
-              {{ t("cc.approvalNotify") }}
-            </el-button>
-          </div>
           <div
             v-for="approval in store.pendingApprovals"
             :key="approval.approvalId"

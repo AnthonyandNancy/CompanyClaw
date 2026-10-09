@@ -503,33 +503,11 @@ let pendingIntegrityResult: IntegrityResult | null = null;
 let runtimeManifestProblems: string[] = [];
 /** Entries verified by the last bundled-resource check; null when not run. */
 let runtimeManifestChecked: number | null = null;
-/** Startup stage that failed last, e.g. "resolve-runtime"; null once healthy. */
-let gatewayFailureStage: string | null = null;
-/** Human-readable cause for that stage, in the same order the user sees it. */
-let gatewayFailureReason: string | null = null;
-
-/**
- * Reports one failed startup stage, cause first.
- *
- * The loading screen shows only the last log line, so the stage tag and the
- * reason travel on the same line instead of being split across a hint.
- */
-function reportGatewayFailure(stage: string, reason: string, hint?: string): void {
-  gatewayFailureStage = stage;
-  gatewayFailureReason = reason;
-  const line = `[error][stage=${stage}] ${reason}`;
-  console.error(line);
-  mainWindow?.webContents.send("gateway:log", line);
-  if (hint) mainWindow?.webContents.send("gateway:log", `[hint] ${hint}`);
-  setGatewayStatus("failed");
-}
 /** Last model capability verdict, recorded when the wizard runs its probe. */
 let lastProbedModelCapability: string | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 let gatewayRestarting = false;
 let gatewayRestartPromise: Promise<void> | null = null;
-/** OpenClaw entry this installation spawns; null before it is first resolved. */
-let managedGatewayEntryPath: string | null = null;
 /** Number of pending sync permission requests that block the gateway process.
  *  While > 0, the health-monitor skips checks to avoid killing the gateway. */
 let pendingSyncPermissionRequests = 0;
@@ -1685,8 +1663,6 @@ function collectGuardianProbes(): GuardianProbes {
   return {
     gatewayStatus,
     gatewayConnected: gwClient?.connected ?? false,
-    gatewayFailureStage,
-    gatewayFailureReason,
     manifestProblems: runtimeManifestProblems,
     manifestChecked: runtimeManifestChecked,
     pluginInstalled: weixin.installed,
@@ -2758,7 +2734,7 @@ async function removeCatalogAgent(
 // ---------------------------------------------------------------------------
 // In local development, prefer the Vite dev server. Packaged builds always use renderer/dist.
 const isDev = !app.isPackaged;
-const VITE_DEV_URL = "http://localhost:5174";
+const VITE_DEV_URL = "http://localhost:5173";
 const APP_ICON_PATH = path.join(
   __dirname,
   process.platform === "win32" ? "../assets/microclaw.ico" : "../assets/microclaw.png",
@@ -2930,69 +2906,6 @@ async function waitForGatewayReady(
 }
 
 /** Kill the managed gateway and any listener still holding gatewayPort. */
-/**
- * Command line of `pid`, or null when it cannot be read.
- *
- * The Gateway port proves nothing by itself: a separately installed OpenClaw
- * run by the same user listens on the same default port. The command line is
- * what tells the two installations apart.
- */
-function readProcessCommandLine(pid: number): string | null {
-  if (process.platform !== "win32") return null;
-  try {
-    const output = execFileSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
-      ],
-      { windowsHide: true, encoding: "utf-8", timeout: 10_000 },
-    ).trim();
-    return output.length > 0 ? output : null;
-  } catch {
-    // An unreadable command line is treated as "not ours" by the caller.
-    return null;
-  }
-}
-
-/** True only when `pid` runs the exact OpenClaw entry this installation spawns. */
-function isOwnedGatewayProcess(pid: number): boolean {
-  const entryPath = managedGatewayEntryPath;
-  if (!entryPath) return false;
-  const commandLine = readProcessCommandLine(pid);
-  return commandLine !== null && commandLine.includes(entryPath);
-}
-
-/** PIDs LISTENING on `port`, or null when the scan itself failed. */
-function findListeningPids(port: number): number[] | null {
-  if (!port || process.platform !== "win32") return null;
-  try {
-    const result = execFileSync("netstat", ["-ano"], {
-      windowsHide: true,
-      encoding: "utf-8",
-      timeout: 5_000,
-    });
-    const found: number[] = [];
-    for (const line of result.split(/\r?\n/)) {
-      const columns = line.trim().split(/\s+/);
-      if (
-        columns.length >= 5 &&
-        columns[0].toUpperCase() === "TCP" &&
-        columns[1].endsWith(`:${port}`) &&
-        columns[3].toUpperCase() === "LISTENING"
-      ) {
-        const pid = Number.parseInt(columns[4], 10);
-        if (Number.isInteger(pid) && pid > 0 && !found.includes(pid)) found.push(pid);
-      }
-    }
-    return found;
-  } catch {
-    return null;
-  }
-}
-
 function stopGatewayProcess(): void {
   stopBundledWindowsNodeHost();
   windowsNodeMxcApprovalProofContext = null;
@@ -3004,19 +2917,27 @@ function stopGatewayProcess(): void {
   let allGatewayProcessesStopped = process.platform === "win32";
   if (knownPid) pids.add(knownPid);
   if (gatewayPort && process.platform === "win32") {
-    const listeners = findListeningPids(gatewayPort);
-    if (listeners !== null) listenerScanSucceeded = true;
-    for (const pid of listeners ?? []) {
-      // Only a listener running this installation's own OpenClaw entry may be
-      // killed: a separately installed OpenClaw owned by the same user is not
-      // ours to stop, even when it happens to hold the same port.
-      if (isOwnedGatewayProcess(pid)) {
-        pids.add(pid);
-      } else {
-        console.warn(
-          `[gateway] leaving pid ${pid} on port ${gatewayPort} alone — it is not this installation's Gateway`,
-        );
+    try {
+      const result = execFileSync("netstat", ["-ano"], {
+        windowsHide: true,
+        encoding: "utf-8",
+        timeout: 5_000,
+      });
+      listenerScanSucceeded = true;
+      for (const line of result.split(/\r?\n/)) {
+        const columns = line.trim().split(/\s+/);
+        if (
+          columns.length >= 5 &&
+          columns[0].toUpperCase() === "TCP" &&
+          columns[1].endsWith(`:${gatewayPort}`) &&
+          columns[3].toUpperCase() === "LISTENING"
+        ) {
+          const pid = Number.parseInt(columns[4], 10);
+          if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+        }
       }
+    } catch {
+      // No listener or netstat unavailable; the known child PID is still used.
     }
   }
   for (const pid of pids) {
@@ -3730,29 +3651,13 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
   try {
     nodePath = resolveNodePath();
   } catch (error) {
-    reportGatewayFailure(
-      "resolve-runtime",
-      error instanceof Error ? error.message : String(error),
-      "正式版使用安装包内置的私有运行时；请重新运行 CompanyClaw 安装包执行修复安装，无需手动安装任何组件。",
-    );
+    const message = `[error] ${error instanceof Error ? error.message : String(error)}`;
+    console.error(message);
+    mainWindow?.webContents.send("gateway:log", message);
+    setGatewayStatus("failed");
     throw error;
   }
-  mainWindow?.webContents.send("gateway:log", `[info][stage=resolve-runtime] node=${nodePath}`);
-  let entryPath: string;
-  try {
-    entryPath = resolveOpenClawEntry();
-  } catch (error) {
-    reportGatewayFailure(
-      "extract-runtime",
-      error instanceof Error ? error.message : String(error),
-      "内置 OpenClaw 资源（openclaw.asar）解压或校验失败；请重新运行 CompanyClaw 安装包执行修复安装。",
-    );
-    throw error;
-  }
-  mainWindow?.webContents.send("gateway:log", `[info][stage=resolve-runtime] entry=${entryPath}`);
-  // Recorded so stopGatewayProcess() can tell our Gateway apart from a
-  // separately installed OpenClaw that happens to use the same port.
-  managedGatewayEntryPath = entryPath;
+  const entryPath = resolveOpenClawEntry();
   const gatewayEnvironment = loadGatewayEnvironment(stateDir);
 
   // Apply MicroClaw's default workspace identity before persona migration.
@@ -3810,23 +3715,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
   // externally managed Gateway may observe the shared state directory.
   const alreadyRunning = await checkExistingGateway(configuredPort);
   logStartupTiming("gateway-existing-check-complete");
-  if (alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null)) {
-    // A healthy Gateway on our port that we did not spawn belongs to another
-    // installation (for example a separately installed OpenClaw). Adopting it
-    // would hand this product's traffic to a runtime it never validated, so the
-    // refusal is explicit instead.
-    const foreignPids = (findListeningPids(configuredPort) ?? []).filter(
-      (pid) => !isOwnedGatewayProcess(pid),
-    );
-    if (foreignPids.length > 0) {
-      reportGatewayFailure(
-        "spawn",
-        `端口 ${configuredPort} 已被其他程序占用（PID ${foreignPids.join(", ")}），它不是本安装启动的 Gateway。`,
-        "请关闭占用该端口的程序，或在设置中为 CompanyClaw 指定其他端口后重试。",
-      );
-      return;
-    }
-  }
   const externallyManagedGateway =
     alreadyRunning && !(gatewaySpawnedByUs && gatewayProcess !== null);
   const ownedSkillPlan = preparedPersonas
@@ -3984,35 +3872,28 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     } catch {}
 
     if (!fs.existsSync(nodePath)) {
-      reportGatewayFailure(
-        "resolve-runtime",
-        `安装包内置的私有 Node 运行时不可用：${nodePath}`,
-        "请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 Node.js。",
+      const msg = `[error] node.exe not found at ${nodePath}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      mainWindow?.webContents.send(
+        "gateway:log",
+        "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录",
       );
+      setGatewayStatus("failed");
       rollbackStartupAgentSkills();
       return;
     }
     if (!fs.existsSync(entryPath)) {
-      reportGatewayFailure(
-        "extract-runtime",
-        `内置 OpenClaw 入口文件不可用：${entryPath}`,
-        "请重新运行 CompanyClaw 安装包执行修复安装；无需手动安装 OpenClaw 或 npm。",
+      const msg = `[error] openclaw entry not found at ${entryPath}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      mainWindow?.webContents.send(
+        "gateway:log",
+        "[hint] 请确认 openclaw 已正确安装到 .openclaw-node",
       );
+      setGatewayStatus("failed");
       rollbackStartupAgentSkills();
       return;
-    }
-    if (app.isPackaged) {
-      if (runtimeManifestProblems.length > 0) {
-        mainWindow?.webContents.send(
-          "gateway:log",
-          `[warn][stage=verify-manifest] 运行资源校验未通过：${runtimeManifestProblems.join("; ")}`,
-        );
-      } else if (runtimeManifestChecked !== null) {
-        mainWindow?.webContents.send(
-          "gateway:log",
-          `[info][stage=verify-manifest] 运行资源完整（已校验 ${runtimeManifestChecked} 项）`,
-        );
-      }
     }
 
     console.log(
@@ -4060,7 +3941,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     // Initialize tool sandbox for AI agent command sandboxing.
     // Gateway runs outside AppContainer, but tool commands are routed
     // through AppContainer via preload interception.
-    toolSandbox = new ToolSandbox(launcherPath, nodePath, stateDir);
+    toolSandbox = new ToolSandbox(launcherPath, nodePath);
 
     // Restore sandbox enabled state from settings
     const sandboxEnabled = settingsStore.get("sandboxEnabled") && !isWindowsNodeMxcDesired();
@@ -4191,12 +4072,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     ];
 
     logStartupTiming("gateway-spawn");
-    mainWindow?.webContents.send(
-      "gateway:log",
-      `[info][stage=spawn] node=${nodePath} entry=${entryPath} port=${configuredPort} stateDir=${stateDir} auth=${
-        gatewayToken ? "configured" : "missing"
-      }`,
-    );
     const child = spawn(nodePath, gwArgs, {
       cwd: path.dirname(entryPath),
       env: gwEnv,
@@ -4254,11 +4129,7 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
         stopBundledWindowsNodeHost();
         gatewayProcess = null;
         gatewaySpawnedByUs = false;
-        reportGatewayFailure(
-          "spawn",
-          `Gateway 进程创建失败：${err.message}（node=${nodePath}）`,
-          "若为“文件不存在/拒绝访问”，请重新运行 CompanyClaw 安装包执行修复安装。",
-        );
+        setGatewayStatus("failed");
       }
     });
 
@@ -4614,10 +4485,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     });
 
     // Wait for gateway to become ready
-    mainWindow?.webContents.send(
-      "gateway:log",
-      `[info][stage=auth] token=${gatewayToken ? "configured" : "missing"} port=${configuredPort}`,
-    );
     setGatewayStatus("starting");
 
     const ready = await waitForGatewayReady(
@@ -4629,8 +4496,6 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       try {
         logStartupTiming("gateway-ready");
         commitStartupAgentSkills();
-        gatewayFailureStage = null;
-        gatewayFailureReason = null;
         setGatewayStatus("running");
       } catch (error) {
         stopGatewayProcess();
@@ -4654,20 +4519,13 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
         "gateway:log",
         `[warn] Gateway health check timed out on port ${configuredPort}`,
       );
+      mainWindow?.webContents.send(
+        "gateway:log",
+        `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`,
+      );
       stopGatewayProcess();
       rollbackStartupAgentSkills();
-      const stderrTail = startupStderr.trim().split(/\r?\n/).slice(-10).join("\n");
-      reportGatewayFailure(
-        "health",
-        `${
-          child.exitCode !== null
-            ? `Gateway 进程在启动阶段退出（exit=${child.exitCode}）`
-            : `Gateway 健康检查超时（port=${configuredPort}，等待 ${GATEWAY_READY_TIMEOUT_MS}ms）`
-        }；node=${nodePath} entry=${entryPath} stateDir=${stateDir}${
-          stderrTail ? `；最近日志：\n${stderrTail}` : ""
-        }`,
-        "可在“设置 → 日志”导出完整启动日志用于排查。",
-      );
+      setGatewayStatus("timeout");
       signalPostInstallFailure(
         new Error(
           child.exitCode !== null
@@ -4899,8 +4757,6 @@ function connectGatewayWs(): void {
       // A stale gateway (from a previous install / scheduled task) is running
       // with a different token. Kill it and restart with our token.
       console.log(`[gateway-ws] auth error: ${message} — killing stale gateway`);
-      gatewayFailureStage = "auth";
-      gatewayFailureReason = `网关鉴权失败（token 不匹配）：${message}`;
       mainWindow?.webContents.send("gateway:log", `[warn] 网关认证失败 (token 不匹配)，正在重启…`);
       if (!wsAuthRestartInProgress) {
         wsAuthRestartInProgress = true;
@@ -5283,7 +5139,7 @@ function registerIpcHandlers(): void {
     const homeDir = app.getPath("home");
     const builtinDir = resolveBuiltinSkillsDir();
     const customDir = path.join(homeDir, ".agents", "skills");
-    const managedDir = path.join(getOpenClawStateDir(), "skills");
+    const managedDir = path.join(homeDir, ".openclaw", "skills");
 
     // Build (or reuse) the PATH executable index used to resolve skill dependencies.
     const pathIndex = getPathExecutableIndex(forceRebuildPathIndex);
@@ -8469,9 +8325,7 @@ app.whenReady().then(async () => {
   try {
     const home = app.getPath("home");
     const microclawRoot = path.join(home, ".microclaw");
-    // The upgrade transaction only ever manages this application's own state
-    // directory, never a separately installed OpenClaw's.
-    const expectedStateDir = getOpenClawStateDir();
+    const expectedStateDir = path.join(home, ".openclaw");
     const installerOwnsUpgrade =
       typeof postInstallTransactionId === "string" &&
       validateInstallerOwnedUpgrade(microclawRoot, postInstallTransactionId, {

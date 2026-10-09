@@ -1,0 +1,80 @@
+npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> microclaw@1.0.0 dev
+> concurrently -n vite,electron "npm run dev:renderer" "npm run dev:electron"
+
+[vite] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] 
+[vite] > microclaw@1.0.0 dev:renderer
+[vite] > cd renderer && npm run dev
+[vite] 
+[electron] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[electron] 
+[electron] > microclaw@1.0.0 dev:electron
+[electron] > tsc && electron .
+[electron] 
+[vite] npm warn Unknown env config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown env config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "unsafe-perm". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "es5-ext". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] npm warn Unknown user config "config". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[vite] 
+[vite] > openclaw-renderer@1.0.0 dev
+[vite] > vite
+[vite] 
+[vite] 
+[vite]   VITE v6.4.2  ready in 819 ms
+[vite] 
+[vite]   ➜  Local:   http://localhost:5174/
+[vite]   ➜  Network: use --host to expose
+[electron] 
+[electron] [startup-timing] app-ready +64ms
+[electron] [companyclaw] Security-core IPC registered (owner=S-1-5-21-38424463-2205608999-488602407-1001, broker=D:\code\ai\MicroClaw\code\CompanyClaw\broker)
+[electron] No skill integrity snapshot found — generating baseline (installer may not have run)...
+[electron] [startup-timing] integrity-complete +664ms
+[electron] [startup-timing] gateway-requested +664ms
+[electron] [companyclaw] First-run configuration written: gateway.auth.mode, browser.enabled
+[electron] [startup-timing] gateway-preflight-start +811ms
+[electron] [seed] Patched SOUL.md with Pre-declaring File System Access section
+[electron] [seed] Removed C:\Users\guojl\.openclaw\workspace\BOOTSTRAP.md to skip OOBE
+[electron] [startup-timing] gateway-existing-check-complete +1003ms
+[electron] [config] Registered agent personas: main
+[electron] [seed] Created specialist agent workspace files: C:\Users\guojl\.openclaw\workspace\IDENTITY.md, C:\Users\guojl\.openclaw\workspace\SOUL.md
+[electron] [startup-timing] gateway-stop-complete +1141ms
+[electron] [error] node.exe not found at node
+[electron] [117380:1009/141132.826:ERROR:CONSOLE(1)] "Unknown VE context: language-mismatch    at new He (devtools://devtools/bundled/ui/legacy/legacy.js:1:98356)
+[electron]     at devtools://devtools/bundled/ui/legacy/legacy.js:1:191793
+[electron]     at new oi (devtools://devtools/bundled/ui/legacy/legacy.js:1:192189)
+[electron]     at oi.instance (devtools://devtools/bundled/ui/legacy/legacy.js:1:192311)
+[electron]     at H.presentUI (devtools://devtools/bundled/entrypoints/main/main.js:1:27708)
+[electron]     at #I (devtools://devtools/bundled/entrypoints/main/main.js:1:17314)
+[electron]     at #x (devtools://devtools/bundled/entrypoints/main/main.js:1:17109)", source: devtools://devtools/bundled/ui/visual_logging/visual_logging.js (1)
+[electron] [startup-timing] renderer-loaded +3383ms
+[electron] [117380:1009/141133.202:ERROR:CONSOLE(1)] "Request Autofill.enable failed. {"code":-32601,"message":"'Autofill.enable' wasn't found"}", source: devtools://devtools/bundled/core/protocol_client/protocol_client.js (1)
+[electron] [117380:1009/141133.203:ERROR:CONSOLE(1)] "Request Autofill.setAddresses failed. {"code":-32601,"message":"'Autofill.setAddresses' wasn't found"}", source: devtools://devtools/bundled/core/protocol_client/protocol_client.js (1)
+[electron] [startup-timing] gateway-preflight-start +13763ms
+[electron] [startup-timing] gateway-existing-check-complete +13905ms
+[electron] [config] Registered agent personas: main
+[electron] [seed] Created specialist agent workspace files: C:\Users\guojl\.openclaw\workspace\IDENTITY.md, C:\Users\guojl\.openclaw\workspace\SOUL.md
+[electron] [startup-timing] gateway-stop-complete +14006ms
+[electron] [error] node.exe not found at node
+[electron] [startup-timing] gateway-preflight-start +22497ms
+[electron] [startup-timing] gateway-existing-check-complete +22626ms
+[electron] [config] Registered agent personas: main
+[electron] [seed] Created specialist agent workspace files: C:\Users\guojl\.openclaw\workspace\IDENTITY.md, C:\Users\guojl\.openclaw\workspace\SOUL.md
+[electron] [startup-timing] gateway-stop-complete +22776ms
+[electron] [error] node.exe not found at node
+[electron] [117380:1009/141157.758:ERROR:CONSOLE(1)] "Uncaught (in promise) SyntaxError: Unexpected token 'H', "HTTP/1.1 4"... is not valid JSON", source: devtools://devtools/bundled/devtools_app.html?remoteBase=https://chrome-devtools-frontend.appspot.com/serve_file/@489e8d697bf90ea3b7a7d5268ca2f253b19ed60c/&can_dock=&toolbarColor=rgba(223,223,223,1)&textColor=rgba(0,0,0,1)&experiments=true (1)

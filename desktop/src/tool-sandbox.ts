@@ -70,7 +70,7 @@ export class ToolSandbox {
   /** Apps that bypass AppContainer (e.g. "outlook", "chrome", "excel"). */
   private externalApps: string[] = [];
 
-  constructor(launcherPath: string | null, nodePath: string) {
+  constructor(launcherPath: string | null, nodePath: string, stateDir?: string) {
     this.launcherPath = launcherPath;
     this.nodePath = nodePath;
 
@@ -78,12 +78,15 @@ export class ToolSandbox {
     // for system dirs. ACL verify and Settings UI both read from getStatus().
     const home = process.env.USERPROFILE || "";
     if (home) {
-      // OpenClaw state dir (read-write)
-      this.sandboxDirsRW.push(path.join(home, ".openclaw"));
-      // Sandbox workspace for tool output
-      const sandboxWorkDir = path.join(home, ".openclaw", "sandbox");
-      if (!fs.existsSync(sandboxWorkDir)) {
-        fs.mkdirSync(sandboxWorkDir, { recursive: true });
+      // OpenClaw state dir (read-write). This must be the directory this
+      // application actually runs OpenClaw from; granting another
+      // installation's state dir would widen the sandbox for no reason.
+      if (stateDir) {
+        this.sandboxDirsRW.push(stateDir);
+        const sandboxWorkDir = path.join(stateDir, "sandbox");
+        if (!fs.existsSync(sandboxWorkDir)) {
+          fs.mkdirSync(sandboxWorkDir, { recursive: true });
+        }
       }
       // Node.js runtime (read-only)
       this.sandboxDirsRO.push(path.join(home, ".openclaw-node"));

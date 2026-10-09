@@ -77,28 +77,6 @@ if (-not $nodeFound) {
     exit 1
 }
 
-# -- Build-machine prerequisite: .NET SDK -------------------------------------
-# AppContainerLauncher (net9.0-windows), the bundled Windows Node host and the
-# MXC host-prep patch (net10.0-windows) are compiled here. Employees never need
-# .NET: these artifacts ship prebuilt inside the installer. A missing SDK is a
-# build-machine/CI gap and must say so instead of failing later inside dotnet.
-$dotnetCmd = Get-Command dotnet -ErrorAction SilentlyContinue
-$installedSdks = @()
-if ($dotnetCmd) {
-    $sdkOutput = & $dotnetCmd.Source --list-sdks 2>$null
-    if ($LASTEXITCODE -eq 0 -and $sdkOutput) {
-        $installedSdks = @($sdkOutput | Where-Object { $_ -match '^\d+\.\d+\.' })
-    }
-}
-if ($installedSdks.Count -eq 0) {
-    Write-Host "  ERROR: .NET SDK not found on this build machine." -ForegroundColor Red
-    Write-Host "  Required workloads: net9.0-windows (appcontainer), net10.0-windows (windows-node-host, mxc-host-prep-patch)." -ForegroundColor Red
-    Write-Host "  Install the SDK on the build machine or in CI (https://dotnet.microsoft.com/download), then re-run build.ps1." -ForegroundColor Red
-    Write-Host "  Note: employee machines never install .NET - these binaries are shipped prebuilt." -ForegroundColor Yellow
-    exit 1
-}
-Write-Host "  .NET SDKs: $($installedSdks -join ', ')"
-
 $windowsNodeSharedProject = "$root\third_party\openclaw-windows-node\source\src\OpenClaw.Shared\OpenClaw.Shared.csproj"
 if (-not (Test-Path $windowsNodeSharedProject)) {
     Write-Host "  Initializing pinned OpenClaw Windows Node source..." -ForegroundColor Yellow

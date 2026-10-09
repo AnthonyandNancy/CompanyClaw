@@ -51,6 +51,12 @@
 - **解除条件**：构建机安装 .NET SDK（工作负载见 `windows-node-host`/`appcontainer` 目标框架）。
 - **规避**：Broker 采用 Node.js 实现可绕过此阻塞（Node v26.7.0 已具备），且 .NET 产物以 `--self-contained -p:PublishSingleFile=true` 发布，**员工机器永不需要 .NET 运行时或 SDK**。
 - **对员工的影响**：无。MXC 组件预编译进包，员工不需要任何 .NET 组件。
+- **2026-10-09 生产启动链路专项复核（本轮）**：
+  - 复现证据：`desktop/dev-launch.log` 连续出现 `[error] node.exe not found at node`，界面显示"服务启动失败，请重试"。
+  - 根因（已修）：`resolveNodePath()` 在无标准安装位时返回裸命令名 `"node"`，而 `main.ts` 用 `fs.existsSync("node")` 判定，对裸命令名恒为 `false`。
+  - 修复落点：`desktop/src/path-resolver.ts`（打包态仅认 `resources/node.exe`；开发态 PATH 候选改为绝对路径）、`desktop/src/main.ts`（`reportGatewayFailure` 阶段化诊断，移除 `.openclaw-node` 误导提示）。
+  - 构建侧诊断（新增）：`build.ps1` 与 `desktop/scripts/prepare-windows-node-resources.mjs` 在缺 .NET SDK 时给出构建机提示，不再以 `exit code` 终止。
+  - **未解除**：本机仍无 .NET SDK，`npm run release:win` 无法产出 NSIS 安装包；打包态与干净机验收维持 `BLOCKED`/`UNVERIFIED`。
 
 ## B5｜上游子模块未初始化
 
