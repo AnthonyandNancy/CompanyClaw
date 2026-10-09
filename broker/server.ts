@@ -42,17 +42,28 @@ export interface BrokerServerOptions {
   token: string;
   now?: () => Date;
   verifyTicket?: (request: BrokerRequest) => boolean;
-  listWindows?: (options: { scriptDir: string }) => Promise<
-    { ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }
-  >;
+  listWindows?: (options: {
+    scriptDir: string;
+  }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
   /** Injectable element reader; defaults to the real UIA probe. */
   findElements?: (options: FindElementsProbeOptions) => Promise<
-    | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
+    | {
+        ok: true;
+        value: { window: { name: string; processId: number }; elements: ElementDescriptor[] };
+      }
     | { ok: false; reason: string }
   >;
   /** Injectable element operations; default to the real UIA probes. */
   readValue?: (options: ElementOperationOptions) => Promise<
-    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; value: string | null; valueReadable: boolean } }
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          value: string | null;
+          valueReadable: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
   setValue?: (options: ElementOperationOptions & { newValue: string }) => Promise<
@@ -69,8 +80,18 @@ export interface BrokerServerOptions {
       }
     | { ok: false; reason: string }
   >;
-  invokePattern?: (options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" }) => Promise<
-    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
+  invokePattern?: (
+    options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" },
+  ) => Promise<
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          pattern: string;
+          invoked: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
   sendKeys?: (options: ElementOperationOptions & { text: string; append?: boolean }) => Promise<
@@ -87,6 +108,8 @@ export interface BrokerServerOptions {
       }
     | { ok: false; reason: string }
   >;
+  /** Overridable so tests do not have to wait real time. */
+  wait?: (ms: number) => Promise<void>;
 }
 
 export interface ElementOperationOptions {
@@ -128,15 +151,14 @@ export function defaultScriptDir(): string {
   return path.join(__dirname, "scripts");
 }
 
-export async function startBrokerServer(
-  options: BrokerServerOptions,
-): Promise<BrokerServerHandle> {
+export async function startBrokerServer(options: BrokerServerOptions): Promise<BrokerServerHandle> {
   const now = options.now ?? (() => new Date());
   const policy = new BrokerPolicy(options.policyConfig, {
     now,
     verifyTicket: options.verifyTicket,
   });
-  const listWindows = options.listWindows ?? ((opts) => runListWindows({ scriptDir: opts.scriptDir }));
+  const listWindows =
+    options.listWindows ?? ((opts) => runListWindows({ scriptDir: opts.scriptDir }));
   const findElements =
     options.findElements ?? ((opts) => runFindElements({ ...opts, scriptDir: opts.scriptDir }));
   const readValue =
@@ -144,10 +166,11 @@ export async function startBrokerServer(
   const setValue =
     options.setValue ?? ((opts) => runSetValue({ ...opts, scriptDir: opts.scriptDir }));
   const invokePattern =
-    options.invokePattern ??
-    ((opts) => runInvokePattern({ ...opts, scriptDir: opts.scriptDir }));
+    options.invokePattern ?? ((opts) => runInvokePattern({ ...opts, scriptDir: opts.scriptDir }));
   const sendKeys =
     options.sendKeys ?? ((opts) => runSendKeys({ ...opts, scriptDir: opts.scriptDir }));
+  const wait =
+    options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   const server: Server = createServer((socket) => {
     handleConnection(socket, {
@@ -161,6 +184,7 @@ export async function startBrokerServer(
       setValue,
       invokePattern,
       sendKeys,
+      wait,
     });
   });
 
@@ -190,15 +214,26 @@ interface ConnectionContext {
   scriptDir: string;
   token: string;
   now: () => Date;
-  listWindows: (options: { scriptDir: string }) => Promise<
-    { ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }
-  >;
+  listWindows: (options: {
+    scriptDir: string;
+  }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
   findElements: (options: FindElementsProbeOptions) => Promise<
-    | { ok: true; value: { window: { name: string; processId: number }; elements: ElementDescriptor[] } }
+    | {
+        ok: true;
+        value: { window: { name: string; processId: number }; elements: ElementDescriptor[] };
+      }
     | { ok: false; reason: string }
   >;
   readValue: (options: ElementOperationOptions) => Promise<
-    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; value: string | null; valueReadable: boolean } }
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          value: string | null;
+          valueReadable: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
   setValue: (options: ElementOperationOptions & { newValue: string }) => Promise<
@@ -218,7 +253,15 @@ interface ConnectionContext {
   invokePattern: (
     options: ElementOperationOptions & { pattern?: "Invoke" | "SelectionItem" },
   ) => Promise<
-    | { ok: true; value: { window: WindowIdentity; element: ElementSummary; pattern: string; invoked: boolean } }
+    | {
+        ok: true;
+        value: {
+          window: WindowIdentity;
+          element: ElementSummary;
+          pattern: string;
+          invoked: boolean;
+        };
+      }
     | { ok: false; reason: string }
   >;
   sendKeys: (options: ElementOperationOptions & { text: string; append?: boolean }) => Promise<
@@ -235,6 +278,11 @@ interface ConnectionContext {
       }
     | { ok: false; reason: string }
   >;
+  /**
+   * Pause between window-list polls; injectable so wait-for-window can be
+   * tested without real delays.
+   */
+  wait: (ms: number) => Promise<void>;
 }
 
 function handleConnection(socket: Socket, context: ConnectionContext): void {
@@ -330,6 +378,8 @@ export async function executeAuthorized(
     | "setValue"
     | "invokePattern"
     | "sendKeys"
+    | "wait"
+    | "now"
   >,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
@@ -351,7 +401,8 @@ export async function executeAuthorized(
     case "find-elements": {
       const processName = request.target?.processName;
       if (!processName) return { status: "rejected", reason: "target-required" };
-      const maxDepth = typeof request.args?.maxDepth === "number" ? request.args.maxDepth : undefined;
+      const maxDepth =
+        typeof request.args?.maxDepth === "number" ? request.args.maxDepth : undefined;
       const maxElements =
         typeof request.args?.maxElements === "number" ? request.args.maxElements : undefined;
       const result = await context.findElements({
@@ -421,12 +472,122 @@ export async function executeAuthorized(
       }
       return { status: "ok", data: result.value };
     }
-    case "describe-element":
-    case "wait-for-window":
-      return { status: "failed", reason: "not-implemented" };
+    case "describe-element": {
+      // Reuses the existing control-tree probe: an element summary already
+      // carries name / automationId / controlType / className / isEnabled /
+      // processId, which is what a caller needs to address a control without
+      // ever relying on screen coordinates.
+      const processName = request.target?.processName;
+      if (!processName) return { status: "rejected", reason: "target-required" };
+      // Validate the request before touching the desktop: a malformed selector
+      // must not cost a probe.
+      const selector = normalizeElementSelector(request.args?.selector);
+      if (!selector.ok) return { status: "rejected", reason: selector.reason };
+      const described = await context.findElements({
+        scriptDir: context.scriptDir,
+        processName,
+        ...(request.target?.windowTitle ? { windowTitle: request.target.windowTitle } : {}),
+        ...(typeof request.args?.maxDepth === "number" ? { maxDepth: request.args.maxDepth } : {}),
+        ...(typeof request.args?.maxElements === "number"
+          ? { maxElements: request.args.maxElements }
+          : {}),
+      });
+      if (!described.ok) return { status: "failed", reason: described.reason };
+      const matchedElements = selector.value;
+      const matched = matchedElements
+        ? described.value.elements.filter((element) => matchesSelector(element, matchedElements))
+        : described.value.elements;
+      // Ambiguity is reported rather than resolved: silently picking one of
+      // several matches would automate whichever record the tree happened to
+      // list first.
+      return {
+        status: "ok",
+        data: {
+          window: described.value.window,
+          elements: matched,
+          matchCount: matched.length,
+          unique: matched.length === 1,
+        },
+      };
+    }
+    case "wait-for-window": {
+      const processName = request.target?.processName;
+      if (!processName) return { status: "rejected", reason: "target-required" };
+      const timeoutMs = readBoundedNumber(request.args?.timeoutMs, 30_000, 1_000, 120_000);
+      if (timeoutMs === null) return { status: "rejected", reason: "invalid-timeout" };
+      const windowTitle = request.target?.windowTitle;
+      const wanted = processName.replace(/\.exe$/i, "").toLowerCase();
+      // Uses the context clock rather than Date.now(): the deadline then
+      // follows the same notion of time as the rest of the request, so a test
+      // can drive it without waiting for the wall clock.
+      const deadline = context.now().getTime() + timeoutMs;
+      for (;;) {
+        const listed = await context.listWindows({ scriptDir: context.scriptDir });
+        if (!listed.ok) return { status: "failed", reason: listed.reason };
+        const found = listed.value.filter(
+          (window) =>
+            window.processName.replace(/\.exe$/i, "").toLowerCase() === wanted &&
+            (!windowTitle || window.name.includes(windowTitle)),
+        );
+        if (found.length > 0) return { status: "ok", data: { windows: found } };
+        if (context.now().getTime() >= deadline) {
+          // Its own reason: "the window never appeared" is a different fault
+          // from "the probe failed", and callers react differently to each.
+          return { status: "failed", reason: "wait-timeout" };
+        }
+        await context.wait(WINDOW_POLL_INTERVAL_MS);
+      }
+    }
     default:
       return { status: "rejected", reason: "unsupported-operation" };
   }
+}
+
+/** How often wait-for-window re-reads the window list while waiting. */
+const WINDOW_POLL_INTERVAL_MS = 500;
+
+/** Parses a numeric argument, bounded on both sides; null when unusable. */
+function readBoundedNumber(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number | null {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (raw < min || raw > max) return null;
+  return raw;
+}
+
+/**
+ * Normalizes a `describe-element` selector.
+ *
+ * An empty selector is rejected: without a filter the caller would receive the
+ * whole tree and could then act on the wrong control.
+ */
+function normalizeElementSelector(
+  raw: unknown,
+): { ok: true; value: ElementSelector | null } | { ok: false; reason: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== "object") return { ok: false, reason: "invalid-selector" };
+  const record = raw as Record<string, unknown>;
+  const selector: ElementSelector = {};
+  for (const key of ["automationId", "name", "controlType", "className"] as const) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) selector[key] = value;
+  }
+  if (Object.keys(selector).length === 0) return { ok: false, reason: "empty-selector" };
+  return { ok: true, value: selector };
+}
+
+function matchesSelector(element: ElementSummary, selector: ElementSelector): boolean {
+  if (selector.automationId && element.automationId !== selector.automationId) return false;
+  if (selector.controlType && element.controlType !== selector.controlType) return false;
+  if (selector.className && element.className !== selector.className) return false;
+  // Names are matched by containment: controls often prefix their label with
+  // state ("* Amount"), and an exact match would find nothing.
+  if (selector.name && !element.name.includes(selector.name)) return false;
+  return true;
 }
 
 /** Builds the element-addressing options the three element scripts share. */

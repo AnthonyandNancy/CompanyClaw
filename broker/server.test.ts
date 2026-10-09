@@ -69,8 +69,10 @@ async function withServer<T>(
     listWindows: async () => ({
       ok: true,
       value: [
-        { name: "无标题 - 记事本", processId: 111, automationId: "" },
-        { name: "Book1 - Excel", processId: 222, automationId: "" },
+        // `parseWindowList` always fills processName; the fixture has to carry
+        // it too or the window filter cannot match on the real key.
+        { name: "无标题 - 记事本", processId: 111, processName: "notepad", automationId: "" },
+        { name: "Book1 - Excel", processId: 222, processName: "excel", automationId: "" },
       ],
     }),
     ...overrides,
@@ -326,23 +328,162 @@ describe("broker server transport", () => {
     );
   });
 
-  it("reports not-implemented for the operations that are still genuinely absent", async () => {
-    for (const operation of ["describe-element", "wait-for-window"] as const) {
-      await withServer(
-        async (port) => {
-          const response = await roundTrip(port, {
-            token: TOKEN,
-            request: makeRequest({
-              operation,
-              target: { processName: "notepad" },
-              args: { selector: { automationId: "edit-1" } },
-            }),
-          });
-          expect(response).toMatchObject({ status: "failed", reason: "not-implemented" });
+  it("describes a target control without relying on coordinates", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "describe-element",
+            target: { processName: "notepad" },
+            args: { selector: { automationId: "edit-1" } },
+          }),
+        });
+        expect(response).toMatchObject({
+          status: "ok",
+          data: { matchCount: 1, unique: true },
+        });
+      },
+      {
+        findElements: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            elements: [
+              {
+                name: "文本编辑器",
+                automationId: "edit-1",
+                controlType: "Edit",
+                className: "Edit",
+                isEnabled: true,
+                processId: 111,
+                depth: 2,
+              },
+            ],
+          },
+        }),
+      },
+    );
+  });
+
+  it("reports ambiguity instead of picking one of several matches", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "describe-element",
+            target: { processName: "notepad" },
+            args: { selector: { controlType: "Edit" } },
+          }),
+        });
+        // Two controls match; the caller has to decide, not the broker.
+        expect(response).toMatchObject({ status: "ok", data: { matchCount: 2, unique: false } });
+      },
+      {
+        findElements: async () => ({
+          ok: true,
+          value: {
+            window: { name: "无标题 - 记事本", processId: 111 },
+            elements: [
+              {
+                name: "A",
+                automationId: "edit-1",
+                controlType: "Edit",
+                className: "Edit",
+                isEnabled: true,
+                processId: 111,
+                depth: 2,
+              },
+              {
+                name: "B",
+                automationId: "edit-2",
+                controlType: "Edit",
+                className: "Edit",
+                isEnabled: true,
+                processId: 111,
+                depth: 2,
+              },
+            ],
+          },
+        }),
+      },
+    );
+  });
+
+  it("rejects an empty describe-element selector", async () => {
+    await withServer(async (port) => {
+      const response = await roundTrip(port, {
+        token: TOKEN,
+        request: makeRequest({
+          operation: "describe-element",
+          target: { processName: "notepad" },
+          args: { selector: {} },
+        }),
+      });
+      expect(response).toMatchObject({ status: "rejected", reason: "empty-selector" });
+    });
+  });
+
+  it("waits for a window that is already present", async () => {
+    await withServer(async (port) => {
+      const response = await roundTrip(port, {
+        token: TOKEN,
+        request: makeRequest({
+          operation: "wait-for-window",
+          target: { processName: "notepad" },
+          args: { timeoutMs: 1000 },
+        }),
+      });
+      expect(response).toMatchObject({ status: "ok" });
+    });
+  });
+
+  it("reports wait-timeout with its own reason when the window never appears", async () => {
+    let polls = 0;
+    // The deadline follows the injected clock, so this test drives time rather
+    // than waiting for the wall clock.
+    // Starts at the same instant the policy uses, so the request itself stays
+    // valid while the deadline advances.
+    const clock = { value: NOW().getTime() };
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "wait-for-window",
+            target: { processName: "notepad", windowTitle: "不存在的标题" },
+            args: { timeoutMs: 1000 },
+          }),
+        });
+        // "The window never appeared" is a different fault from a probe
+        // failure, and the caller reacts differently to each.
+        expect(response).toMatchObject({ status: "failed", reason: "wait-timeout" });
+        expect(polls).toBeGreaterThan(1);
+      },
+      {
+        now: () => new Date(clock.value),
+        // notepad is allowed by the policy but no window carries this title.
+        wait: async () => {
+          polls += 1;
+          clock.value += 400;
         },
-        { verifyTicket: () => true },
-      );
-    }
+      },
+    );
+  });
+
+  it("rejects an out-of-range wait timeout", async () => {
+    await withServer(async (port) => {
+      const response = await roundTrip(port, {
+        token: TOKEN,
+        request: makeRequest({
+          operation: "wait-for-window",
+          target: { processName: "notepad" },
+          args: { timeoutMs: 999_999 },
+        }),
+      });
+      expect(response).toMatchObject({ status: "rejected", reason: "invalid-timeout" });
+    });
   });
 
   it("refuses a send-keys request whose text never reached the control", async () => {
