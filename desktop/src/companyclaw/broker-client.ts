@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
 import { connect, type Socket } from "node:net";
 import * as path from "node:path";
 import { createBrokerExecutionToken } from "./broker-proof";
@@ -42,6 +43,26 @@ export interface BrokerClientOptions {
 /** Mutable view of the options this client was built with. */
 type MutableBrokerOptions = BrokerClientOptions;
 
+/**
+ * Failure codes a caller can match on.
+ *
+ * A missing runtime and a missing entry point are different installation
+ * faults, and the user-facing text differs, so they are never collapsed into
+ * one "broker unavailable".
+ */
+export const BROKER_RUNTIME_NOT_FOUND = "BROKER_RUNTIME_NOT_FOUND";
+export const BROKER_ENTRY_INVALID = "BROKER_ENTRY_INVALID";
+/** Returned once the automatic restarts have been used up. */
+export const BROKER_RESTART_LIMIT = "broker-restart-limit";
+
+/**
+ * How many times a dead broker may be restarted automatically.
+ *
+ * A broker that keeps dying is a broken installation, not a transient fault;
+ * restarting it forever would hide that and leave the user waiting.
+ */
+export const MAX_BROKER_RESTARTS = 2;
+
 export interface BrokerCallOptions {
   operation: BrokerOperation;
   taskId: string;
@@ -68,6 +89,8 @@ export interface BrokerClientStatus {
   nodePath: string | null;
   lastSuccessfulCallAt: string | null;
   lastFailureReason: string | null;
+  /** Automatic restarts consumed so far. */
+  restarts: number;
 }
 
 export class BrokerClient {
@@ -78,6 +101,11 @@ export class BrokerClient {
   private readonly now: () => Date;
   private lastSuccessfulCallAt: string | null = null;
   private lastFailureReason: string | null = null;
+  private restarts = 0;
+  /** Set while stop() is terminating the process on purpose. */
+  private stopping = false;
+  /** True once a broker process has been seen to exit on its own. */
+  private exited = false;
 
   constructor(private readonly options: MutableBrokerOptions) {
     this.now = options.now ?? (() => new Date());
@@ -95,6 +123,7 @@ export class BrokerClient {
       nodePath: this.options.nodePath ?? null,
       lastSuccessfulCallAt: this.lastSuccessfulCallAt,
       lastFailureReason: this.lastFailureReason,
+      restarts: this.restarts,
     };
   }
 
@@ -109,6 +138,9 @@ export class BrokerClient {
       await this.starting;
     } catch (error) {
       this.starting = null;
+      // Record why the broker could not start: the status is the only place a
+      // user or a log can learn that a component is missing from the install.
+      this.lastFailureReason = error instanceof Error ? error.message : String(error);
       throw error;
     }
   }
@@ -119,6 +151,15 @@ export class BrokerClient {
     // The broker always runs on the bundled private Node runtime; falling back
     // to process.execPath only keeps source checkouts and unit tests working.
     const command = this.options.nodePath ?? process.execPath;
+    // Check both files before spawning. Without this the only symptom is a
+    // timeout or an opaque exit code, which tells neither the user nor the log
+    // which component is missing from the installation.
+    if (command !== process.execPath && !fs.existsSync(command)) {
+      throw new Error(`${BROKER_RUNTIME_NOT_FOUND}: ${command}`);
+    }
+    if (!fs.existsSync(entry)) {
+      throw new Error(`${BROKER_ENTRY_INVALID}: ${entry}`);
+    }
     const child = spawnProcess(command, [entry], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -133,6 +174,17 @@ export class BrokerClient {
       },
     });
     this.child = child;
+    // Watch the process for as long as it lives, not only until it announces a
+    // port: a broker that dies later must stop looking "alive", otherwise every
+    // later call is sent to a socket nobody is listening on.
+    child.once("exit", (code) => {
+      if (this.child !== child) return;
+      this.child = null;
+      this.port = 0;
+      this.exited = true;
+      if (this.stopping) return;
+      this.lastFailureReason = `broker exited (code=${code ?? "null"})`;
+    });
 
     const port = await this.awaitPort(child);
     this.port = port;
@@ -182,6 +234,9 @@ export class BrokerClient {
     this.options.allowedProcesses = [...targets.allowedProcesses];
     this.options.allowedWindowTitles = [...targets.allowedWindowTitles];
     if (!wasRunning) return;
+    // stop() restores the restart budget: replacing the process for a new
+    // allow list is deliberate, so editing the list a few times must not lock
+    // the user out of the broker.
     await this.stop();
   }
 
@@ -191,7 +246,11 @@ export class BrokerClient {
     this.child = null;
     this.port = 0;
     this.starting = null;
-    if (!child) return;
+    this.stopping = true;
+    if (!child) {
+      this.stopping = false;
+      return;
+    }
     await new Promise<void>((resolve) => {
       let settled = false;
       const done = () => {
@@ -215,10 +274,24 @@ export class BrokerClient {
         done();
       }, 5_000);
     });
+    this.stopping = false;
+    // A broker stopped on purpose was not a failure, so the restart budget is
+    // restored for the next legitimate start.
+    this.exited = false;
+    this.restarts = 0;
   }
 
   async call(options: BrokerCallOptions): Promise<BrokerCallResult> {
     if (!this.isRunning()) {
+      // The broker exists to be reached; an installation whose runtime or entry
+      // point is missing is a fault the user has to see, not something to retry
+      // forever. Restarts are counted so a crash loop cannot hide behind them.
+      if (this.exited && this.restarts >= MAX_BROKER_RESTARTS) {
+        const reason = `${BROKER_RESTART_LIMIT}: broker stopped ${this.restarts} times`;
+        this.lastFailureReason = reason;
+        return { ok: false, unavailable: true, reason };
+      }
+      if (this.exited) this.restarts += 1;
       try {
         await this.start();
       } catch (error) {

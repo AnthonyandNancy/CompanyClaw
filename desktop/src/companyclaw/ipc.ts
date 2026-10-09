@@ -128,6 +128,7 @@ export function registerCompanyClawIpcHandlers(
       nodePath: options.nodePath ?? null,
       lastSuccessfulCallAt: null,
       lastFailureReason: null,
+      restarts: 0,
     };
 
   ipcMain.handle("companyclaw:get-remote-authorization", () => runtime.getRemoteAuthorization());

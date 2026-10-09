@@ -46,7 +46,7 @@ import {
   registerCompanyClawIpcHandlers,
   type CompanyClawRuntimeHandle,
 } from "./companyclaw/ipc";
-import { resolveBrokerDir } from "./companyclaw/broker-paths";
+import { resolveBrokerRuntimePaths } from "./companyclaw/broker-paths";
 import { resolveOwnerSid } from "./companyclaw/owner-sid";
 import {
   findEdgeExecutable,
@@ -8026,21 +8026,24 @@ function registerIpcHandlers(): void {
       randomUUID(),
     );
     companyClawOwnerSid = resolveOwnerSid();
+    // The broker must run on the bundled private Node runtime: in a packaged
+    // build process.execPath is CompanyClaw.exe, which cannot execute the
+    // broker's JavaScript entry point. Resolving the runtime and the entry
+    // point together keeps them from coming out of different installations.
+    const brokerPaths = resolveBrokerRuntimePaths({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      nodePath: resolveNodePath(),
+    });
     const companyClawOptions = {
       userDataDir: companyClawUserDataDir,
       ticketSecret,
       ownerSid: companyClawOwnerSid,
       deviceId: deviceIdentity.deviceId,
-      // The broker must run on the bundled private Node runtime: in a packaged
-      // build process.execPath is CompanyClaw.exe, which cannot execute the
-      // broker's JavaScript entry point.
-      nodePath: resolveNodePath(),
+      ...(brokerPaths.nodePath ? { nodePath: brokerPaths.nodePath } : {}),
       broker: {
-        brokerDir: resolveBrokerDir({
-          isPackaged: app.isPackaged,
-          resourcesPath: process.resourcesPath,
-          appPath: app.getAppPath(),
-        }),
+        brokerDir: brokerPaths.brokerDir,
       },
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
