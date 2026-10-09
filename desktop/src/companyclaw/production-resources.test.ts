@@ -33,10 +33,45 @@ describe("unified production resource pipeline", () => {
       "openclaw.asar",
       "companyclaw-broker",
       "runtime-manifest.json",
+      // The employee machine has no npm, so the patched plugin, its runtime
+      // dependencies and every catalog skill are assembled here.
+      "openclaw-weixin",
+      "agent-skills",
     ]) {
       expect(script).toContain(produced);
     }
     expect(script).toContain("prepare-windows-node-resources.mjs");
+  });
+
+  it("refuses to ship a plugin or skill that is incomplete", () => {
+    // These checks are what make a half-assembled payload fail the build
+    // instead of reaching an employee.
+    for (const required of [
+      "openclaw.plugin.json",
+      "dist/index.js",
+      "dist/src/messaging/desktop-bridge.js",
+      "SKILL.md",
+    ]) {
+      expect(script).toContain(required);
+    }
+  });
+
+  it("compiles the plugin from this repository instead of trusting the tarball", () => {
+    // The vendored tarball ships its own dist/, built from Tencent's sources and
+    // therefore without desktop-bridge.ts. Publishing it would silently drop
+    // the approval channel, so the pipeline recompiles it and stays offline.
+    expect(script).toContain("typescript");
+    expect(script).toContain("--omit=peer");
+    expect(script).toContain("--legacy-peer-deps");
+    expect(script).toContain("vendor");
+  });
+
+  it("keeps the staged skills aligned with the product catalog", () => {
+    // The offered skill list must not be duplicated into the build script: a
+    // skill added to the catalog has to reach the installer automatically.
+    expect(script).toContain("agent-catalog.ts");
+    expect(script).toContain("SHARED_SKILL_IDS");
+    expect(script).toContain("AGENT_OWNED_SKILL_IDS");
   });
 
   it("never deletes the live resources directory outright", () => {

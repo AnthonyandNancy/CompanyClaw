@@ -67,8 +67,12 @@ describe("agent-owned skills", () => {
       path.join(repositoryRoot, "desktop", "electron-builder.yml"),
       "utf-8",
     );
-    expect(builderConfig).toContain("from: ../skills/rednote-publisher/");
-    expect(builderConfig).toContain("to: agent-skills/rednote-publisher/");
+    expect(builderConfig).toContain("from: resources/agent-skills/");
+    expect(builderConfig).toContain("to: agent-skills/");
+    // The skill reaches the installer through the unified pipeline, which
+    // stages every catalog skill; a direct copy from the source tree would put
+    // the packaged payload outside the runtime manifest.
+    expect(builderConfig).not.toContain("from: ../skills/");
     const installerSpec = fs.readFileSync(
       path.join(repositoryRoot, "MicroClawDeployer.spec"),
       "utf-8",

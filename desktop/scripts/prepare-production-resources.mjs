@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { createPackage, listPackage } from "@electron/asar";
 
@@ -28,7 +29,9 @@ import { createPackage, listPackage } from "@electron/asar";
  *   2. OpenClaw               (locked version from deployer/openclaw_version.py)
  *   3. Windows Node / MXC     (delegated to prepare-windows-node-resources.mjs)
  *   4. CompanyClaw broker     (TypeScript compiled to dist/, plus UIA scripts)
- *   5. runtime-manifest.json  (path + version + sha256 for every component)
+ *   5. WeChat plugin          (our patched sources compiled to dist/ + vendor deps)
+ *   6. agent skills           (the repository skills the catalog offers)
+ *   7. runtime-manifest.json  (path + version + sha256 for every component)
  *
  * The staging directory lives inside `desktop/resources/` so it is covered by
  * the existing gitignore entry and always shares a volume with the target,
@@ -42,6 +45,17 @@ const stagingDir = path.join(resourcesDir, `.staging-${process.pid}`);
 const openClawStagingDir = path.join(stagingDir, "openclaw");
 const openClawArchive = path.join(stagingDir, "openclaw.asar");
 const brokerStagingDir = path.join(stagingDir, "companyclaw-broker");
+const agentSkillsStagingDir = path.join(stagingDir, "agent-skills");
+const weixinPluginStagingDir = path.join(stagingDir, "openclaw-weixin");
+const weixinPluginSourceDir = path.join(repositoryDir, "plugins", "openclaw-weixin");
+/**
+ * Generated for the plugin compile and deleted again right after.
+ *
+ * It lives outside `stagingDir` on purpose: the final step renames every
+ * top-level item of the staging directory into `resources/`, so a stray file
+ * there would end up shipped.
+ */
+const weixinTsconfigPath = path.join(os.tmpdir(), `companyclaw-weixin-tsconfig-${process.pid}.json`);
 
 const archArguments = process.argv.slice(2).filter((argument) => argument.startsWith("--arch="));
 if (archArguments.length !== 1 || process.argv.length !== 3) {
@@ -122,6 +136,120 @@ function gitHeadSha() {
   return result.stdout.trim() || "unknown";
 }
 
+/** Recursively lists every file below `root`, as POSIX-style relative paths. */
+function listFilesRecursive(root) {
+  const found = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile()) {
+        found.push(path.relative(root, absolute).replaceAll("\\", "/"));
+      }
+    }
+  };
+  visit(root);
+  return found.sort();
+}
+
+/** Node runtime version recorded for the MXC staging, or "unknown". */
+function windowsNodeVersion() {
+  try {
+    const runtime = JSON.parse(
+      readFileSync(path.join(stagingDir, "windows-node", "RUNTIME.json"), "utf8"),
+    );
+    return typeof runtime.mxcVersion === "string" ? runtime.mxcVersion : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Compiles the CompanyClaw-patched WeChat plugin.
+ *
+ * The vendored tarball ships a `dist/` built from Tencent's sources, but our
+ * bridge (`src/messaging/desktop-bridge.ts`) only exists in this working tree —
+ * publishing the tarball's build would silently drop the approval channel. The
+ * host loads `package.json#openclaw.runtimeExtensions`, so `dist/` has to exist
+ * and has to contain the patch.
+ *
+ * Type checking is deliberately off: the host SDK types are not installed on a
+ * build machine that only assembles the payload, and a type error here would
+ * block packaging for reasons unrelated to what the installer ships.
+ */
+function buildWeixinPluginDist() {
+  const tscEntry = path.join(desktopDir, "node_modules", "typescript", "bin", "tsc");
+  if (!existsSync(tscEntry)) {
+    throw new Error(`TypeScript is required to build the WeChat plugin: ${tscEntry}`);
+  }
+  writeFileSync(
+    weixinTsconfigPath,
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: "es2022",
+          module: "esnext",
+          moduleResolution: "bundler",
+          rootDir: weixinPluginSourceDir,
+          outDir: path.join(weixinPluginStagingDir, "dist"),
+          declaration: false,
+          sourceMap: false,
+          skipLibCheck: true,
+          noCheck: true,
+          allowImportingTsExtensions: false,
+          verbatimModuleSyntax: false,
+        },
+        include: [
+          path.join(weixinPluginSourceDir, "index.ts").replaceAll("\\", "/"),
+          path.join(weixinPluginSourceDir, "src", "**", "*.ts").replaceAll("\\", "/"),
+        ],
+        exclude: [
+          path.join(weixinPluginSourceDir, "src", "**", "*.test.ts").replaceAll("\\", "/"),
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  try {
+    run(process.execPath, [tscEntry, "--project", weixinTsconfigPath]);
+  } finally {
+    rmSync(weixinTsconfigPath, { force: true });
+  }
+}
+
+/**
+ * Installs the plugin's runtime dependencies from the vendored tarballs.
+ *
+ * `--omit=peer` plus `--legacy-peer-deps` is what keeps this step offline: the
+ * plugin declares `openclaw` as a peer, and npm would otherwise reach the
+ * registry for it. The host always provides its own OpenClaw.
+ */
+function installWeixinPluginDeps() {
+  const vendorDir = path.join(weixinPluginSourceDir, "vendor");
+  const tarballs = readdirSync(vendorDir)
+    .filter((name) => name.endsWith(".tgz"))
+    .filter((name) => !name.startsWith("tencent-weixin-"))
+    .sort()
+    .map((name) => path.join(vendorDir, name));
+  if (tarballs.length === 0) {
+    throw new Error(`No vendored plugin dependencies found in ${vendorDir}`);
+  }
+  run(process.execPath, [
+    resolveNpmCli(),
+    "install",
+    "--prefix",
+    weixinPluginStagingDir,
+    "--omit=dev",
+    "--omit=peer",
+    "--legacy-peer-deps",
+    "--no-package-lock",
+    "--no-save",
+    "--ignore-scripts",
+    ...tarballs,
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Version lock — the deployer remains the single source of truth.
 // ---------------------------------------------------------------------------
@@ -131,6 +259,34 @@ const openClawVersion = versionSource.match(/^OPENCLAW_TARGET_VERSION = "([^"]+)
 if (!openClawVersion) {
   throw new Error(`Could not resolve OPENCLAW_TARGET_VERSION from ${versionFile}`);
 }
+
+// The skill ids the product offers live in agent-catalog.ts. Read them instead
+// of repeating the list here, so a skill added to the catalog cannot be
+// silently missing from the installer.
+const agentSkillIds = (() => {
+  const catalogPath = path.join(desktopDir, "src", "agent-catalog.ts");
+  const source = readFileSync(catalogPath, "utf8");
+  const collect = (constantName) => {
+    const body = source.match(
+      new RegExp(`export const ${constantName}: readonly string\\[\\] = \\[([^\\]]*)\\]`),
+    )?.[1];
+    if (body === undefined) {
+      throw new Error(`Could not read ${constantName} from ${catalogPath}`);
+    }
+    return [...body.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  };
+  const ids = [...new Set([...collect("SHARED_SKILL_IDS"), ...collect("AGENT_OWNED_SKILL_IDS")])];
+  const shipping = ids.filter((skillId) =>
+    existsSync(path.join(repositoryDir, "skills", skillId, "SKILL.md")),
+  );
+  // The catalog also lists upstream skills that this repository does not carry
+  // (they are installed by OpenClaw itself). Those cannot be staged, but a
+  // repository skill that the catalog offers must never be dropped.
+  if (shipping.length === 0) {
+    throw new Error(`No agent skills found to stage below ${path.join(repositoryDir, "skills")}`);
+  }
+  return shipping.sort();
+})();
 
 // ---------------------------------------------------------------------------
 // 2. Stage every component into a private directory.
@@ -205,6 +361,42 @@ if (!existsSync(path.join(brokerDist, "main.js"))) {
 cpSync(brokerDist, path.join(brokerStagingDir, "dist"), { recursive: true });
 cpSync(brokerScripts, path.join(brokerStagingDir, "scripts"), { recursive: true });
 
+// 2f. CompanyClaw-patched WeChat plugin. The host loads
+// `package.json#openclaw.runtimeExtensions`, so the compiled output has to ship
+// with the installer; nothing may be installed on the employee machine.
+mkdirSync(weixinPluginStagingDir, { recursive: true });
+for (const entry of readdirSync(weixinPluginSourceDir)) {
+  if (entry === "node_modules" || entry === "vendor") continue;
+  cpSync(path.join(weixinPluginSourceDir, entry), path.join(weixinPluginStagingDir, entry), {
+    recursive: true,
+    // Test sources are development-only; the plugin's own package.json excludes
+    // them from its published payload too.
+    filter: (source) => !source.endsWith(".test.ts"),
+  });
+}
+buildWeixinPluginDist();
+installWeixinPluginDeps();
+for (const required of [
+  "package.json",
+  "openclaw.plugin.json",
+  "dist/index.js",
+  "dist/src/messaging/desktop-bridge.js",
+]) {
+  if (!existsSync(path.join(weixinPluginStagingDir, required))) {
+    throw new Error(`WeChat plugin staging is missing ${required}`);
+  }
+}
+
+// 2g. Agent skills. agent-catalog.ts owns which skill ids the product offers;
+// every one of them that ships in this repository must reach the installer.
+for (const skillId of agentSkillIds) {
+  const source = path.join(repositoryDir, "skills", skillId);
+  if (!existsSync(path.join(source, "SKILL.md"))) {
+    throw new Error(`Agent skill ${skillId} is missing ${path.join(source, "SKILL.md")}`);
+  }
+  cpSync(source, path.join(agentSkillsStagingDir, skillId), { recursive: true });
+}
+
 // ---------------------------------------------------------------------------
 // 3. Record what was assembled, so the app can prove it at startup.
 // ---------------------------------------------------------------------------
@@ -250,6 +442,52 @@ for (const scriptName of brokerScriptNames) {
     sha256: sha256(path.join(brokerStagingDir, "scripts", scriptName)),
     license: "Proprietary",
   });
+}
+
+// Everything below is registered file by file. A component that ships but is
+// absent from the manifest would be invisible to the startup integrity check,
+// which is exactly how a broken installer used to look fine.
+const weixinPluginVersion = (() => {
+  const manifest = JSON.parse(
+    readFileSync(path.join(weixinPluginStagingDir, "package.json"), "utf8"),
+  );
+  if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+    throw new Error("Staged WeChat plugin has no version in package.json");
+  }
+  return manifest.version;
+})();
+const windowsNodeVersionValue = windowsNodeVersion();
+for (const relative of listFilesRecursive(path.join(stagingDir, "windows-node"))) {
+  entries.push({
+    path: `windows-node/${relative}`,
+    kind: "windows-node",
+    version: windowsNodeVersionValue,
+    arch: targetArch,
+    sha256: sha256(path.join(stagingDir, "windows-node", relative)),
+    license: "See third_party/openclaw-windows-node/LICENSE",
+  });
+}
+for (const relative of listFilesRecursive(weixinPluginStagingDir)) {
+  entries.push({
+    path: `openclaw-weixin/${relative}`,
+    kind: "plugin",
+    version: weixinPluginVersion,
+    arch: targetArch,
+    sha256: sha256(path.join(weixinPluginStagingDir, relative)),
+    license: "MIT",
+  });
+}
+for (const skillId of agentSkillIds) {
+  for (const relative of listFilesRecursive(path.join(agentSkillsStagingDir, skillId))) {
+    entries.push({
+      path: `agent-skills/${skillId}/${relative}`,
+      kind: "skill",
+      version: "1.0.0",
+      arch: targetArch,
+      sha256: sha256(path.join(agentSkillsStagingDir, skillId, relative)),
+      license: "Proprietary",
+    });
+  }
 }
 
 writeFileSync(

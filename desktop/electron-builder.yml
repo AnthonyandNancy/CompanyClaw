@@ -71,6 +71,13 @@ extraResources:
     to: companyclaw-broker/scripts/
   - from: resources/runtime-manifest.json
     to: runtime-manifest.json
+  # The WeChat plugin and the agent skills come from the unified pipeline
+  # (prepare-production-resources.mjs). Shipping a second copy straight from the
+  # source tree would let the packaged payload and the manifest drift apart.
+  - from: resources/openclaw-weixin/
+    to: openclaw-weixin/
+  - from: resources/agent-skills/
+    to: agent-skills/
   - from: ../appcontainer/bin/Release/net9.0-windows/win-x64/AppContainerLauncher.exe
     to: AppContainerLauncher.exe
   - from: ../appcontainer/sandbox-preload.js
@@ -87,8 +94,6 @@ extraResources:
     to: sandbox-sensitive.js
   - from: ../appcontainer/path-extraction.js
     to: path-extraction.js
-  - from: ../skills/rednote-publisher/
-    to: agent-skills/rednote-publisher/
 
 files:
   - dist/**/*

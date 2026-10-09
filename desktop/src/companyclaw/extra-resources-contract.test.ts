@@ -28,6 +28,13 @@ const PRODUCED_BY_PIPELINE = [
   "resources/companyclaw-broker/scripts/",
   "resources/windows-node/",
   "resources/runtime-manifest.json",
+  // The WeChat plugin is compiled from this repository's sources (the vendored
+  // tarball's own dist/ predates the CompanyClaw bridge) and the agent skills
+  // are collected from `skills/`; both are staged so the manifest can cover
+  // them. Shipping either straight from the source tree would leave the
+  // packaged copy outside the startup integrity check.
+  "resources/openclaw-weixin/",
+  "resources/agent-skills/",
 ];
 
 const PRODUCED_BY_BUILD = [
@@ -45,7 +52,6 @@ const PRESENT_IN_SOURCE = [
   "../appcontainer/sandbox-cp-hooks.js",
   "../appcontainer/sandbox-sensitive.js",
   "../appcontainer/path-extraction.js",
-  "../skills/rednote-publisher/",
 ];
 
 function extraResourceSources(): string[] {

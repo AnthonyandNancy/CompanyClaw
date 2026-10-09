@@ -34,8 +34,11 @@ describe("CompanyClaw product identity", () => {
 
   it("keeps the Creative Muse skill staging contract intact", () => {
     const config = readBuilderConfig();
-    expect(config).toContain("from: ../skills/rednote-publisher/");
-    expect(config).toContain("to: agent-skills/rednote-publisher/");
+    // The skill now arrives through the unified pipeline, which stages every
+    // catalog skill (rednote-publisher included) before electron-builder runs.
+    expect(config).toContain("from: resources/agent-skills/");
+    expect(config).toContain("to: agent-skills/");
+    expect(config).not.toContain("from: ../skills/");
   });
 
   it("keeps resolving bundled resources from their upstream paths", () => {
