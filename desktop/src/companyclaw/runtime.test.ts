@@ -450,9 +450,9 @@ describe("CompanyClawRuntime artifacts", () => {
     if (!resolved.ok) return;
 
     const inside = `${resolved.dir}/报告.xlsx`;
-    expect(runtime.acceptArtifact({ taskId: task.taskId, ownerSid: "S-1", filePath: inside })).toEqual(
-      { ok: true, fileName: "报告.xlsx" },
-    );
+    expect(
+      runtime.acceptArtifact({ taskId: task.taskId, ownerSid: "S-1", filePath: inside }),
+    ).toEqual({ ok: true, fileName: "报告.xlsx" });
     expect(
       runtime.acceptArtifact({
         taskId: task.taskId,
@@ -483,9 +483,9 @@ describe("CompanyClawRuntime identity binding", () => {
   it("starts unbound and authorizes no remote caller", () => {
     const { runtime } = makeRuntime();
     expect(runtime.getIdentityBinding()).toBeNull();
-    expect(runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" })).toBe(
-      false,
-    );
+    expect(
+      runtime.isRemoteCallerAuthorized({ channelType: "openclaw-weixin", channelUserId: "wx-1" }),
+    ).toBe(false);
   });
 
   it("binds the channel user to this device and SID", async () => {
@@ -584,9 +584,9 @@ describe("CompanyClawRuntime browser policy", () => {
       allowDownloads: false,
       allowUploads: false,
     });
-    expect(runtime.authorizeBrowserAction({ action: "navigate", url: "https://oa.example.com/" })).toEqual(
-      { allowed: false, reason: "remote-not-authorized" },
-    );
+    expect(
+      runtime.authorizeBrowserAction({ action: "navigate", url: "https://oa.example.com/" }),
+    ).toEqual({ allowed: false, reason: "remote-not-authorized" });
   });
 
   it("allows a read on an approved domain once remote operation is live", () => {
@@ -623,7 +623,10 @@ describe("CompanyClawRuntime browser policy", () => {
       ttlMinutes: 60,
     });
     expect(
-      runtime.authorizeBrowserAction({ action: "fill-form", url: "https://oa.example.com/tickets" }),
+      runtime.authorizeBrowserAction({
+        action: "fill-form",
+        url: "https://oa.example.com/tickets",
+      }),
     ).toEqual({ allowed: true, risk: "write" });
   });
 
@@ -706,5 +709,104 @@ describe("CompanyClawRuntime broker targets", () => {
     const { runtime } = makeRuntime();
     await runtime.setBrokerTargets({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
     expect(runtime.getBrokerTargets().allowedProcesses).toEqual(["notepad"]);
+  });
+});
+
+describe("remote messages create tasks from trusted identity", () => {
+  async function boundRuntime() {
+    const { runtime } = makeRuntime();
+    await runtime.bindIdentity({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      deviceId: "device-a",
+    });
+    return runtime;
+  }
+
+  it("creates a task whose owner comes from the local binding", async () => {
+    const runtime = await boundRuntime();
+    const result = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      messageId: "msg-1",
+      objective: "查询工单",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The identity is the bound one, not anything the message carried.
+    expect(result.task.ownerSid).toBe("S-1");
+    expect(result.task.deviceId).toBe("device-a");
+    expect(result.resumed).toBe(false);
+  });
+
+  it("resumes the same task when the channel redelivers the message", async () => {
+    const runtime = await boundRuntime();
+    const first = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      messageId: "msg-1",
+      objective: "查询工单",
+    });
+    const second = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      messageId: "msg-1",
+      objective: "查询工单",
+    });
+    if (!first.ok || !second.ok) throw new Error("expected tasks");
+    expect(second.resumed).toBe(true);
+    expect(second.task.taskId).toBe(first.task.taskId);
+    expect(runtime.listTasks({ ownerSid: "S-1" })).toHaveLength(1);
+  });
+
+  it("refuses a sender that is not the paired identity", async () => {
+    const runtime = await boundRuntime();
+    const result = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-someone-else",
+      messageId: "msg-2",
+      objective: "查询工单",
+    });
+    expect(result).toEqual({ ok: false, reason: "unbound-sender" });
+    expect(runtime.listTasks({ ownerSid: "S-1" })).toHaveLength(0);
+  });
+
+  it("refuses a message with no channel id, since de-duplication needs one", async () => {
+    const runtime = await boundRuntime();
+    const result = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      messageId: "  ",
+      objective: "查询工单",
+    });
+    expect(result).toEqual({ ok: false, reason: "missing-message-id" });
+  });
+
+  it("does not let one sender's message id collide with another's", async () => {
+    const runtime = await boundRuntime();
+    await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-1",
+      messageId: "shared-id",
+      objective: "a",
+    });
+    // A different sender using the same id must not resume the first task.
+    const other = await runtime.createTaskFromRemote({
+      channelType: "weixin",
+      channelUserId: "wx-user-2",
+      messageId: "shared-id",
+      objective: "b",
+    });
+    expect(other).toEqual({ ok: false, reason: "unbound-sender" });
+  });
+
+  it("reports the bound owner to the trusted-context builder", async () => {
+    const runtime = await boundRuntime();
+    expect(
+      runtime.resolveRemoteOwner({ channelType: "weixin", channelUserId: "wx-user-1" }),
+    ).toEqual({ ownerSid: "S-1", deviceId: "device-a" });
+    expect(
+      runtime.resolveRemoteOwner({ channelType: "weixin", channelUserId: "nobody" }),
+    ).toBeNull();
   });
 });

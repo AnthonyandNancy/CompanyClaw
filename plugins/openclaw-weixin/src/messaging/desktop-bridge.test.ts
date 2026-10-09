@@ -46,6 +46,30 @@ describe("publishSessionSource", () => {
     ]);
   });
 
+  it("carries the channel message id so the desktop can de-duplicate", () => {
+    const sent: unknown[] = [];
+    publishSessionSource(channelWith({ send: (message) => sent.push(message) }), {
+      channelType: "weixin",
+      userId: "wx-user-1",
+      accountId: "acct-1",
+      baseUrl: "https://example.invalid",
+      messageId: "msg-77",
+    });
+    // A redelivered message must be recognisable as the same message.
+    expect(sent).toEqual([
+      {
+        type: "session-source",
+        source: {
+          channelType: "weixin",
+          userId: "wx-user-1",
+          accountId: "acct-1",
+          baseUrl: "https://example.invalid",
+          messageId: "msg-77",
+        },
+      },
+    ]);
+  });
+
   it("does nothing when there is no desktop parent", () => {
     expect(() =>
       publishSessionSource(null, {

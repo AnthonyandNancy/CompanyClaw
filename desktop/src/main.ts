@@ -59,6 +59,11 @@ import {
   planWeixinPluginEnable,
 } from "./companyclaw/plugins/weixin-plugin-install";
 import { buildGuardianReport, type GuardianProbes } from "./companyclaw/guardian";
+import {
+  buildTrustedRemoteContext,
+  RemoteMessageDeduplicator,
+  type TrustedRemoteContext,
+} from "./companyclaw/remote/trusted-context";
 import { loadOrCreateDeviceIdentity } from "./device-identity";
 import {
   recoverInterruptedOpenClawUpgrade,
@@ -570,6 +575,15 @@ const pendingPermissionRequests = new Map<
 const sessionDeniedApps = new Map<string, Set<string>>();
 /** True when the most recent inbound message was from a remote channel (WeChat). */
 let lastInputFromRemote = false;
+/**
+ * Identity of the inbound message currently being handled.
+ *
+ * Replaced per message; `null` when nothing remote is in flight. Read by the
+ * permission-notification path, which must not treat a stale context as current.
+ */
+let activeTrustedContext: TrustedRemoteContext | null = null;
+/** Drops a channel redelivery so one message cannot create two tasks. */
+const remoteMessageDedup = new RemoteMessageDeduplicator();
 /** Cached remote source info, set by session-source IPC from WeChat plugin. */
 let cachedRemoteSource: {
   channelType: string;
@@ -3364,11 +3378,92 @@ function sendWeixinNotification(
   }
 }
 
-/** Notify the remote WeChat user that a permission dialog is waiting on the desktop. */
+/**
+ * Notify the remote WeChat user that a permission dialog is waiting on the desktop.
+ *
+ * Keyed off the trusted context of the message being handled, not the bare
+ * "last input was remote" flag: only a message that really arrived through the
+ * trusted boundary may address a WeChat user.
+ */
 function notifyRemotePermissionNeeded(): void {
-  if (!lastInputFromRemote || !cachedRemoteSource) return;
+  if (!activeTrustedContext || !cachedRemoteSource) return;
   const lang = settingsStore.get("language") ?? "en-US";
   sendWeixinNotification(cachedRemoteSource, mainT(lang, "perm.remoteNotify"));
+}
+
+/**
+ * Sends the pending-approval card for an owner to their bound WeChat chat.
+ *
+ * The card is built by the security core, so what the owner sees is exactly the
+ * change the approval describes. Sending without a bound chat or without a
+ * pending item is skipped rather than reported as sent.
+ */
+function sendPendingApprovalCard(ownerSid: string): void {
+  if (!companyClawRuntime || !cachedRemoteSource) return;
+  const message = companyClawRuntime.runtime.buildApprovalMessage(ownerSid);
+  if (!message) return;
+  sendWeixinNotification(cachedRemoteSource, message);
+}
+
+/**
+ * Handles one inbound message that arrived through the trusted channel boundary.
+ *
+ * Identity comes from the local WeChat↔device↔SID binding, never from the
+ * message, and the channel's message id is what de-duplicates a redelivery. A
+ * sender that is not the paired identity produces no task, so an unbound
+ * account cannot start work by sending text.
+ */
+function handleTrustedRemoteMessage(source: {
+  channelType: string;
+  userId: string;
+  accountId?: string;
+  messageId?: string;
+}): void {
+  if (!companyClawRuntime) return;
+  const context = buildTrustedRemoteContext({
+    channelAccountId: source.accountId ?? "",
+    senderId: source.userId ?? "",
+    conversationId: source.userId ?? "",
+    messageId: typeof source.messageId === "string" ? source.messageId : "",
+    receivedAt: Date.now(),
+    owner: companyClawRuntime.runtime.resolveRemoteOwner({
+      channelType: source.channelType,
+      channelUserId: source.userId ?? "",
+    }),
+  });
+  if (!context.ok) {
+    // Not the paired sender (or no message id): nothing to act on. This is
+    // reported rather than silently ignored so a mis-paired account is visible.
+    console.warn(`[companyclaw] Inbound remote message ignored: ${context.reason}`);
+    return;
+  }
+  if (!remoteMessageDedup.accept(context.context.messageId)) {
+    console.log(
+      `[companyclaw] Duplicate remote message ${context.context.messageId} ignored (already processed)`,
+    );
+    return;
+  }
+  activeTrustedContext = context.context;
+  void companyClawRuntime.runtime
+    .createTaskFromRemote({
+      channelType: context.context.channel,
+      channelUserId: context.context.senderId,
+      messageId: context.context.messageId,
+      objective: "",
+    })
+    .then((result) => {
+      if (!result.ok) {
+        console.warn(`[companyclaw] No task created for remote message: ${result.reason}`);
+        return;
+      }
+      const verb = result.resumed ? "resumed" : "created";
+      console.log(
+        `[companyclaw] Task ${verb} for remote message (task=${result.task.taskId}, owner=${result.task.ownerSid})`,
+      );
+    })
+    .catch((error) => {
+      console.error("[companyclaw] Failed to record the remote task:", error);
+    });
 }
 
 /** One skill's diagnostic status merged from `skills check` + `skills list --json`. */
@@ -4385,9 +4480,13 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       if (msg?.type !== "session-source") return;
       const { source } = msg;
       if (source?.channelType) {
-        lastInputFromRemote = true;
         cachedRemoteSource = source;
+        // The upstream permission-notification feature keys off this flag. It
+        // is a display hint only and never authorizes anything: identity comes
+        // from the trusted context below.
+        lastInputFromRemote = true;
         console.log(`[session] Remote source: channel=${source.channelType} user=${source.userId}`);
+        handleTrustedRemoteMessage(source);
       }
     });
 
@@ -5624,8 +5723,11 @@ function registerIpcHandlers(): void {
     "chat:send-message",
     async (_event, params: { sessionKey: string; message: string; attachments?: unknown }) => {
       if (!gwClient?.connected) throw new Error("Gateway not connected");
-      // Mark that the latest input is from the local desktop UI.
+      // Mark that the latest input is from the local desktop UI. The trusted
+      // remote context is cleared for the same reason: a later permission prompt
+      // must not be attributed to whoever spoke remotely last.
       lastInputFromRemote = false;
+      activeTrustedContext = null;
       await gwClient.sendChat(
         params.sessionKey,
         params.message,

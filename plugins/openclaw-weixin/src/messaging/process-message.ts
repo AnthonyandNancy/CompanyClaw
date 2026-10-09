@@ -116,6 +116,9 @@ export async function processOneMessage(
       userId: full.from_user_id ?? "",
       accountId: deps.accountId,
       baseUrl: deps.baseUrl,
+      // The desktop de-duplicates on this id, so it has to be the channel's own
+      // message id rather than anything derived from the text.
+      ...(full.message_id ? { messageId: String(full.message_id) } : {}),
       ...(deps.token ? { token: deps.token } : {}),
       ...(full.context_token ? { contextToken: full.context_token } : {}),
     });

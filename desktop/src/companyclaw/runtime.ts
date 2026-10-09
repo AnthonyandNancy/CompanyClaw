@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { basename as pathBasename } from "node:path";
 import { CompanyClawApprovalStore } from "./approvals/approval-store";
-import { ExecutionBridge, type BridgeResult, type BridgeTransport } from "./bridge/execution-bridge";
+import {
+  ExecutionBridge,
+  type BridgeResult,
+  type BridgeTransport,
+} from "./bridge/execution-bridge";
 import { decideAction, type ActionDescriptor } from "./policy/risk-classifier";
 import {
   hashBinding,
@@ -10,7 +14,11 @@ import {
   type ApprovalBinding,
   type ApprovalTicket,
 } from "./policy/approval-ticket";
-import { applyApprovalReply, formatApprovalBatch, parseApprovalReply } from "./remote/approval-message";
+import {
+  applyApprovalReply,
+  formatApprovalBatch,
+  parseApprovalReply,
+} from "./remote/approval-message";
 import {
   buildTaskArtifactDir,
   isPathInsideTaskDir,
@@ -171,9 +179,7 @@ export class CompanyClawRuntime {
   }
 
   /** Wires the broker client so allow-list changes reach the running process. */
-  setBrokerTargetsApplier(
-    apply: ((targets: BrokerTargets) => Promise<void>) | null,
-  ): void {
+  setBrokerTargetsApplier(apply: ((targets: BrokerTargets) => Promise<void>) | null): void {
     this.applyBrokerTargets = apply;
   }
 
@@ -228,9 +234,10 @@ export class CompanyClawRuntime {
    * approval before executing; this method only decides whether the action is
    * admissible at all.
    */
-  authorizeBrowserAction(input: { action: string; url: string }):
-    | { allowed: true; risk: "read" | "write" | "high-risk" }
-    | { allowed: false; reason: string } {
+  authorizeBrowserAction(input: {
+    action: string;
+    url: string;
+  }): { allowed: true; risk: "read" | "write" | "high-risk" } | { allowed: false; reason: string } {
     if (this.authorization.state() !== "enabled") {
       return { allowed: false, reason: "remote-not-authorized" };
     }
@@ -272,6 +279,19 @@ export class CompanyClawRuntime {
   }
 
   /**
+   * Resolves the local owner for a channel sender, or null when unbound.
+   *
+   * Read-only and used to build the trusted context for an inbound message; it
+   * grants nothing by itself — tool access stays behind remote authorization.
+   */
+  resolveRemoteOwner(input: {
+    channelType: string;
+    channelUserId: string;
+  }): { ownerSid: string; deviceId: string } | null {
+    return this.identity.resolveOwner(input.channelType, input.channelUserId);
+  }
+
+  /**
    * True only when the sender is the bound identity AND remote operation is
    * currently authorized. Both must hold: being bound is not permission to act.
    */
@@ -306,12 +326,12 @@ export class CompanyClawRuntime {
       ttlMinutes < MIN_TTL_MINUTES ||
       ttlMinutes > MAX_TTL_MINUTES
     ) {
-      throw new Error(
-        `ttlMinutes must be between ${MIN_TTL_MINUTES} and ${MAX_TTL_MINUTES}`,
-      );
+      throw new Error(`ttlMinutes must be between ${MIN_TTL_MINUTES} and ${MAX_TTL_MINUTES}`);
     }
     if (!input.ownerSid || !input.deviceId || !input.channelUserId) {
-      throw new Error("ownerSid, deviceId and channelUserId are required to enable remote operation");
+      throw new Error(
+        "ownerSid, deviceId and channelUserId are required to enable remote operation",
+      );
     }
     this.authorization.setEnabled({
       ownerSid: input.ownerSid,
@@ -329,10 +349,7 @@ export class CompanyClawRuntime {
     return filter.state ? owned.filter((record) => record.state === filter.state) : owned;
   }
 
-  getTask(
-    taskId: string,
-    ownerSid: string,
-  ): { record: CompanyClawTaskRecord } | null {
+  getTask(taskId: string, ownerSid: string): { record: CompanyClawTaskRecord } | null {
     const record = this.tasks.get(taskId);
     if (!record || record.ownerSid !== ownerSid) return null;
     return { record };
@@ -346,6 +363,44 @@ export class CompanyClawRuntime {
       objective: input.objective,
       idempotencyKey: input.idempotencyKey ?? null,
     });
+  }
+
+  /**
+   * Creates (or resumes) the task for one trusted inbound message.
+   *
+   * The identity is resolved from the local binding rather than from anything
+   * the message carried, and the message id doubles as the idempotency key so a
+   * channel redelivery resumes the existing task instead of starting a second
+   * one. A sender that is not the paired identity produces no task at all.
+   */
+  async createTaskFromRemote(input: {
+    channelType: string;
+    channelUserId: string;
+    messageId: string;
+    objective: string;
+  }): Promise<
+    | { ok: true; task: CompanyClawTaskRecord; resumed: boolean }
+    | { ok: false; reason: "unbound-sender" | "missing-message-id" }
+  > {
+    const messageId = input.messageId.trim();
+    if (!messageId) return { ok: false, reason: "missing-message-id" };
+    const owner = this.identity.resolveOwner(input.channelType, input.channelUserId);
+    if (!owner) return { ok: false, reason: "unbound-sender" };
+
+    // Scoped by the bound account *and* the message id: a redelivery of the same
+    // message resumes its task, while the same id from another sender does not.
+    const idempotencyKey = `weixin:${input.channelUserId}:${messageId}`;
+    const existing = this.tasks.findByIdempotencyKey(idempotencyKey);
+    if (existing) return { ok: true, task: existing, resumed: true };
+
+    const task = await this.tasks.create({
+      ownerSid: owner.ownerSid,
+      deviceId: owner.deviceId,
+      channel: "weixin",
+      objective: input.objective,
+      idempotencyKey,
+    });
+    return { ok: true, task, resumed: false };
   }
 
   async advanceTask(input: AdvanceTaskInput): Promise<CompanyClawTaskRecord> {
@@ -374,12 +429,16 @@ export class CompanyClawRuntime {
 
   // ── Approvals ────────────────────────────────────────────────────────
 
-  async requestApproval(input: RequestApprovalInput): Promise<{ approvalId: string; status: string; binding: ApprovalBinding }> {
+  async requestApproval(
+    input: RequestApprovalInput,
+  ): Promise<{ approvalId: string; status: string; binding: ApprovalBinding }> {
     const decision = decideAction(input.action, {
       remoteAuthorization: this.authorization.state(),
     });
     if (decision.decision === "deny") {
-      throw new Error(`Action denied by policy (${decision.level}): ${decision.reasons.join("; ")}`);
+      throw new Error(
+        `Action denied by policy (${decision.level}): ${decision.reasons.join("; ")}`,
+      );
     }
     if (decision.decision !== "require-approval") {
       throw new Error(
@@ -571,10 +630,7 @@ export class CompanyClawRuntime {
     }
   }
 
-  private completeBinding(
-    partial: Partial<ApprovalBinding>,
-    ownerSid: string,
-  ): ApprovalBinding {
+  private completeBinding(partial: Partial<ApprovalBinding>, ownerSid: string): ApprovalBinding {
     const merged: ApprovalBinding = {
       ownerSid,
       deviceId: partial.deviceId ?? "",

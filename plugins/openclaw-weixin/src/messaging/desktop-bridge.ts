@@ -21,6 +21,12 @@ export interface SessionSource {
   baseUrl: string;
   token?: string;
   contextToken?: string;
+  /**
+   * Channel-supplied message id. The desktop uses it to de-duplicate a
+   * redelivered message, so it must come from the channel and never from the
+   * message text.
+   */
+  messageId?: string;
 }
 
 interface PendingRequest {
