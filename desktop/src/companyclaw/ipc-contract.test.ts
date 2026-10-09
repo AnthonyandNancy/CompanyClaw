@@ -25,6 +25,7 @@ const REQUIRED_CHANNELS = [
   "companyclaw:identity:get",
   "companyclaw:identity:bind",
   "companyclaw:identity:unbind",
+  "companyclaw:health:report",
   "companyclaw:browser:get-policy",
   "companyclaw:browser:set-policy",
   "companyclaw:model:probe-capabilities",
@@ -41,9 +42,7 @@ describe("CompanyClaw IPC contract", () => {
     for (const channel of REQUIRED_CHANNELS) {
       expect(ipcSource).toContain(`"${channel}"`);
     }
-    expect((ipcSource.match(/ipcMain\.handle\(/g) ?? []).length).toBe(
-      REQUIRED_CHANNELS.length,
-    );
+    expect((ipcSource.match(/ipcMain\.handle\(/g) ?? []).length).toBe(REQUIRED_CHANNELS.length);
   });
 
   it("exposes every channel through the preload bridge", () => {
@@ -68,8 +67,6 @@ describe("CompanyClaw IPC contract", () => {
     const mainSource = readSource("main.ts");
     expect(mainSource).toContain("registerCompanyClawIpcHandlers(");
     // Registration failure must not prevent the app from starting.
-    expect(mainSource).toMatch(
-      /\[companyclaw\] Failed to register security-core IPC/,
-    );
+    expect(mainSource).toMatch(/\[companyclaw\] Failed to register security-core IPC/);
   });
 });

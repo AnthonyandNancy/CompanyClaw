@@ -8,6 +8,7 @@ import {
   summarizeCapabilities,
 } from "./model/capability-probe";
 import { resolveBrokerScriptDir } from "./broker-paths";
+import { buildGuardianReport, type GuardianReport } from "./guardian";
 import { CompanyClawRuntime, type RuntimePaths } from "./runtime";
 
 /**
@@ -120,6 +121,7 @@ export function registerCompanyClawIpcHandlers(
   runtime: CompanyClawRuntime,
   options: CompanyClawIpcOptions,
   broker?: { getStatus(): BrokerClientStatus } | null,
+  healthReport: () => GuardianReport = () => buildGuardianReport({}),
 ): void {
   // Without a broker the honest answer is "not running", never "fine".
   const brokerStatus = (): BrokerClientStatus =>
@@ -280,6 +282,10 @@ export function registerCompanyClawIpcHandlers(
   );
 
   ipcMain.handle("companyclaw:identity:unbind", () => runtime.unbindIdentity());
+
+  // Health is reported per component rather than as one flag: the wizard has to
+  // tell the user which part of the installation is at fault.
+  ipcMain.handle("companyclaw:health:report", () => healthReport());
 
   ipcMain.handle(
     "companyclaw:artifacts:resolve",

@@ -571,9 +571,36 @@ export default {
   "setup.probeTitle": "Connection & capability check",
   "setup.probeRunning": "Checking model capabilities…",
   "setup.probeFailed": "Capability check did not complete",
-  "setup.probeHint": "Unverified capabilities are never assumed to work. If tool calling is unsupported, switch to a compatible model.",
+  "setup.probeHint":
+    "Unverified capabilities are never assumed to work. If tool calling is unsupported, switch to a compatible model.",
   "setup.bindWeixin": "Link WeChat",
   "setup.bindWeixinHint": "Open WeChat and scan the code with your phone to link.",
+
+  // ── CompanyClaw first-run wizard steps ──
+  "setup.step1Title": "1. Environment check",
+  "setup.step1Desc": "Checks that the local runtime is complete. Nothing else needs installing.",
+  "setup.step1Ready": "Local runtime is ready",
+  "setup.step1Recheck": "Check again",
+  "setup.step1Checking": "Checking…",
+  "setup.step1Unavailable": "This environment cannot run the check (no desktop bridge found).",
+  "setup.step1GotoModels": "Next: my model",
+  "setup.step2Title": "2. My model",
+  "setup.step3Title": "3. Link WeChat",
+  "setup.step4Title": "4. Enable remote operation",
+  "setup.step4Desc":
+    "Applies only to the current Windows sign-in; the PC must stay on and interactive; only authorised systems and applications; key changes need your own confirmation in WeChat.",
+  "setup.step4Enable": "Enable remote operation",
+  "setup.step4Enabled": "Remote operation is on",
+  "setup.step4Disable": "Turn off remote operation",
+  "setup.step4NeedWeixin": "Link WeChat in step 3 before enabling remote operation.",
+  "setup.step4Ttl": "Valid for (minutes)",
+  "setup.step4DefaultOff":
+    "Off by default; you can pause or revoke it on this machine at any time.",
+  "setup.state.ok": "OK",
+  "setup.state.degraded": "Attention",
+  "setup.state.failed": "Failed",
+  "setup.state.blocked": "Blocked",
+  "setup.state.unknown": "Not checked",
 
   // ── ModelSetupDialog ──
   "modelSetup.title": "Set Up Model",
@@ -720,7 +747,8 @@ export default {
   "cc.identityUser": "WeChat user",
   "cc.identityBoundAt": "Bound at",
   "cc.identityUnbind": "Unbind",
-  "cc.identityEmpty": "No WeChat identity is bound yet. Complete the scan-and-bind flow under WeChat connection first.",
+  "cc.identityEmpty":
+    "No WeChat identity is bound yet. Complete the scan-and-bind flow under WeChat connection first.",
   "cc.brokerProcess": "Broker process: ",
   "cc.brokerProcessRunning": "running",
   "cc.brokerProcessStopped": "not started",

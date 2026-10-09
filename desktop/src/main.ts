@@ -54,6 +54,11 @@ import {
   planFirstRunConfig,
 } from "./companyclaw/first-run-init";
 import { RUNTIME_MANIFEST_FILE, verifyRuntimeManifest } from "./companyclaw/runtime-manifest";
+import {
+  ensureWeixinPluginInstalled,
+  planWeixinPluginEnable,
+} from "./companyclaw/plugins/weixin-plugin-install";
+import { buildGuardianReport, type GuardianProbes } from "./companyclaw/guardian";
 import { loadOrCreateDeviceIdentity } from "./device-identity";
 import {
   recoverInterruptedOpenClawUpgrade,
@@ -487,6 +492,12 @@ function setGatewayStatus(status: GatewayStatus): void {
 }
 let weixinLoginProcess: ChildProcess | null = null;
 let pendingIntegrityResult: IntegrityResult | null = null;
+/** Problems found by the last bundled-resource check (empty when it passed). */
+let runtimeManifestProblems: string[] = [];
+/** Entries verified by the last bundled-resource check; null when not run. */
+let runtimeManifestChecked: number | null = null;
+/** Last model capability verdict, recorded when the wizard runs its probe. */
+let lastProbedModelCapability: string | null = null;
 let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 let gatewayRestarting = false;
 let gatewayRestartPromise: Promise<void> | null = null;
@@ -1518,6 +1529,8 @@ function reportRuntimeIntegrity(): void {
     return;
   }
   const verification = verifyRuntimeManifest(parsed, process.resourcesPath);
+  runtimeManifestProblems = verification.ok ? [] : verification.problems;
+  runtimeManifestChecked = verification.ok ? verification.checked : 0;
   if (verification.ok) {
     console.log(`[companyclaw] Runtime manifest verified (${verification.checked} entries)`);
     return;
@@ -1529,9 +1542,139 @@ function reportRuntimeIntegrity(): void {
   );
 }
 
+/**
+ * Makes the bundled WeChat plugin available to the Gateway.
+ *
+ * The plugin ships inside the installer but OpenClaw only loads plugins from
+ * `<stateDir>/extensions/`, so without this step the channel status reads
+ * "not installed" and no QR code can ever appear. Failures are reported in
+ * plain Chinese through the existing gateway log rather than silently leaving
+ * the user with a dead button.
+ */
+function ensureWeixinPluginAvailable(): void {
+  if (isWindowsNodeMxcDesired()) return;
+  let nodePath: string | null = null;
+  let openClawEntry: string | null = null;
+  try {
+    nodePath = resolveNodePath();
+    openClawEntry = resolveOpenClawEntry();
+  } catch (error) {
+    console.warn("[companyclaw] Cannot resolve the OpenClaw runtime for the plugin:", error);
+  }
+  let outcome;
+  try {
+    outcome = ensureWeixinPluginInstalled({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      nodePath,
+      openClawEntry,
+      stateDir: getOpenClawStateDir(),
+    });
+  } catch (error) {
+    outcome = {
+      ok: false as const,
+      reason: "PLUGIN_INSTALL_FAILED",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (outcome.ok) {
+    if (outcome.state === "installed") {
+      console.log("[companyclaw] WeChat plugin installed from the bundled payload");
+    }
+    return;
+  }
+  const message =
+    outcome.reason === "PLUGIN_RESOURCE_MISSING"
+      ? `微信插件资源缺失（${outcome.detail ?? ""}）。请重新运行 CompanyClaw 安装包修复安装。`
+      : `微信插件未能安装：${outcome.detail ?? outcome.reason}。可在任务中心重新尝试，或重新运行安装包修复安装。`;
+  console.error(`[companyclaw] ${message}`);
+  mainWindow?.webContents.send("gateway:log", `[warn] ${message}`);
+}
+
+/**
+ * Reads the WeChat plugin's installation, enablement and login state.
+ *
+ * Shared by the channel status IPC, the first-run health report and the plugin
+ * installer so all three agree on what "installed" means.
+ */
+function readWeixinPluginStatus(): {
+  enabled: boolean;
+  installed: boolean;
+  loggedIn: boolean;
+  loginInProgress: boolean;
+} {
+  const config = readConfig();
+  const enabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
+  const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
+  // Check if plugin is installed, enabled, AND has saved login accounts
+  let loggedIn = false;
+  if (installed && enabled) {
+    try {
+      const accountsPath = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts.json");
+      if (fs.existsSync(accountsPath)) {
+        const accounts = JSON.parse(fs.readFileSync(accountsPath, "utf-8"));
+        if (Array.isArray(accounts) && accounts.length > 0) {
+          // Verify at least one account has a token file
+          const accountsDir = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts");
+          loggedIn = accounts.some((id: string) => {
+            const tokenFile = path.join(accountsDir, `${id}.json`);
+            return fs.existsSync(tokenFile);
+          });
+        }
+      }
+    } catch {}
+  }
+  return { enabled, installed, loggedIn, loginInProgress: !!weixinLoginProcess };
+}
+
+/**
+ * Collects the per-component health of this installation.
+ *
+ * Every value comes from an existing source (the gateway status, the broker
+ * client, the manifest check); nothing here re-derives a decision the security
+ * core already owns.
+ */
+function collectGuardianProbes(): GuardianProbes {
+  const config = readConfig();
+  const weixin = readWeixinPluginStatus();
+  const brokerStatus = companyClawRuntime?.broker?.getStatus() ?? null;
+  const browserSection =
+    config && typeof config.browser === "object" && config.browser !== null
+      ? (config.browser as { executablePath?: unknown })
+      : null;
+  const configuredModel =
+    config && typeof config.model === "object" && config.model !== null
+      ? (config.model as { name?: unknown }).name
+      : undefined;
+  return {
+    gatewayStatus,
+    gatewayConnected: gwClient?.connected ?? false,
+    manifestProblems: runtimeManifestProblems,
+    manifestChecked: runtimeManifestChecked,
+    pluginInstalled: weixin.installed,
+    pluginEnabled: weixin.enabled,
+    pluginLoggedIn: weixin.loggedIn,
+    brokerNodePath: brokerStatus ? brokerStatus.nodePath : null,
+    brokerRunning: brokerStatus?.running ?? false,
+    brokerFailureReason: brokerStatus?.lastFailureReason ?? null,
+    browserExecutable:
+      typeof browserSection?.executablePath === "string" &&
+      browserSection.executablePath.length > 0
+        ? browserSection.executablePath
+        : null,
+    // The probe result only means something once a model is configured;
+    // without one the item stays "unknown" instead of "failed".
+    modelCapability:
+      typeof configuredModel === "string" && configuredModel.length > 0
+        ? (lastProbedModelCapability as GuardianProbes["modelCapability"])
+        : null,
+  };
+}
+
 async function startApplicationServices(): Promise<void> {
   ensureCompanyClawFirstRunConfiguration();
   reportRuntimeIntegrity();
+  ensureWeixinPluginAvailable();
   if (!isWindowsNodeMxcDesired()) {
     await startGateway();
     return;
@@ -5617,43 +5760,15 @@ function registerIpcHandlers(): void {
   });
 
   // --- WeChat Plugin ---
-  ipcMain.handle("plugin:weixin:get-status", () => {
-    const config = readConfig();
-    const enabled = !!config?.plugins?.entries?.["openclaw-weixin"]?.enabled;
-    const installed = !!config?.plugins?.installs?.["openclaw-weixin"];
-    // Check if plugin is installed, enabled, AND has saved login accounts
-    let loggedIn = false;
-    if (installed && enabled) {
-      try {
-        const accountsPath = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts.json");
-        if (fs.existsSync(accountsPath)) {
-          const accounts = JSON.parse(fs.readFileSync(accountsPath, "utf-8"));
-          if (Array.isArray(accounts) && accounts.length > 0) {
-            // Verify at least one account has a token file
-            const accountsDir = path.join(getOpenClawStateDir(), "openclaw-weixin", "accounts");
-            loggedIn = accounts.some((id: string) => {
-              const tokenFile = path.join(accountsDir, `${id}.json`);
-              return fs.existsSync(tokenFile);
-            });
-          }
-        }
-      } catch {}
-    }
-    return { enabled, installed, loggedIn, loginInProgress: !!weixinLoginProcess };
-  });
+  ipcMain.handle("plugin:weixin:get-status", () => readWeixinPluginStatus());
 
   ipcMain.handle("plugin:weixin:set-enabled", async (_event, enabled: boolean) => {
     assertWindowsNodeMxcConfigurationMutable();
-    const config = readConfig() || {};
-    if (!config.plugins) config.plugins = {};
-    if (!config.plugins.entries) config.plugins.entries = {};
-    if (!config.plugins.entries["openclaw-weixin"]) config.plugins.entries["openclaw-weixin"] = {};
-    config.plugins.entries["openclaw-weixin"].enabled = enabled;
-    // Ensure plugins.allow includes openclaw-weixin so the gateway loads it synchronously
-    if (!config.plugins.allow) config.plugins.allow = [];
-    if (enabled && !config.plugins.allow.includes("openclaw-weixin")) {
-      config.plugins.allow.push("openclaw-weixin");
-    }
+    const existing = readConfig() || {};
+    // One set of enable rules, shared with first-run installation: an enable
+    // has to reach both entries.enabled and plugins.allow or the Gateway may
+    // load the plugin asynchronously.
+    const config = planWeixinPluginEnable(existing, enabled);
     const stateDir = getOpenClawStateDir();
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
@@ -8051,6 +8166,7 @@ function registerIpcHandlers(): void {
       companyClawRuntime.runtime,
       companyClawOptions,
       companyClawRuntime.broker,
+      () => buildGuardianReport(collectGuardianProbes()),
     );
     console.log(
       `[companyclaw] Security-core IPC registered (owner=${companyClawOptions.ownerSid}, broker=${companyClawOptions.broker.brokerDir})`,

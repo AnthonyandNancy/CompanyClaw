@@ -89,6 +89,19 @@ export interface CapabilityProbeView {
   summary: string;
 }
 
+export type GuardianItemState = "ok" | "degraded" | "failed" | "blocked" | "unknown";
+
+export interface GuardianItemView {
+  id: string;
+  state: GuardianItemState;
+  detail: string;
+}
+
+export interface GuardianReportView {
+  overall: GuardianItemState;
+  items: GuardianItemView[];
+}
+
 interface CompanyClawBridge {
   getRemoteAuthorization: () => Promise<RemoteAuthorizationView>;
   setRemoteAuthorization: (input: {
@@ -121,6 +134,9 @@ interface CompanyClawBridge {
     get: () => Promise<IdentityBindingView | null>;
     bind: (input: { channelType: string; channelUserId: string }) => Promise<unknown>;
     unbind: () => Promise<void>;
+  };
+  health: {
+    report: () => Promise<GuardianReportView>;
   };
   model: {
     probeCapabilities: (input: CapabilityProbeInput) => Promise<CapabilityProbeView>;
@@ -168,6 +184,8 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
   });
   const identityBinding = ref<IdentityBindingView | null>(null);
   const brokerStatus = ref<BrokerStatusView | null>(null);
+  /** Per-component installation health; null until a report has been fetched. */
+  const healthReport = ref<GuardianReportView | null>(null);
 
   const remoteEnabled = computed(() => authorization.value?.state === "enabled");
   const activeTasks = computed(() => tasks.value.filter((task) => ACTIVE_STATES.has(task.state)));
@@ -347,6 +365,29 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     }
   }
 
+  /**
+   * Fetches the per-component health report.
+   *
+   * Returns null when the bridge is unavailable; the caller must show that as
+   * "unsupported", never as "healthy".
+   */
+  async function refreshHealth(): Promise<GuardianReportView | null> {
+    const api = bridge();
+    if (!api?.health?.report) {
+      available.value = false;
+      healthReport.value = null;
+      return null;
+    }
+    try {
+      healthReport.value = await api.health.report();
+      return healthReport.value;
+    } catch (err) {
+      error.value = messageOf(err);
+      healthReport.value = null;
+      return null;
+    }
+  }
+
   return {
     available,
     loading,
@@ -358,10 +399,12 @@ export const useCompanyClawStore = defineStore("companyclaw", () => {
     browserPolicy,
     identityBinding,
     brokerStatus,
+    healthReport,
     setBrokerTargets,
     setBrowserPolicy,
     unbindIdentity,
     probeModelCapabilities,
+    refreshHealth,
     remoteEnabled,
     activeTasks,
     refresh,

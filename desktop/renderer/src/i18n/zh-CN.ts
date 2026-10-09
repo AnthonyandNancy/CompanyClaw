@@ -546,6 +546,31 @@ export default {
   "setup.bindWeixin": "绑定微信",
   "setup.bindWeixinHint": "打开微信，用手机扫一扫完成绑定。",
 
+  // ── CompanyClaw first-run wizard steps ──
+  "setup.step1Title": "1. 环境自检",
+  "setup.step1Desc": "检查本机运行组件是否完整。无需安装任何额外软件。",
+  "setup.step1Ready": "本地运行环境已就绪",
+  "setup.step1Recheck": "重新检测",
+  "setup.step1Checking": "正在检查…",
+  "setup.step1Unavailable": "当前环境不支持环境自检（未检测到桌面桥接）。",
+  "setup.step1GotoModels": "下一步：我的模型",
+  "setup.step2Title": "2. 我的模型",
+  "setup.step3Title": "3. 绑定微信",
+  "setup.step4Title": "4. 开启远程操作",
+  "setup.step4Desc":
+    "仅作用于当前 Windows 登录账户；电脑需保持开机并处于可交互状态；只允许已授权的系统与程序；关键修改需要在微信上由你本人确认。",
+  "setup.step4Enable": "开启远程操作",
+  "setup.step4Enabled": "远程操作已开启",
+  "setup.step4Disable": "关闭远程操作",
+  "setup.step4NeedWeixin": "请先完成第 3 步绑定微信，再开启远程操作。",
+  "setup.step4Ttl": "有效时长（分钟）",
+  "setup.step4DefaultOff": "默认关闭；你可以随时在本机暂停或撤销。",
+  "setup.state.ok": "正常",
+  "setup.state.degraded": "注意",
+  "setup.state.failed": "异常",
+  "setup.state.blocked": "受阻",
+  "setup.state.unknown": "未检测",
+
   // ── ModelSetupDialog ──
   "modelSetup.title": "设置模型",
   "modelSetup.selectDesc": "选择引导供应商、连接账号，或配置任意兼容的模型服务。",

@@ -594,5 +594,20 @@ contextBridge.exposeInMainWorld("openclaw", {
         ipcRenderer.invoke("companyclaw:identity:bind", input) as Promise<unknown>,
       unbind: () => ipcRenderer.invoke("companyclaw:identity:unbind") as Promise<void>,
     },
+    /**
+     * Per-component health of this installation. Each item stands alone: one
+     * "everything is fine" flag cannot say which part is broken.
+     */
+    health: {
+      report: () =>
+        ipcRenderer.invoke("companyclaw:health:report") as Promise<{
+          overall: "ok" | "degraded" | "failed" | "blocked" | "unknown";
+          items: Array<{
+            id: string;
+            state: "ok" | "degraded" | "failed" | "blocked" | "unknown";
+            detail: string;
+          }>;
+        }>,
+    },
   },
 });

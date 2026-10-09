@@ -13,7 +13,39 @@
           <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" fill="#F59E0B" />
         </svg>
       </div>
-      <h2>{{ t("setup.aiTitle") }}</h2>
+      <h2 class="setup-step-title">{{ t("setup.step1Title") }}</h2>
+      <p class="setup-desc">{{ t("setup.step1Desc") }}</p>
+
+      <div v-if="healthUnavailable" class="setup-health-unavailable">
+        {{ t("setup.step1Unavailable") }}
+      </div>
+      <div v-else class="setup-health">
+        <div v-if="healthChecking" class="setup-health-checking">
+          {{ t("setup.step1Checking") }}
+        </div>
+        <template v-else-if="healthReport">
+          <div class="setup-health-headline" :class="`state-${healthReport.overall}`">
+            {{
+              healthReport.overall === "ok"
+                ? t("setup.step1Ready")
+                : t(`setup.state.${healthReport.overall}`)
+            }}
+          </div>
+          <ul class="setup-health-items">
+            <li v-for="entry in healthReport.items" :key="entry.id">
+              <span class="setup-health-tag" :class="`state-${entry.state}`">
+                {{ t(`setup.state.${entry.state}`) }}
+              </span>
+              <span class="setup-health-detail">{{ entry.detail }}</span>
+            </li>
+          </ul>
+        </template>
+        <el-button size="small" :loading="healthChecking" @click="refreshEnvironment">
+          {{ t("setup.step1Recheck") }}
+        </el-button>
+      </div>
+
+      <h2 class="setup-step-title">{{ t("setup.step2Title") }}</h2>
       <p class="setup-desc">{{ t("setup.aiDesc") }}</p>
 
       <el-form label-position="top" class="setup-form">
@@ -66,11 +98,39 @@
         {{ probing ? t("setup.probeRunning") : t("setup.finishAndEnter") }}
       </el-button>
 
+      <h2 class="setup-step-title">{{ t("setup.step3Title") }}</h2>
       <div class="bind-weixin">
         <el-button link type="primary" @click="goToWeixinBinding">
           {{ t("setup.bindWeixin") }}
         </el-button>
         <span class="bind-weixin-hint">{{ t("setup.bindWeixinHint") }}</span>
+      </div>
+
+      <h2 class="setup-step-title">{{ t("setup.step4Title") }}</h2>
+      <p class="setup-desc">{{ t("setup.step4Desc") }}</p>
+      <div class="setup-remote">
+        <div class="setup-remote-state">
+          {{ remoteEnabled ? t("setup.step4Enabled") : t("setup.step4DefaultOff") }}
+        </div>
+        <el-form-item :label="t('setup.step4Ttl')" class="setup-remote-ttl">
+          <el-input-number v-model="remoteTtlMinutes" :min="1" :max="10080" size="small" />
+        </el-form-item>
+        <el-button
+          v-if="!remoteEnabled"
+          type="primary"
+          :disabled="!weixinBound"
+          :loading="remoteBusy"
+          @click="enableRemote"
+        >
+          {{ t("setup.step4Enable") }}
+        </el-button>
+        <el-button v-else :loading="remoteBusy" @click="disableRemote">
+          {{ t("setup.step4Disable") }}
+        </el-button>
+        <div v-if="!weixinBound" class="setup-remote-hint">
+          {{ t("setup.step4NeedWeixin") }}
+        </div>
+        <div v-if="remoteError" class="error-msg">{{ remoteError }}</div>
       </div>
     </div>
   </div>
@@ -80,8 +140,93 @@
 import { ref, reactive, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { t } from "@/i18n";
+import { useCompanyClawStore, type GuardianReportView } from "@/stores/companyclaw";
 
 const router = useRouter();
+const companyClaw = useCompanyClawStore();
+
+/**
+ * Step 1: the local runtime report, straight from the main process.
+ *
+ * `healthUnavailable` is a distinct state from a failing report: a missing
+ * bridge means "cannot check", never "everything is fine".
+ */
+const healthReport = ref<GuardianReportView | null>(null);
+const healthChecking = ref(false);
+const healthUnavailable = ref(false);
+
+async function refreshEnvironment(): Promise<void> {
+  healthChecking.value = true;
+  try {
+    const report = await companyClaw.refreshHealth();
+    healthUnavailable.value = report === null;
+    healthReport.value = report;
+  } finally {
+    healthChecking.value = false;
+  }
+}
+
+/** Step 4: remote operation, off until the owner turns it on. */
+const remoteEnabled = ref(false);
+const remoteBusy = ref(false);
+const remoteError = ref("");
+const remoteTtlMinutes = ref(60);
+/** Whether this machine already has a bound WeChat identity. */
+const weixinBound = ref(false);
+
+async function refreshRemoteState(): Promise<void> {
+  try {
+    const authorization = await companyClawBridge()?.getRemoteAuthorization();
+    remoteEnabled.value = authorization?.state === "enabled";
+  } catch {
+    remoteEnabled.value = false;
+  }
+  try {
+    const status = await window.openclaw.plugin.weixin.getStatus();
+    weixinBound.value = status?.loggedIn === true;
+  } catch {
+    weixinBound.value = false;
+  }
+}
+
+/** The CompanyClaw namespace exists only when the desktop bridge did load. */
+function companyClawBridge():
+  | {
+      getRemoteAuthorization: () => Promise<{ state: string }>;
+    }
+  | undefined {
+  return (
+    window as unknown as {
+      openclaw?: { companyClaw?: { getRemoteAuthorization: () => Promise<{ state: string }> } };
+    }
+  ).openclaw?.companyClaw;
+}
+
+async function enableRemote(): Promise<void> {
+  remoteBusy.value = true;
+  remoteError.value = "";
+  try {
+    await companyClaw.enableRemoteOperation({ ttlMinutes: remoteTtlMinutes.value });
+    remoteEnabled.value = companyClaw.remoteEnabled;
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    remoteBusy.value = false;
+  }
+}
+
+async function disableRemote(): Promise<void> {
+  remoteBusy.value = true;
+  remoteError.value = "";
+  try {
+    await companyClaw.revokeRemoteOperation();
+    remoteEnabled.value = false;
+  } catch (error) {
+    remoteError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    remoteBusy.value = false;
+  }
+}
 const saving = ref(false);
 const errorMsg = ref("");
 /** Real capability measurement result; empty until a probe has run. */
@@ -164,6 +309,10 @@ watch(
 );
 
 onMounted(async () => {
+  // Step 1 and step 4 both read real state; neither blocks the wizard, so a
+  // failure leaves the step showing "cannot check" rather than a blank page.
+  void refreshEnvironment();
+  void refreshRemoteState();
   // Guard: if setup isn't needed, redirect away immediately
   try {
     const needs = await window.openclaw.config.needsSetup();
@@ -397,6 +546,95 @@ async function saveAndFinish() {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Step headings: the wizard shows four numbered steps in one panel. */
+.setup-step-title {
+  margin: 18px 0 4px;
+  font-size: 15px;
+}
+
+.setup-step-title:first-of-type {
+  margin-top: 4px;
+}
+
+.setup-health-unavailable {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-color-warning);
+}
+
+.setup-health-checking {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.setup-health-headline {
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.setup-health-headline.state-ok {
+  color: var(--el-color-success);
+}
+
+.setup-health-headline.state-degraded {
+  color: var(--el-color-warning);
+}
+
+.setup-health-headline.state-failed {
+  color: var(--el-color-danger);
+}
+
+.setup-health-items {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.setup-health-items li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.setup-health-tag {
+  flex: 0 0 56px;
+  color: var(--el-text-color-secondary);
+}
+
+.setup-health-tag.state-ok {
+  color: var(--el-color-success);
+}
+
+.setup-health-tag.state-failed {
+  color: var(--el-color-danger);
+}
+
+.setup-health-tag.state-degraded {
+  color: var(--el-color-warning);
+}
+
+.setup-remote {
+  margin-top: 8px;
+}
+
+.setup-remote-state {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
+}
+
+.setup-remote-ttl {
+  margin-bottom: 8px;
+}
+
+.setup-remote-hint {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--el-color-warning);
 }
 
 .bind-weixin-hint {
