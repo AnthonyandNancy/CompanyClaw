@@ -214,7 +214,7 @@ describe("artifact delivery", () => {
     // A path separator in the leaf name would address a different location.
     const odd = path.join(fixture.taskDir, "ok.xlsx");
     fs.writeFileSync(odd, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
-    const { delivery, sendFile } = deliveryWith(fixture);
+    const { delivery } = deliveryWith(fixture);
     const result = await delivery.deliver({
       taskId: fixture.taskId,
       ownerSid: "S-1",
