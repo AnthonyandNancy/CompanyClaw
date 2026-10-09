@@ -24,6 +24,12 @@ export interface BrokerClientOptions {
   /** Directory containing the compiled broker (dist/). */
   brokerDir: string;
   scriptDir: string | null;
+  /**
+   * Node runtime that runs the broker. Must be a real node.exe: in a packaged
+   * build `process.execPath` is CompanyClaw.exe, which cannot execute the
+   * broker's JavaScript entry point.
+   */
+  nodePath?: string;
   ownerSid: string;
   deviceId: string;
   allowedProcesses: string[];
@@ -85,7 +91,10 @@ export class BrokerClient {
   private async startInternal(): Promise<void> {
     const spawnProcess = this.options.spawnProcess ?? spawn;
     const entry = path.join(this.options.brokerDir, "dist", "main.js");
-    const child = spawnProcess(process.execPath, [entry], {
+    // The broker always runs on the bundled private Node runtime; falling back
+    // to process.execPath only keeps source checkouts and unit tests working.
+    const command = this.options.nodePath ?? process.execPath;
+    const child = spawnProcess(command, [entry], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: {

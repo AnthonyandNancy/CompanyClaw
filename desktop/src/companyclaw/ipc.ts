@@ -31,6 +31,11 @@ interface CompanyClawIpcOptions {
    * present the runtime can spawn the broker on first use.
    */
   broker?: { brokerDir: string };
+  /**
+   * Private Node runtime used to launch the broker. In a packaged build
+   * `process.execPath` is CompanyClaw.exe and cannot run the broker entry.
+   */
+  nodePath?: string;
 }
 
 /** Handle returned to `main.ts` so it can stop the broker on quit. */
@@ -79,6 +84,7 @@ export function createCompanyClawRuntime(
     ? new BrokerClient({
         brokerDir: options.broker.brokerDir,
         scriptDir: resolveBrokerScriptDir(options.broker.brokerDir),
+        ...(options.nodePath ? { nodePath: options.nodePath } : {}),
         ownerSid: options.ownerSid,
         deviceId: options.deviceId,
         allowedProcesses: [],

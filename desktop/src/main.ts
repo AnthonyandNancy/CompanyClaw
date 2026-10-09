@@ -7996,6 +7996,10 @@ function registerIpcHandlers(): void {
       ticketSecret,
       ownerSid: resolveOwnerSid(),
       deviceId: deviceIdentity.deviceId,
+      // The broker must run on the bundled private Node runtime: in a packaged
+      // build process.execPath is CompanyClaw.exe, which cannot execute the
+      // broker's JavaScript entry point.
+      nodePath: resolveNodePath(),
       broker: {
         brokerDir: resolveBrokerDir({
           isPackaged: app.isPackaged,
