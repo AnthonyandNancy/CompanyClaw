@@ -355,6 +355,8 @@ let gatewayPort = 0;
 let gatewayToken = "";
 /** CompanyClaw security core handle; null until registration succeeds. */
 let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
+/** Windows user SID this installation serves; set with the security core. */
+let companyClawOwnerSid = "";
 const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
@@ -4205,6 +4207,38 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
     // Track session source info from the WeChat plugin (or other remote channels).
     // Used to send a notification when a permission dialog appears on the desktop.
     child.on("message", (msg: any) => {
+      if (msg?.type === "approval-reply-request") {
+        const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
+        const text = typeof msg.text === "string" ? msg.text : "";
+        const channelUserId = typeof msg.channelUserId === "string" ? msg.channelUserId : "";
+        void (async () => {
+          let handled = false;
+          try {
+            if (companyClawRuntime && companyClawOwnerSid && channelUserId) {
+              // Sender binding is checked first: being bound is not permission
+              // to approve anything, but an unbound sender can never do so.
+              const authorized = companyClawRuntime.runtime.isRemoteCallerAuthorized({
+                channelType: "weixin",
+                channelUserId,
+              });
+              if (authorized) {
+                const outcome = await companyClawRuntime.runtime.applyApprovalReply(
+                  companyClawOwnerSid,
+                  text,
+                );
+                handled = outcome.handled;
+              }
+            }
+          } catch (error) {
+            console.error("[companyclaw] Approval reply failed:", error);
+          } finally {
+            // Always answer: silence would leave the plugin waiting for the
+            // full timeout before releasing the message to the AI.
+            child.send?.({ type: "approval-reply-response", requestId, handled });
+          }
+        })();
+        return;
+      }
       if (msg?.type !== "session-source") return;
       const { source } = msg;
       if (source?.channelType) {
@@ -7991,10 +8025,11 @@ function registerIpcHandlers(): void {
     const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () =>
       randomUUID(),
     );
+    companyClawOwnerSid = resolveOwnerSid();
     const companyClawOptions = {
       userDataDir: companyClawUserDataDir,
       ticketSecret,
-      ownerSid: resolveOwnerSid(),
+      ownerSid: companyClawOwnerSid,
       deviceId: deviceIdentity.deviceId,
       // The broker must run on the bundled private Node runtime: in a packaged
       // build process.execPath is CompanyClaw.exe, which cannot execute the

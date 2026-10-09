@@ -35,6 +35,11 @@ import { StreamingMarkdownFilter } from "./markdown-filter.js";
 import { sendMessageWeixin } from "./send.js";
 import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
 import { handleSlashCommand } from "./slash-commands.js";
+import {
+  forwardApprovalReply,
+  publishSessionSource,
+  type DesktopChannel,
+} from "./desktop-bridge.js";
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
@@ -96,6 +101,26 @@ export async function processOneMessage(
     }, receivedAt, full.create_time_ms);
     if (slashResult.handled) {
       logger.info(`[weixin] Slash command handled, skipping AI pipeline`);
+      return;
+    }
+  }
+
+  // CompanyClaw: publish the trusted identity of this message and let the
+  // desktop app decide whether the text is an approval reply. The plugin never
+  // decides an approval itself, and anything the desktop does not recognise
+  // continues to the AI exactly as before.
+  const desktopChannel = typeof process.send === "function" ? (process as DesktopChannel) : null;
+  if (textBody.trim().length > 0) {
+    publishSessionSource(desktopChannel, {
+      channelType: "weixin",
+      userId: full.from_user_id ?? "",
+      accountId: deps.accountId,
+      baseUrl: deps.baseUrl,
+      ...(deps.token ? { token: deps.token } : {}),
+      ...(full.context_token ? { contextToken: full.context_token } : {}),
+    });
+    if (await forwardApprovalReply(desktopChannel, textBody, full.from_user_id ?? "")) {
+      logger.info(`[weixin] Approval reply handled by CompanyClaw, skipping AI pipeline`);
       return;
     }
   }

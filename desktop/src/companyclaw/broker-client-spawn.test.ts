@@ -154,3 +154,28 @@ describe("broker status reporting", () => {
     await client.stop();
   });
 });
+
+describe("weixin approval bridge wiring", () => {
+  const repositoryRoot = path.resolve(__dirname, "../../..");
+  const srcDir = path.resolve(__dirname, "..");
+
+  it("answers every approval-reply request so the plugin is never left waiting", () => {
+    const mainSource = readFileSync(path.join(srcDir, "main.ts"), "utf-8");
+    expect(mainSource).toContain('msg?.type === "approval-reply-request"');
+    expect(mainSource).toContain('type: "approval-reply-response"');
+    // The decision stays behind the runtime: no approval is granted here.
+    expect(mainSource).toContain("isRemoteCallerAuthorized");
+    expect(mainSource).toContain("applyApprovalReply");
+  });
+
+  it("keeps the plugin's inbound branch additive and behind the desktop verdict", () => {
+    const pluginSource = readFileSync(
+      path.join(repositoryRoot, "plugins", "openclaw-weixin", "src", "messaging", "process-message.ts"),
+      "utf-8",
+    );
+    expect(pluginSource).toContain("publishSessionSource");
+    expect(pluginSource).toContain("forwardApprovalReply");
+    // A handled reply returns early; anything else falls through to the AI.
+    expect(pluginSource).toMatch(/if \(await forwardApprovalReply\([\s\S]*?\)\) \{[\s\S]*?return;/);
+  });
+});
