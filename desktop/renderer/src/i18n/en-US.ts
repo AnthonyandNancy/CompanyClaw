@@ -477,6 +477,7 @@ export default {
   "settings.menu.channels": "Channels",
   "settings.menu.skills": "Skills",
   "settings.menu.privacy": "Privacy",
+  "settings.menu.permissions": "Computer use permissions",
   "settings.menu.security": "Security",
   "settings.menu.about": "About",
   // Models & API

@@ -24,6 +24,8 @@ function makeRuntime(paths?: Partial<RuntimePaths>) {
     artifactsRoot: "C:/state",
     identityFile: "C:/state/identity-binding.json",
     brokerTargetsFile: "C:/state/broker-targets.json",
+    permissionsFile: "C:/state/permissions.json",
+    auditFile: "C:/state/audit.jsonl",
     ...paths,
   };
   const runtime = new CompanyClawRuntime({

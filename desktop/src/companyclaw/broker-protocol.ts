@@ -9,6 +9,36 @@
  */
 
 export const BROKER_PROTOCOL_CONTRACT = "companyclaw.broker.v1" as const;
+export const BROKER_PROTOCOL_CONTRACT_V2 = "companyclaw.broker.v2" as const;
+
+export type BrokerContract =
+  | typeof BROKER_PROTOCOL_CONTRACT
+  | typeof BROKER_PROTOCOL_CONTRACT_V2;
+
+export const SUPPORTED_BROKER_CONTRACTS: readonly BrokerContract[] = [
+  BROKER_PROTOCOL_CONTRACT,
+  BROKER_PROTOCOL_CONTRACT_V2,
+] as const;
+
+export const V2_OPERATIONS = [
+  "list-installed-apps",
+  "launch-app",
+  "focus-window",
+  "snapshot-ui-tree",
+  "find-control",
+  "screenshot",
+  "click",
+  "move",
+  "drag-drop",
+  "scroll",
+  "wait-for-condition",
+  "inspect-dialog",
+  "verify-state",
+  "capture-execution-error",
+  "capabilities",
+] as const;
+
+export type V2Operation = (typeof V2_OPERATIONS)[number];
 
 export type BrokerOperation =
   | "list-windows"
@@ -18,13 +48,21 @@ export type BrokerOperation =
   | "invoke-pattern"
   | "set-value"
   | "send-keys"
-  | "wait-for-window";
+  | "wait-for-window"
+  | V2Operation;
 
 /** Operations that can change application state and therefore need a ticket. */
 export const MUTATING_OPERATIONS: readonly BrokerOperation[] = [
   "invoke-pattern",
   "set-value",
   "send-keys",
+  "launch-app",
+  "focus-window",
+  "click",
+  "move",
+  "drag-drop",
+  "scroll",
+  "inspect-dialog",
 ] as const;
 
 export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
@@ -33,6 +71,14 @@ export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
   "find-elements",
   "read-value",
   "wait-for-window",
+  "list-installed-apps",
+  "snapshot-ui-tree",
+  "find-control",
+  "screenshot",
+  "wait-for-condition",
+  "verify-state",
+  "capture-execution-error",
+  "capabilities",
 ] as const;
 
 export interface ApprovalTicketEnvelope {
@@ -45,7 +91,7 @@ export interface ApprovalTicketEnvelope {
 }
 
 export interface BrokerRequest {
-  contract: typeof BROKER_PROTOCOL_CONTRACT;
+  contract: BrokerContract;
   requestId: string;
   taskId: string;
   stepId: string;
@@ -61,9 +107,9 @@ export interface BrokerRequest {
 }
 
 export type BrokerResponse =
-  | { contract: typeof BROKER_PROTOCOL_CONTRACT; requestId: string; status: "ok"; data: unknown; completedAt: string }
+  | { contract: BrokerContract; requestId: string; status: "ok"; data: unknown; completedAt: string }
   | {
-      contract: typeof BROKER_PROTOCOL_CONTRACT;
+      contract: BrokerContract;
       requestId: string;
       status: "rejected" | "failed";
       reason: string;

@@ -73,6 +73,10 @@ extraResources:
     to: companyclaw-broker/dist/
   - from: resources/companyclaw-broker/scripts/
     to: companyclaw-broker/scripts/
+  # The vendored Windows-MCP payload: server sources plus the private Python
+  # runtime. The employee's machine runs no installer, so both must be here.
+  - from: resources/companyclaw-broker/windows-mcp/
+    to: companyclaw-broker/windows-mcp/
   - from: resources/runtime-manifest.json
     to: runtime-manifest.json
   # The WeChat plugin and the agent skills come from the unified pipeline

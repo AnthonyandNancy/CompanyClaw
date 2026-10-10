@@ -91,3 +91,7 @@ coverage/
 
 # ═══════════════════════════════════════════════════════════
 docs/patent-application.md
+
+# The compiled desktop test fixture is a build artifact; build it with
+# tools/testapp/build-fixture.ps1.
+tools/testapp/*.exe

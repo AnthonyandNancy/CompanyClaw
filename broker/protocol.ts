@@ -10,6 +10,55 @@
 
 export const BROKER_PROTOCOL_CONTRACT = "companyclaw.broker.v1" as const;
 
+/**
+ * Second-generation contract, negotiated by capability rather than replaced.
+ *
+ * Requirement V5 §5.2 is explicit that `v1` must stay readable: a desktop build
+ * that still speaks v1 has to keep working, so the new operations are added
+ * alongside the old ones and a request declares which contract it uses. The
+ * broker accepts both and reports the set it can serve.
+ */
+export const BROKER_PROTOCOL_CONTRACT_V2 = "companyclaw.broker.v2" as const;
+
+export type BrokerContract =
+  | typeof BROKER_PROTOCOL_CONTRACT
+  | typeof BROKER_PROTOCOL_CONTRACT_V2;
+
+export const SUPPORTED_BROKER_CONTRACTS: readonly BrokerContract[] = [
+  BROKER_PROTOCOL_CONTRACT,
+  BROKER_PROTOCOL_CONTRACT_V2,
+] as const;
+
+/** Operations introduced by v2, mapped to the requirement's W-numbers. */
+export const V2_OPERATIONS = [
+  // W01/W02 — application discovery and launch.
+  "list-installed-apps",
+  "launch-app",
+  // W04 — focus, with the identity checks that keep it on the right window.
+  "focus-window",
+  // W05/W06 — accessibility tree and leased element references.
+  "snapshot-ui-tree",
+  "find-control",
+  // W14 — capture limited to the authorized window.
+  "screenshot",
+  // W11–W13 — pointer input, including the mandatory drag.
+  "click",
+  "move",
+  "drag-drop",
+  // W12 — scroll inside a container.
+  "scroll",
+  // W15/W16 — bounded waiting and dialog inspection.
+  "wait-for-condition",
+  "inspect-dialog",
+  // W17/W18 — read-back verification and structured failure.
+  "verify-state",
+  "capture-execution-error",
+  // Capability negotiation, so a desktop can adapt instead of failing late.
+  "capabilities",
+] as const;
+
+export type V2Operation = (typeof V2_OPERATIONS)[number];
+
 export type BrokerOperation =
   | "list-windows"
   | "describe-element"
@@ -18,13 +67,23 @@ export type BrokerOperation =
   | "invoke-pattern"
   | "set-value"
   | "send-keys"
-  | "wait-for-window";
+  | "wait-for-window"
+  | V2Operation;
 
 /** Operations that can change application state and therefore need a ticket. */
 export const MUTATING_OPERATIONS: readonly BrokerOperation[] = [
   "invoke-pattern",
   "set-value",
   "send-keys",
+  // v2 mutations. Pointer input and application launch change state exactly as
+  // much as a set-value does, so they take the same gate rather than a new one.
+  "launch-app",
+  "focus-window",
+  "click",
+  "move",
+  "drag-drop",
+  "scroll",
+  "inspect-dialog",
 ] as const;
 
 export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
@@ -33,6 +92,15 @@ export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
   "find-elements",
   "read-value",
   "wait-for-window",
+  // v2 reads.
+  "list-installed-apps",
+  "snapshot-ui-tree",
+  "find-control",
+  "screenshot",
+  "wait-for-condition",
+  "verify-state",
+  "capture-execution-error",
+  "capabilities",
 ] as const;
 
 const ALL_OPERATIONS: readonly BrokerOperation[] = [
@@ -50,7 +118,7 @@ export interface ApprovalTicketEnvelope {
 }
 
 export interface BrokerRequest {
-  contract: typeof BROKER_PROTOCOL_CONTRACT;
+  contract: BrokerContract;
   requestId: string;
   taskId: string;
   stepId: string;
@@ -83,7 +151,12 @@ export function parseBrokerRequest(raw: unknown): BrokerParseResult {
     return { ok: false, reason: "not-an-object" };
   }
   const candidate = raw as Partial<BrokerRequest>;
-  if (candidate.contract !== BROKER_PROTOCOL_CONTRACT) {
+  // Both contracts are accepted; the operation list is what actually decides
+  // whether a call can be served.
+  if (
+    typeof candidate.contract !== "string" ||
+    !SUPPORTED_BROKER_CONTRACTS.includes(candidate.contract as BrokerContract)
+  ) {
     return { ok: false, reason: "unsupported-contract" };
   }
   for (const field of ["requestId", "taskId", "stepId", "ownerSid", "deviceId"] as const) {
@@ -117,7 +190,7 @@ export type BrokerOutcome =
   | { status: "failed"; reason: string };
 
 export interface BrokerResponse {
-  contract: typeof BROKER_PROTOCOL_CONTRACT;
+  contract: BrokerContract;
   requestId: string;
   status: BrokerOutcome["status"];
   data?: unknown;

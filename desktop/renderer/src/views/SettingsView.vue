@@ -388,6 +388,9 @@
       />
 
       <!-- Security / Sandbox -->
+      <!-- 电脑操作权限：三档预设、云端视觉、任务级授权与安全默认值恢复 -->
+      <PermissionSettings v-if="activeSection === 'permissions'" />
+
       <div v-if="activeSection === 'security'" class="section">
         <div class="section-label">{{ t("settings.security") }}</div>
         <div class="card-group mxc-card">
@@ -1272,6 +1275,7 @@ import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ChannelsView from "@/views/ChannelsView.vue";
+import PermissionSettings from "@/components/PermissionSettings.vue";
 import microclawLogo from "../../../assets/microclaw.png";
 import { getLocale, t, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
@@ -2109,6 +2113,7 @@ const menuItems = computed(() => [
   ...(devSettingsEnabled
     ? [{ id: "skills", label: t("settings.menu.skills"), color: "#636366", svg: svg.skills }]
     : []),
+  { id: "permissions", label: t("settings.menu.permissions"), color: "#636366", svg: svg.security },
   { id: "security", label: t("settings.menu.security"), color: "#636366", svg: svg.security },
   { id: "privacy", label: t("settings.menu.privacy"), color: "#636366", svg: svg.privacy },
   { id: "about", label: t("settings.menu.about"), color: "#636366", svg: svg.about },

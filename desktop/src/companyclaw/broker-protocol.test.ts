@@ -3,8 +3,11 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BROKER_PROTOCOL_CONTRACT,
+  BROKER_PROTOCOL_CONTRACT_V2,
   MUTATING_OPERATIONS,
   READ_ONLY_OPERATIONS,
+  SUPPORTED_BROKER_CONTRACTS,
+  V2_OPERATIONS,
   type BrokerOperation,
 } from "./broker-protocol";
 
@@ -44,10 +47,30 @@ describe("broker protocol mirror", () => {
 
   it("treats every mutating operation as ticket-gated on the broker side", () => {
     const source = readBrokerProtocol();
-    // The broker derives the mutation gate from its own list; both lists are the
-    // same three names, so a write cannot slip through ungated.
-    expect(MUTATING_OPERATIONS.length).toBe(3);
+    // The broker derives the mutation gate from its own list, and the desktop
+    // mirrors that list; every mutating name must therefore appear in the
+    // broker's own definition too, so a write cannot slip through ungated.
     expect(source).toMatch(/isMutatingOperation/);
+    for (const operation of MUTATING_OPERATIONS) {
+      expect(source).toContain(`"${operation}"`);
+    }
+  });
+
+  it("declares the v2 contract alongside v1 instead of replacing it", () => {
+    const source = readBrokerProtocol();
+    expect(source).toContain(BROKER_PROTOCOL_CONTRACT_V2);
+    expect(source).toContain(BROKER_PROTOCOL_CONTRACT);
+    expect(SUPPORTED_BROKER_CONTRACTS).toEqual([
+      BROKER_PROTOCOL_CONTRACT,
+      BROKER_PROTOCOL_CONTRACT_V2,
+    ]);
+  });
+
+  it("keeps every v2 operation defined on both sides", () => {
+    const source = readBrokerProtocol();
+    for (const operation of V2_OPERATIONS) {
+      expect(source).toContain(`"${operation}"`);
+    }
   });
 
   it("agrees with the broker on the bootstrap environment variable names", () => {

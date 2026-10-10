@@ -1,13 +1,28 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { basename as pathBasename } from "node:path";
-import { CompanyClawApprovalStore } from "./approvals/approval-store";
+import {
+  CompanyClawApprovalStore,
+  COMPANYCLAW_APPROVAL_WAIT_MS as COMPANYCLAW_APPROVAL_WAIT_MS_FROM_STORE,
+} from "./approvals/approval-store";
 import {
   ExecutionBridge,
   type BridgeResult,
   type BridgeTransport,
 } from "./bridge/execution-bridge";
-import { decideAction, type ActionDescriptor } from "./policy/risk-classifier";
+import {
+  decideAction,
+  type ActionDescriptor,
+  type PolicyDecision,
+} from "./policy/risk-classifier";
+import { DesktopExecutionLock } from "./locks/desktop-execution-lock";
+import {
+  ComputerUseToolFacade,
+  describeAction as describeActionForDispatch,
+  describeTarget as describeTargetForDispatch,
+  type ToolFacadeResult,
+} from "./tools/tool-facade";
+import { AuditLog, queryAuditLines, type AuditEntry, type AuditQuery } from "./audit/audit-log";
 import {
   hashBinding,
   issueApprovalTicket,
@@ -28,12 +43,65 @@ import { IdentityBindingStore, type IdentityBinding } from "./remote/identity-bi
 import { BrowserPolicy, type BrowserAuthorization } from "./policy/browser-policy";
 import { BrokerTargetsStore, type BrokerTargets } from "./broker-targets";
 import { RemoteAuthorization } from "./remote/remote-authorization";
+import { PermissionStore } from "./permissions/permission-store";
+import {
+  normalizeTrustedApp,
+  normalizeTrustedDomain,
+  type PermissionPolicy,
+  type TrustedAppRecord,
+  type TrustedSiteRecord,
+  type GrantScope,
+} from "./permissions/permission-policy";
+import { migrateToPermissionPolicy } from "./permissions/migrate";
+import {
+  DEFAULT_VISION_SCOPE,
+  evaluateVisionRequest,
+  selectVisionRecord,
+  visionGrantLifetimeMs,
+  type VisionDecision,
+} from "./vision/vision-gate";
+import {
+  presetSuppressesRoutinePrompts,
+  type PermissionPreset,
+} from "./policy/permission-preset";
+import type { ExecutionOrigin } from "./policy/execution-origin";
 import { CompanyClawTaskStore, filterTasksForOwner } from "./tasks/task-store";
 import type { CompanyClawTaskAdvancePatch, CompanyClawTaskRecord } from "./tasks/task-store";
-import { nextStateForControl, type TaskControl, type TaskState } from "./tasks/task-state";
+import {
+  isTerminalState,
+  nextStateForControl,
+  type TaskControl,
+  type TaskState,
+} from "./tasks/task-state";
+import {
+  applyReset,
+  buildResetPreview,
+  type ResetPreview,
+} from "./recovery/reset-to-defaults";
+
+/**
+ * The execution credential's lifetime: two minutes.
+ *
+ * Ruling Q5 fixes this ceiling. It is deliberately unrelated to how long the
+ * employee may take to answer — see `COMPANYCLAW_APPROVAL_WAIT_MS`.
+ */
+/**
+ * The audit file is JSON Lines, so reading it means splitting on the line feed.
+ *
+ * Built from a character code rather than written as an escape so an editor that
+ * reflows string literals cannot silently corrupt the separator.
+ */
+const AUDIT_LINE_SEPARATOR = String.fromCharCode(10);
 
 export const COMPANYCLAW_TICKET_TTL_MS = 120_000;
-export const COMPANYCLAW_APPROVAL_TTL_MS = 300_000;
+
+/**
+ * How long an approval stays answerable, per ruling Q5: ten minutes.
+ *
+ * The employee may be away from the desk; the wait window absorbs that without
+ * ever lengthening the credential that executes the action.
+ */
+export const COMPANYCLAW_APPROVAL_WAIT_MS = COMPANYCLAW_APPROVAL_WAIT_MS_FROM_STORE;
 const MIN_TTL_MINUTES = 1;
 const MAX_TTL_MINUTES = 60 * 24 * 7;
 
@@ -46,6 +114,10 @@ export interface RuntimePaths {
   identityFile: string;
   /** File holding the broker's application allow list. */
   brokerTargetsFile: string;
+  /** File holding the single versioned permission document. */
+  permissionsFile: string;
+  /** Append-only audit log (JSON Lines). */
+  auditFile: string;
 }
 
 export interface RuntimeDependencies {
@@ -57,6 +129,10 @@ export interface RuntimeDependencies {
   readFile: (filePath: string) => string;
   existsFile: (filePath: string) => boolean;
   writeFile: (filePath: string, contents: string) => Promise<void>;
+  /** Preserves an unusable permission file; returns where it was kept. */
+  backupFile?: (filePath: string, stamp: string) => string;
+  /** Appends one line to the audit log; absent means auditing is disabled. */
+  appendAudit?: (filePath: string, line: string) => Promise<void>;
   ticketSecret: string;
 }
 
@@ -109,6 +185,15 @@ export interface RequestApprovalInput {
   ownerSid: string;
   action: ActionDescriptor;
   binding: Partial<ApprovalBinding>;
+  /**
+   * The channel the request came from.
+   *
+   * Required in practice: without it the verdict is computed for the remote
+   * channel, which would deny a request the local user is allowed to confirm.
+   */
+  origin?: ExecutionOrigin;
+  /** Where the employee will answer, recorded for the audit. */
+  resolutionChannel?: "local" | "weixin";
 }
 
 export interface ResolveApprovalInput {
@@ -139,6 +224,11 @@ export class CompanyClawRuntime {
   private readonly ticketSecret: string;
   private readonly consumedNonces = new Set<string>();
   private readonly identity: IdentityBindingStore;
+  private permissionPolicy: PermissionPolicy;
+  /** Serializes focus-sensitive desktop work for one interactive session. */
+  private readonly desktopLock = new DesktopExecutionLock();
+  /** Append-only record of every decision this runtime made. */
+  private readonly audit: AuditLog;
   private browserPolicy: BrowserPolicy;
   private browserConfig = {
     allowedDomains: [] as string[],
@@ -146,6 +236,10 @@ export class CompanyClawRuntime {
     allowUploads: false,
   };
   private readonly brokerTargets: BrokerTargetsStore;
+  /** The single authority record: preset, grants, remote and vision state. */
+  private readonly permissions: PermissionStore;
+  /** Set when the stored permission file was unusable; surfaced in health. */
+  private permissionWarning: string | null = null;
   /** Applies a new allow list to the running broker, when one is present. */
   private applyBrokerTargets: ((targets: BrokerTargets) => Promise<void>) | null = null;
 
@@ -163,7 +257,7 @@ export class CompanyClawRuntime {
     this.approvals = new CompanyClawApprovalStore(deps.paths.approvalsFile, {
       ...io,
       createId: this.createId,
-      ttlMs: COMPANYCLAW_APPROVAL_TTL_MS,
+      ttlMs: COMPANYCLAW_APPROVAL_WAIT_MS,
       secret: this.ticketSecret,
     });
     this.authorization = new RemoteAuthorization({ now: this.now });
@@ -176,6 +270,50 @@ export class CompanyClawRuntime {
       allowUploads: false,
     });
     this.brokerTargets = new BrokerTargetsStore(deps.paths.brokerTargetsFile, io);
+    this.audit = new AuditLog(
+      { filePath: deps.paths.auditFile },
+      { append: deps.appendAudit ?? (async () => undefined), now: this.now },
+    );
+    this.permissions = new PermissionStore(deps.paths.permissionsFile, {
+      now: this.now,
+      existsFile: deps.existsFile,
+      readFile: deps.readFile,
+      writeFile: deps.writeFile,
+      backupFile: deps.backupFile,
+    });
+    // Ruling Q8: the pre-V5 allow list survives as *local* legacy grants and the
+    // preset is never inferred, so an upgrade cannot widen what an employee had.
+    const inspection = this.permissions.inspect();
+    this.permissionWarning = inspection.warning;
+    const legacyTargets = this.brokerTargets.get();
+    const migration = migrateToPermissionPolicy({
+      stored: inspection.warning ? null : inspection.policy,
+      legacyTargets,
+      legacyRemote: this.authorization.snapshot(),
+      now: this.now(),
+    });
+    this.permissionPolicy = migration.policy;
+    // The document is the authority; the in-memory object is a projection of it
+    // so the rest of the runtime keeps its existing shape.
+    if (migration.policy.remote.enabled) {
+      this.authorization.setEnabled({
+        ownerSid: migration.policy.remote.ownerSid,
+        deviceId: migration.policy.remote.deviceId,
+        channelUserId: migration.policy.remote.channelUserId,
+        ttlMs: Math.max(
+          0,
+          Date.parse(migration.policy.remote.expiresAt ?? "") - this.now().getTime(),
+        ),
+      });
+    }
+    if (
+      migration.notes.length > 0 ||
+      inspection.warning ||
+      migration.policy.trustedApps.length !== inspection.policy.trustedApps.length
+    ) {
+      // Persist the migrated document once so the next start is a plain read.
+      void this.permissions.save(migration.policy);
+    }
   }
 
   /** Wires the broker client so allow-list changes reach the running process. */
@@ -197,6 +335,711 @@ export class CompanyClawRuntime {
     const saved = await this.brokerTargets.save(targets);
     if (this.applyBrokerTargets) await this.applyBrokerTargets(saved);
     return saved;
+  }
+
+  // ── Permission policy (the single authority record) ──────────────────
+
+  /** The stored policy, for IPC and health. Never mutated in place. */
+  getPermissionPolicy(): PermissionPolicy {
+    return {
+      ...this.permissionPolicy,
+      trustedApps: [...this.permissionPolicy.trustedApps],
+      trustedSites: [...this.permissionPolicy.trustedSites],
+      workFolders: [...this.permissionPolicy.workFolders],
+      taskGrants: [...this.permissionPolicy.taskGrants],
+      vision: {
+        local: { ...this.permissionPolicy.vision.local },
+        remote: { ...this.permissionPolicy.vision.remote },
+      },
+    };
+  }
+
+  getPermissionWarning(): string | null {
+    return this.permissionWarning;
+  }
+
+  /** Resolves once the permission document on disk matches memory. */
+  async flushPermissionWrites(): Promise<void> {
+    await this.permissions.whenIdle();
+  }
+
+  /**
+   * The preset the employee chose. Changing it never touches existing grants:
+   * ruling Q8 and §4.4 both require the advanced rules to survive a switch.
+   */
+  async setPreset(input: {
+    preset: PermissionPreset;
+    acknowledged?: boolean;
+  }): Promise<PermissionPolicy> {
+    if (input.preset === "FULL_DAILY" && input.acknowledged !== true) {
+      throw new Error("启用「全面日常操作」前需要确认授权范围");
+    }
+    if (this.permissionPolicy.preset === input.preset) return this.getPermissionPolicy();
+    this.permissionPolicy = {
+      ...this.permissionPolicy,
+      preset: input.preset,
+      presetChangedAt: this.now().toISOString(),
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+    };
+    await this.permissions.save(this.permissionPolicy);
+    return this.getPermissionPolicy();
+  }
+
+  private async savePolicy(next: PermissionPolicy): Promise<PermissionPolicy> {
+    this.permissionPolicy = next;
+    await this.permissions.save(next);
+    return this.getPermissionPolicy();
+  }
+
+  /** Adds or replaces one trusted application. Scope defaults to local only. */
+  async trustApp(input: {
+    processName: string;
+    displayName?: string;
+    scope?: GrantScope;
+    publisher?: string | null;
+    executablePath?: string | null;
+    fileHash?: string | null;
+  }): Promise<TrustedAppRecord | null> {
+    const normalized = normalizeTrustedApp({ ...input, source: "user-selected" });
+    if (!normalized) return null;
+    const record: TrustedAppRecord = {
+      ...normalized,
+      approvedSid: this.deps.ownerSid,
+      approvedAt: this.now().toISOString(),
+    };
+    const others = this.permissionPolicy.trustedApps.filter(
+      (app) => app.processName !== record.processName,
+    );
+    await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      trustedApps: [...others, record],
+    });
+    return record;
+  }
+
+  async revokeTrustedApp(processName: string): Promise<PermissionPolicy> {
+    const normalized = normalizeTrustedApp({ processName });
+    if (!normalized) return this.getPermissionPolicy();
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      trustedApps: this.permissionPolicy.trustedApps.filter(
+        (app) => app.processName !== normalized.processName,
+      ),
+    });
+  }
+
+  /** True when this application may be used from the given channel. */
+  isAppTrusted(processName: string, scope: "local" | "remote"): boolean {
+    const normalized = normalizeTrustedApp({ processName });
+    if (!normalized) return false;
+    const app = this.permissionPolicy.trustedApps.find(
+      (entry) => entry.processName === normalized.processName,
+    );
+    if (!app) return false;
+    // A migrated legacy entry is local-only until the employee re-confirms it.
+    if (app.legacy && scope === "remote") return false;
+    return app.scope === "both" || app.scope === scope;
+  }
+
+  async trustSite(input: {
+    domain: string;
+    kind?: TrustedSiteRecord["kind"];
+    taskId?: string | null;
+    expiresAt?: string | null;
+  }): Promise<TrustedSiteRecord | null> {
+    const domain = normalizeTrustedDomain(input.domain);
+    if (!domain) return null;
+    const record: TrustedSiteRecord = {
+      domain,
+      kind: input.kind ?? "user-trusted",
+      taskId: input.taskId ?? null,
+      expiresAt: input.expiresAt ?? null,
+      addedAt: this.now().toISOString(),
+    };
+    await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      trustedSites: [
+        ...this.permissionPolicy.trustedSites.filter((site) => site.domain !== domain),
+        record,
+      ],
+    });
+    return record;
+  }
+
+  async revokeTrustedSite(domain: string): Promise<PermissionPolicy> {
+    const normalized = normalizeTrustedDomain(domain);
+    if (!normalized) return this.getPermissionPolicy();
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      trustedSites: this.permissionPolicy.trustedSites.filter(
+        (site) => site.domain !== normalized,
+      ),
+    });
+  }
+
+  /** Domains the employee trust that are still valid right now. */
+  listEffectiveTrustedSites(): TrustedSiteRecord[] {
+    const now = this.now().getTime();
+    return this.permissionPolicy.trustedSites.filter(
+      (site) => site.expiresAt === null || Date.parse(site.expiresAt) > now,
+    );
+  }
+
+  // ── Task scope grants ───────────────────────────────────────────────
+
+  /**
+   * Records the short-lived scope of one task.
+   *
+   * Ruling Q-B asks for "one confirmation for a clearly bounded set of sends in
+   * the same task"; this is that bound. It is always tied to the task, owner,
+   * device and origin, so it cannot be reused by a later task or another
+   * channel.
+   */
+  async grantTaskScope(input: {
+    taskId: string;
+    ownerSid: string;
+    deviceId: string;
+    origin: ExecutionOrigin;
+    targets: readonly string[];
+    ttlMs: number;
+  }): Promise<PermissionPolicy> {
+    const task = this.tasks.get(input.taskId);
+    if (!task || task.ownerSid !== input.ownerSid) {
+      throw new Error(`Task ${input.taskId} is not owned by ${input.ownerSid}`);
+    }
+    const record = {
+      taskId: input.taskId,
+      ownerSid: input.ownerSid,
+      deviceId: input.deviceId,
+      origin: input.origin,
+      targets: [...input.targets],
+      createdAt: this.now().toISOString(),
+      expiresAt: new Date(this.now().getTime() + input.ttlMs).toISOString(),
+    };
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      taskGrants: [
+        ...this.permissionPolicy.taskGrants.filter((grant) => grant.taskId !== input.taskId),
+        record,
+      ],
+    });
+  }
+
+  /** True when a live grant for this task covers the given target. */
+  isTaskGranted(input: {
+    taskId: string;
+    ownerSid: string;
+    deviceId: string;
+    target: string;
+  }): boolean {
+    const now = this.now().getTime();
+    const normalizedTarget = input.target.trim().toLowerCase();
+    return this.permissionPolicy.taskGrants.some(
+      (grant) =>
+        grant.taskId === input.taskId &&
+        grant.ownerSid === input.ownerSid &&
+        grant.deviceId === input.deviceId &&
+        Date.parse(grant.expiresAt) > now &&
+        grant.targets.some((target) => target.trim().toLowerCase() === normalizedTarget),
+    );
+  }
+
+  listTaskGrants(ownerSid: string) {
+    const now = this.now().getTime();
+    return this.permissionPolicy.taskGrants.filter(
+      (grant) => grant.ownerSid === ownerSid && Date.parse(grant.expiresAt) > now,
+    );
+  }
+
+  async revokeTaskGrant(taskId: string): Promise<PermissionPolicy> {
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      taskGrants: this.permissionPolicy.taskGrants.filter((grant) => grant.taskId !== taskId),
+    });
+  }
+
+  // ── Tool decisions (the one place a tool call is judged) ─────────────
+
+  /**
+   * The policy verdict for one agent tool call.
+   *
+   * Everything the newer rules depend on is assembled here rather than in the
+   * facade: the channel, the preset, whether a task-scope grant covers the
+   * target, and the live remote-authorization state. Keeping it in one method is
+   * what makes "who may do what" reviewable in a single place.
+   */
+  decideToolAction(input: {
+    action: ActionDescriptor;
+    origin: ExecutionOrigin;
+    preset?: PermissionPreset;
+    taskId?: string;
+    target?: string;
+    deviceId?: string;
+    ownerSid?: string;
+  }): {
+    decision: PolicyDecision;
+    reason: string;
+    autoAllowedByTaskScope: boolean;
+    level: string;
+  } {
+    const preset = input.preset ?? this.permissionPolicy.preset;
+    const ownerSid = input.ownerSid ?? this.deps.ownerSid;
+    const deviceId = input.deviceId ?? this.permissionPolicy.remote.deviceId;
+    const taskGranted =
+      input.taskId !== undefined &&
+      input.target !== undefined &&
+      input.target.length > 0 &&
+      this.isTaskGranted({
+        taskId: input.taskId,
+        ownerSid,
+        deviceId,
+        target: input.target,
+      });
+
+    const decision = decideAction(input.action, {
+      remoteAuthorization: this.authorization.state(),
+      origin: input.origin,
+      preset,
+      taskGranted,
+    });
+
+    const autoAllowedByTaskScope =
+      decision.decision === "allow" &&
+      taskGranted &&
+      presetSuppressesRoutinePrompts(preset);
+
+    return {
+      decision: decision.decision,
+      reason: decision.reasons.join("; "),
+      autoAllowedByTaskScope,
+      level: decision.level,
+    };
+  }
+
+  /**
+   * Runs a planned step through the bridge, holding the desktop lock.
+   *
+   * Requirement V2/V5 both require focus-sensitive work to be serialized: two
+   * tasks typing into the foreground window would interleave, and the second one
+   * may be typing into a window the first one just changed. The lock therefore
+   * *refuses* a competing task rather than queueing it — a queued task would run
+   * against a desktop the user has since moved on from.
+   */
+  async executeStepWithLock(input: {
+    taskId: string;
+    transport: BridgeTransport;
+    request: {
+      stepId: string;
+      action: ActionDescriptor;
+      origin?: ExecutionOrigin;
+      approvalTicket?: ApprovalTicket;
+      binding?: ApprovalBinding;
+    };
+  }): Promise<BridgeResult> {
+    const lock = this.desktopLock.acquire(input.taskId);
+    if (!lock.acquired) {
+      return { outcome: "unavailable", reason: "desktop-busy" };
+    }
+    try {
+      return await this.execute(input.transport, {
+        taskId: input.taskId,
+        stepId: input.request.stepId,
+        action: input.request.action,
+        ...(input.request.origin ? { origin: input.request.origin } : {}),
+        ...(input.request.approvalTicket ? { approvalTicket: input.request.approvalTicket } : {}),
+        ...(input.request.binding ? { binding: input.request.binding } : {}),
+      });
+    } finally {
+      lock.release();
+    }
+  }
+
+  // ── Agent tool entry point ───────────────────────────────────────────
+
+  /**
+   * Handles one agent tool call end to end.
+   *
+   * This is the production seam the Gateway uses: it validates the call's shape,
+   * takes a policy verdict for the *channel the message arrived through*, raises
+   * an approval when the verdict asks for one, and dispatches through the
+   * execution bridge so a mutating action carries a ticket the broker re-checks
+   * on its own side.
+   *
+   * Nothing here trusts the caller: the origin and the task identity come from
+   * `context`, which the trusted boundary mints, and `validateToolCall` refuses a
+   * call whose arguments try to supply either.
+   */
+  async handleAgentToolCall(input: {
+    call: { tool: string; arguments: Record<string, unknown> };
+    context: {
+      origin: ExecutionOrigin;
+      taskId: string;
+      stepId: string;
+      ownerSid: string;
+      deviceId: string;
+    };
+    transport: BridgeTransport;
+    approvalId?: string;
+  }): Promise<ToolFacadeResult> {
+    const facade = new ComputerUseToolFacade({
+      decide: (policyInput) =>
+        this.decideToolAction({
+          action: policyInput.action,
+          origin: policyInput.origin,
+          preset: policyInput.preset,
+          taskId: policyInput.taskId,
+          target: policyInput.target,
+          deviceId: input.context.deviceId,
+          ownerSid: input.context.ownerSid,
+        }),
+      requestApproval: async (request) => {
+        try {
+          // An auto-allowed action still needs a binding so a ticket can be
+          // issued for it; the approval record is what the broker's re-check
+          // ultimately derives from.
+          const raised = await this.requestApproval({
+            ownerSid: input.context.ownerSid,
+            action: request.action,
+            binding: request.binding,
+            origin: input.context.origin,
+            resolutionChannel: request.resolutionChannel,
+          });
+          return { approvalId: raised.approvalId, binding: raised.binding };
+        } catch {
+          return null;
+        }
+      },
+      issueTicket: (issueInput) => this.issueCredentialsForApproval(issueInput),
+      dispatch: async (dispatchInput) => {
+        const action = {
+          ...describeActionForDispatch(dispatchInput.tool),
+          targetSystem: describeTargetForDispatch(dispatchInput.arguments),
+        };
+
+        // A mutating call that the policy allowed outright still has to satisfy
+        // the bridge, which is a second, independent gate. The grant the facade
+        // passed is turned into the credential for exactly this action here,
+        // rather than by weakening the bridge.
+        let ticket = dispatchInput.approvalTicket;
+        let binding = dispatchInput.binding;
+        if (dispatchInput.executionGrant && dispatchInput.tool.mutating) {
+          const issued = this.issueExecutionCredential({
+            action,
+            origin: input.context.origin,
+            taskId: dispatchInput.taskId,
+            stepId: dispatchInput.stepId,
+            ownerSid: input.context.ownerSid,
+            deviceId: input.context.deviceId,
+          });
+          ticket = issued.ticket;
+          binding = issued.binding;
+        }
+
+        const result = await this.executeStepWithLock({
+          taskId: dispatchInput.taskId,
+          transport: input.transport,
+          request: {
+            stepId: dispatchInput.stepId,
+            action,
+            origin: input.context.origin,
+            ...(ticket ? { approvalTicket: ticket } : {}),
+            ...(binding ? { binding } : {}),
+          },
+        });
+        return result;
+      },
+      recordAudit: (entry) => {
+        void this.audit.record({
+          taskId: entry.taskId,
+          stepId: entry.stepId,
+          origin: entry.origin,
+          ownerSid: input.context.ownerSid,
+          deviceId: input.context.deviceId,
+          tool: entry.tool,
+          actionCategory: entry.tool,
+          decision: entry.decision,
+          reason: entry.reason,
+          policyVersion: this.permissionPolicy.policyVersion,
+          preset: this.permissionPolicy.preset,
+          autoAllowed: entry.autoAllowed,
+          target: input.call.arguments ? describeTargetForDispatch(input.call.arguments) : "",
+          ...(entry.approvalId ? { approvalId: entry.approvalId } : {}),
+        });
+      },
+      now: this.now,
+    });
+
+    return await facade.handle({
+      call: input.call,
+      context: input.context,
+      preset: this.permissionPolicy.preset,
+      ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+    });
+  }
+
+  /**
+   * Issues the credential for an action the policy allowed without a prompt.
+   *
+   * This is not an approval: nothing is recorded as "asked and answered",
+   * because nothing was asked. It exists only so the execution bridge — which
+   * checks every mutating call independently — has the binding and ticket that
+   * describe this exact request. The broker then re-checks its own ticket built
+   * from the same fields.
+   */
+  issueExecutionCredential(input: {
+    action: ActionDescriptor;
+    origin: ExecutionOrigin;
+    taskId: string;
+    stepId: string;
+    ownerSid: string;
+    deviceId: string;
+  }): { ticket: ApprovalTicket; binding: ApprovalBinding } {
+    const binding = this.completeBinding(
+      {
+        deviceId: input.deviceId,
+        taskId: input.taskId,
+        stepId: input.stepId,
+        actionType: input.action.toolName ?? String(input.action.kind),
+        targetSystem: input.action.targetSystem ?? "",
+      },
+      input.ownerSid,
+    );
+    return {
+      ticket: issueApprovalTicket({
+        binding,
+        secret: this.ticketSecret,
+        ttlMs: COMPANYCLAW_TICKET_TTL_MS,
+        now: this.now,
+        createNonce: this.createId,
+      }),
+      binding,
+    };
+  }
+
+  /**
+   * Issues the ticket *and* the binding it was signed for.
+   *
+   * The bridge verifies one against the other, so a caller that received only
+   * the ticket would be unable to complete a resumed action.
+   */
+  issueCredentialsForApproval(input: { approvalId: string; ownerSid: string }): {
+    ticket: ApprovalTicket;
+    binding: ApprovalBinding;
+  } {
+    const record = this.approvals.get(input.approvalId);
+    if (!record) throw new Error(`Unknown approval: ${input.approvalId}`);
+    if (record.ownerSid !== input.ownerSid) {
+      throw new Error(`Approval ${input.approvalId} is not owned by ${input.ownerSid}`);
+    }
+    return {
+      ticket: this.issueTicketForApproval(input),
+      binding: this.bindingFromApproval(record),
+    };
+  }
+
+  /** Recent audit entries, for the diagnostics view. */
+  listAuditEntries(query: AuditQuery = {}): Promise<AuditEntry[]> {
+    return this.readAudit(query);
+  }
+
+  private async readAudit(query: AuditQuery): Promise<AuditEntry[]> {
+    const lines = await this.readAuditLines();
+    return queryAuditLines(lines, query);
+  }
+
+  /** Reads the whole audit file; absent means nothing has been recorded yet. */
+  private async readAuditLines(): Promise<string[]> {
+    const file = this.deps.paths.auditFile;
+    if (!this.deps.existsFile(file)) return [];
+    try {
+      return this.deps.readFile(file).split(AUDIT_LINE_SEPARATOR);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Records one decision. Never throws: the action already happened. */
+  async recordAuditEntry(entry: Parameters<AuditLog["record"]>[0]): Promise<void> {
+    await this.audit.record(entry);
+  }
+
+  /** True while a focus-sensitive task holds the desktop lock. */
+  isDesktopBusy(): boolean {
+    return this.desktopLock.isBusy();
+  }
+
+  /** Releases the lock for a task that is being cancelled. */
+  releaseDesktopLock(taskId: string): void {
+    this.desktopLock.forceRelease(taskId);
+  }
+
+  // ── Restore safe defaults ────────────────────────────────────────────
+
+  /**
+   * Describes what "restore safe defaults" would do, without doing it.
+   *
+   * Ruling Q-D requires the employee to see the blast radius — including how
+   * many tasks will be paused and how many pending approvals will be voided —
+   * before anything changes.
+   */
+  previewSafeDefaultsReset(): ResetPreview {
+    return buildResetPreview({
+      policy: this.permissionPolicy,
+      tasks: this.tasks.list().map((record) => ({ taskId: record.taskId, state: record.state })),
+      pendingApprovals: this.approvals.listPending().length,
+    });
+  }
+
+  /**
+   * Clears every authority the employee granted and pauses active work.
+   *
+   * Order matters and is deliberate: the document is persisted first, so a
+   * crash halfway through leaves the machine *less* authorized rather than more.
+   * The pending approvals are then voided and the active tasks paused; nothing
+   * here closes a running application, deletes history or removes artifacts.
+   */
+  async restoreSafeDefaults(input: { token: string }): Promise<
+    | {
+        applied: true;
+        preview: ResetPreview;
+        invalidatedApprovals: number;
+        pausedTasks: number;
+      }
+    | { applied: false; reason: "stale-preview" | "invalid-token" }
+  > {
+    const pendingApprovals = this.approvals.listPending().length;
+    const outcome = applyReset({
+      policy: this.permissionPolicy,
+      pendingApprovals,
+      token: input.token,
+    });
+    if (!outcome.applied) return outcome;
+
+    // 1. Persist the cleared policy before anything observable happens.
+    await this.savePolicy(outcome.policy);
+
+    // 2. Void every unconsumed approval. Consumed records are untouched: the
+    //    audit trail of what was actually approved must survive.
+    const invalidated = this.approvals.expireAllPending();
+
+    // 3. Pause active tasks, local and remote alike, through the same state
+    //    machine the UI uses so every transition stays legal.
+    let paused = 0;
+    for (const record of this.tasks.list()) {
+      if (isTerminalState(record.state)) continue;
+      const next = nextStateForControl(record.state, "pause");
+      if (next === null) continue;
+      try {
+        await this.tasks.advance(record.taskId, next, {
+          resultSummary: "已恢复安全默认值：任务已暂停，等待重新授权后继续",
+        });
+        paused += 1;
+      } catch {
+        // A concurrent transition is not a failure of the reset; the remaining
+        // tasks still get paused.
+      }
+    }
+
+    return { applied: true, preview: outcome.preview, invalidatedApprovals: invalidated, pausedTasks: paused };
+  }
+
+  // ── Cloud vision authorization (independent of the preset) ───────────
+
+  /**
+   * Grants cloud-vision use for one origin.
+   *
+   * Ruling Q-C: the grant names the provider, endpoint and model, so changing
+   * any of them voids it; remote vision additionally cannot outlive the remote
+   * operation authorization. Enabling the daily preset never calls this.
+   */
+  async authorizeVision(input: {
+    origin: "local" | "remote";
+    provider: string;
+    baseUrl: string;
+    model: string;
+    captureScope?: string;
+    ttlMs?: number;
+  }): Promise<PermissionPolicy> {
+    const provider = input.provider.trim();
+    const baseUrl = input.baseUrl.trim();
+    const model = input.model.trim();
+    if (!provider || !baseUrl || !model) {
+      throw new Error("provider、baseUrl 与 model 必填，否则无法说明数据将发送给谁");
+    }
+    const executionOrigin: ExecutionOrigin = input.origin === "remote" ? "weixin-private" : "local-ui";
+    const lifetime = visionGrantLifetimeMs({
+      requestedMs: input.ttlMs ?? 0,
+      origin: executionOrigin,
+      remoteAuthorizationExpiresAt: this.permissionPolicy.remote.enabled
+        ? this.permissionPolicy.remote.expiresAt
+        : null,
+      now: this.now(),
+    });
+    if (lifetime <= 0) {
+      throw new Error("微信远程操作授权未开启或已过期，无法授权远程视觉识别");
+    }
+    const grantedAt = this.now();
+    const record = {
+      enabled: true,
+      provider,
+      baseUrl,
+      model,
+      captureScope: input.captureScope ?? DEFAULT_VISION_SCOPE,
+      grantedAt: grantedAt.toISOString(),
+      expiresAt: new Date(grantedAt.getTime() + lifetime).toISOString(),
+      revokedAt: null,
+    };
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      vision: { ...this.permissionPolicy.vision, [input.origin]: record },
+    });
+  }
+
+  async revokeVision(origin: "local" | "remote"): Promise<PermissionPolicy> {
+    const current = this.permissionPolicy.vision[origin];
+    return await this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      vision: {
+        ...this.permissionPolicy.vision,
+        [origin]: { ...current, enabled: false, revokedAt: this.now().toISOString() },
+      },
+    });
+  }
+
+  /** Decides whether one screen image may be sent to the configured model. */
+  evaluateVision(input: {
+    origin: ExecutionOrigin;
+    provider: string;
+    baseUrl: string;
+    model: string;
+    captureScope: string;
+    modelSupportsVision: boolean;
+  }): VisionDecision {
+    const record = selectVisionRecord(this.permissionPolicy, input.origin);
+    return evaluateVisionRequest(
+      record,
+      {
+        ownerSid: this.deps.ownerSid,
+        deviceId: this.permissionPolicy.remote.deviceId,
+        origin: input.origin,
+        provider: input.provider,
+        baseUrl: input.baseUrl,
+        model: input.model,
+        requestedScope: input.captureScope,
+        modelSupportsVision: input.modelSupportsVision,
+        remoteAuthorizationExpiresAt: this.permissionPolicy.remote.enabled
+          ? this.permissionPolicy.remote.expiresAt
+          : null,
+        enterprisePolicyTightened: false,
+      },
+      this.now(),
+    );
   }
 
   // ── Browser ──────────────────────────────────────────────────────────
@@ -317,6 +1160,20 @@ export class CompanyClawRuntime {
   setRemoteAuthorization(input: SetRemoteAuthorizationInput): RemoteAuthorizationView {
     if (!input.enabled) {
       this.authorization.revoke();
+      const record = this.authorization.snapshot();
+      void this.savePolicy({
+        ...this.permissionPolicy,
+        policyVersion: this.permissionPolicy.policyVersion + 1,
+        remote: {
+          enabled: false,
+          ownerSid: record.ownerSid,
+          deviceId: record.deviceId,
+          channelUserId: record.channelUserId,
+          grantedAt: record.grantedAt,
+          expiresAt: record.expiresAt,
+          revokedAt: record.revokedAt,
+        },
+      });
       return this.getRemoteAuthorization();
     }
     const ttlMinutes = input.ttlMinutes;
@@ -341,6 +1198,20 @@ export class CompanyClawRuntime {
       deviceId: input.deviceId,
       channelUserId,
       ttlMs: ttlMinutes * 60_000,
+    });
+    const granted = this.authorization.snapshot();
+    void this.savePolicy({
+      ...this.permissionPolicy,
+      policyVersion: this.permissionPolicy.policyVersion + 1,
+      remote: {
+        enabled: granted.enabled,
+        ownerSid: granted.ownerSid,
+        deviceId: granted.deviceId,
+        channelUserId: granted.channelUserId,
+        grantedAt: granted.grantedAt,
+        expiresAt: granted.expiresAt,
+        revokedAt: granted.revokedAt,
+      },
     });
     return this.getRemoteAuthorization();
   }
@@ -435,8 +1306,11 @@ export class CompanyClawRuntime {
   async requestApproval(
     input: RequestApprovalInput,
   ): Promise<{ approvalId: string; status: string; binding: ApprovalBinding }> {
+    const origin = input.origin ?? "weixin-private";
     const decision = decideAction(input.action, {
       remoteAuthorization: this.authorization.state(),
+      origin,
+      preset: this.permissionPolicy.preset,
     });
     if (decision.decision === "deny") {
       throw new Error(
@@ -449,7 +1323,11 @@ export class CompanyClawRuntime {
       );
     }
     const binding = this.completeBinding(input.binding, input.ownerSid);
-    const record = await this.approvals.request(binding);
+    const record = await this.approvals.request(binding, {
+      resolutionChannel:
+        input.resolutionChannel ?? (input.origin === "local-ui" ? "local" : "weixin"),
+      actionCategory: String(input.action.kind),
+    });
     return { approvalId: record.approvalId, status: record.status, binding };
   }
 
@@ -557,12 +1435,30 @@ export class CompanyClawRuntime {
       taskId: string;
       stepId: string;
       action: ActionDescriptor;
+      origin?: ExecutionOrigin;
       approvalTicket?: ApprovalTicket;
       binding?: ApprovalBinding;
     },
   ): Promise<BridgeResult> {
+    const origin = request.origin ?? "local-ui";
+    const task = this.tasks.get(request.taskId);
+    const target = request.action.targetSystem ?? "";
+    const taskGranted =
+      task !== null &&
+      target !== "" &&
+      this.isTaskGranted({
+        taskId: request.taskId,
+        ownerSid: task.ownerSid,
+        deviceId: task.deviceId,
+        target,
+      });
     const bridge = new ExecutionBridge(transport, {
-      policyContext: () => ({ remoteAuthorization: this.authorization.state() }),
+      policyContext: () => ({
+        remoteAuthorization: this.authorization.state(),
+        origin,
+        preset: this.permissionPolicy.preset,
+        taskGranted,
+      }),
       secret: this.ticketSecret,
       now: this.now,
       consumedNonces: this.consumedNonces,

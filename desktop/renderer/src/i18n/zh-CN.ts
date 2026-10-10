@@ -449,6 +449,7 @@ export default {
   "settings.menu.channels": "频道",
   "settings.menu.skills": "技能",
   "settings.menu.privacy": "隐私",
+  "settings.menu.permissions": "电脑操作权限",
   "settings.menu.security": "安全",
   "settings.menu.about": "关于",
   // Models & API

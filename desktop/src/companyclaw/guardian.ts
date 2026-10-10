@@ -1,6 +1,25 @@
 import type { CapabilityVerdict } from "./model/capability-probe";
 
 /**
+ * Windows-MCP health states.
+ *
+ * Mirrored from `broker/adapters/windows-mcp/process-manager.ts` rather than
+ * imported: the broker is a separate compilation with its own root, and pulling
+ * its sources into the desktop build would move this project's source root.
+ * `guardian.test.ts` pins the two lists together so a new state cannot be added
+ * on one side only.
+ */
+export type WindowsMcpHealth =
+  | "NOT_PACKAGED"
+  | "HASH_MISMATCH"
+  | "RUNTIME_MISSING"
+  | "START_FAILED"
+  | "HANDSHAKE_FAILED"
+  | "TOOLS_MISSING"
+  | "SESSION_LOCKED"
+  | "READY";
+
+/**
  * Per-component health report for the first-run wizard and the logs.
  *
  * A single "everything is fine" flag cannot tell a user which part of the
@@ -18,6 +37,9 @@ export type GuardianItemId =
   | "plugin-installed"
   | "broker-runtime"
   | "browser-binary"
+  | "windows-mcp"
+  | "mcp-tools"
+  | "vision-authorization"
   | "model-reply"
   | "tool-call";
 
@@ -51,6 +73,8 @@ const ENVIRONMENT_ITEM_IDS: readonly GuardianItemId[] = [
   "plugin-installed",
   "broker-runtime",
   "browser-binary",
+  "windows-mcp",
+  "mcp-tools",
 ];
 
 /** What the host can measure right now; every field is optional on purpose. */
@@ -69,6 +93,15 @@ export interface GuardianProbes {
   brokerNodePath?: string | null;
   brokerRunning?: boolean;
   brokerFailureReason?: string | null;
+  /** Health of the vendored Windows-MCP payload. */
+  windowsMcpHealth?: WindowsMcpHealth | null;
+  windowsMcpDetail?: string | null;
+  /** How many controlled tools the adapter exposes. */
+  mcpControllableTools?: number | null;
+  /** How many upstream tools are refused by the allow-map. */
+  mcpBlockedTools?: number | null;
+  /** Whether cloud vision is authorized for either channel. */
+  visionAuthorized?: boolean | null;
   browserExecutable?: string | null;
   /** Result of the model probe, when one has been run. */
   modelCapability?: CapabilityVerdict | null;
@@ -151,6 +184,9 @@ export function buildGuardianReport(probes: GuardianProbes): GuardianReport {
   });
 
   items.push(brokerItem(probes));
+  items.push(windowsMcpItem(probes));
+  items.push(mcpToolsItem(probes));
+  items.push(visionItem(probes));
 
   items.push({
     id: "browser-binary",
@@ -219,6 +255,108 @@ function brokerItem(probes: GuardianProbes): GuardianItem {
       ? `Broker 未运行：${probes.brokerFailureReason}`
       : "Broker 未运行（将在首次使用时启动）",
   };
+}
+
+/**
+ * Windows-MCP payload health.
+ *
+ * Each failure maps to the specific Chinese explanation the employee needs, and
+ * the fault codes match `broker/adapters/windows-mcp/process-manager.ts` so a
+ * log line and a screen never disagree about which component is missing.
+ */
+function windowsMcpItem(probes: GuardianProbes): GuardianItem {
+  const health = probes.windowsMcpHealth;
+  if (health === undefined || health === null) {
+    // Not packaged yet is reported as a *missing component*, not as "unknown":
+    // the requirement forbids dressing a缺件 up as something the model cannot do.
+    return {
+      id: "windows-mcp",
+      state: "blocked",
+      detail: "安装组件缺失，请使用完整安装包修复安装（WINDOWS_MCP_NOT_PACKAGED）",
+    };
+  }
+  const detail = probes.windowsMcpDetail ?? "";
+  switch (health) {
+    case "READY":
+      return { id: "windows-mcp", state: "ok", detail: detail || "电脑操作组件已就绪" };
+    case "NOT_PACKAGED":
+      return {
+        id: "windows-mcp",
+        state: "blocked",
+        detail: detail || "安装组件缺失，请使用完整安装包修复安装（WINDOWS_MCP_NOT_PACKAGED）",
+      };
+    case "RUNTIME_MISSING":
+      return {
+        id: "windows-mcp",
+        state: "failed",
+        detail: detail || "运行组件缺失，请使用完整安装包修复安装（WINDOWS_MCP_RUNTIME_MISSING）",
+      };
+    case "HASH_MISMATCH":
+      return {
+        id: "windows-mcp",
+        state: "failed",
+        detail: detail || "电脑操作组件校验失败，请使用完整安装包重新安装（WINDOWS_MCP_HASH_MISMATCH）",
+      };
+    case "HANDSHAKE_FAILED":
+      return {
+        id: "windows-mcp",
+        state: "failed",
+        detail: detail || "电脑操作组件启动失败（WINDOWS_MCP_HANDSHAKE_FAILED）",
+      };
+    case "SESSION_LOCKED":
+      return {
+        id: "windows-mcp",
+        state: "degraded",
+        detail: detail || "当前桌面不可控制，请先解锁电脑（SESSION_LOCKED）",
+      };
+    case "START_FAILED":
+    case "TOOLS_MISSING":
+    default:
+      return {
+        id: "windows-mcp",
+        state: "failed",
+        detail: detail || "电脑操作组件未就绪，请点击重新检测",
+      };
+  }
+}
+
+/**
+ * How many controlled tools loaded.
+ *
+ * A real count from the adapter's own map, so "已加载 N 项受控工具" is a fact
+ * rather than a slogan; an incompatibility is reported as its own state.
+ */
+function mcpToolsItem(probes: GuardianProbes): GuardianItem {
+  const controllable = probes.mcpControllableTools;
+  if (controllable === undefined || controllable === null) {
+    return { id: "mcp-tools", state: "unknown", detail: "尚未检测电脑操作工具" };
+  }
+  if (controllable === 0) {
+    return {
+      id: "mcp-tools",
+      state: "failed",
+      detail: "电脑操作组件版本不匹配（MCP_TOOLSET_INCOMPATIBLE）",
+    };
+  }
+  const blocked = probes.mcpBlockedTools ?? 0;
+  return {
+    id: "mcp-tools",
+    state: "ok",
+    detail: `已加载 ${controllable} 项受控工具（另有 ${blocked} 项高危能力按策略禁用）`,
+  };
+}
+
+/**
+ * Cloud-vision authorization is reported as an *authorization*, never as a
+ * fault: "not enabled" is the default and a perfectly healthy state.
+ */
+function visionItem(probes: GuardianProbes): GuardianItem {
+  if (probes.visionAuthorized === undefined || probes.visionAuthorized === null) {
+    return { id: "vision-authorization", state: "unknown", detail: "未检测云端视觉授权" };
+  }
+  return probes.visionAuthorized
+    ? { id: "vision-authorization", state: "ok", detail: "已授权把屏幕内容发送给模型服务商" }
+    : { id: "vision-authorization", state: "ok", detail: "未授权云端视觉：屏幕内容不会上传" };
 }
 
 function modelItem(probes: GuardianProbes): GuardianItem {

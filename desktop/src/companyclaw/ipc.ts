@@ -10,6 +10,8 @@ import {
 import { resolveBrokerScriptDir } from "./broker-paths";
 import { buildGuardianReport, type GuardianReport } from "./guardian";
 import { CompanyClawRuntime, type RuntimePaths } from "./runtime";
+import { isPermissionPreset } from "./policy/permission-preset";
+import { AGENT_TOOLS } from "./tools/computer-use-tools";
 
 /**
  * Wires the CompanyClaw security core to the renderer.
@@ -74,6 +76,8 @@ export function resolveCompanyClawPaths(userDataDir: string): RuntimePaths {
     artifactsRoot: root,
     identityFile: path.join(root, "identity-binding.json"),
     brokerTargetsFile: path.join(root, "broker-targets.json"),
+    permissionsFile: path.join(root, "permissions.json"),
+    auditFile: path.join(root, "audit.jsonl"),
   };
 }
 
@@ -105,6 +109,7 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
         ...(options.nodePath ? { nodePath: options.nodePath } : {}),
         ownerSid: options.ownerSid,
         deviceId: options.deviceId,
+        ticketSecret: options.ticketSecret,
         allowedProcesses: [],
         allowedWindowTitles: [],
       })
@@ -120,6 +125,22 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
       const temporary = `${filePath}.${process.pid}.tmp`;
       await fs.promises.writeFile(temporary, contents, { encoding: "utf-8", mode: 0o600 });
       await fs.promises.rename(temporary, filePath);
+    },
+    // One JSON line per decision, appended; a partial last line is the expected
+    // shape of a crash and does not invalidate the entries before it.
+    appendAudit: async (filePath, line) => {
+      await fs.promises.appendFile(filePath, line, { encoding: "utf-8", mode: 0o600 });
+    },
+    // An unusable permission file is preserved beside itself instead of being
+    // overwritten: the employee may need to see what was there.
+    backupFile: (filePath, stamp) => {
+      const target = `${filePath}.corrupt.${stamp}.bak`;
+      try {
+        fs.copyFileSync(filePath, target);
+      } catch {
+        // Nothing to preserve if the file cannot be copied.
+      }
+      return target;
     },
   });
   if (broker) {
@@ -300,6 +321,145 @@ export function registerCompanyClawIpcHandlers(
       });
       return runtime.describeBrowserPolicy();
     },
+  );
+
+  // ── Permission policy ────────────────────────────────────────────────
+
+  ipcMain.handle("companyclaw:permission:get-policy", () => {
+    const policy = runtime.getPermissionPolicy();
+    return {
+      preset: policy.preset,
+      policyVersion: policy.policyVersion,
+      presetChangedAt: policy.presetChangedAt,
+      remote: policy.remote,
+      vision: policy.vision,
+      warning: runtime.getPermissionWarning(),
+      counts: {
+        trustedApps: policy.trustedApps.length,
+        trustedSites: policy.trustedSites.length,
+        workFolders: policy.workFolders.length,
+        taskGrants: policy.taskGrants.length,
+      },
+    };
+  });
+
+  ipcMain.handle(
+    "companyclaw:permission:set-preset",
+    (_event, input: { preset?: string; acknowledged?: boolean }) => {
+      if (!isPermissionPreset(input?.preset)) {
+        throw new Error("无效的权限档位");
+      }
+      // The renderer cannot enable the daily preset without the explicit
+      // acknowledgement the UI collects; the core re-asserts it here so a
+      // forgotten dialog cannot silently widen access.
+      return runtime.setPreset({
+        preset: input.preset,
+        acknowledged: input?.acknowledged === true,
+      });
+    },
+  );
+
+  ipcMain.handle("companyclaw:permission:list-trusted-apps", () =>
+    runtime.getPermissionPolicy().trustedApps,
+  );
+
+  ipcMain.handle("companyclaw:permission:trust-app", (_event, input: {
+    processName?: string;
+    displayName?: string;
+    scope?: string;
+  }) =>
+    runtime.trustApp({
+      processName: input?.processName ?? "",
+      ...(input?.displayName ? { displayName: input.displayName } : {}),
+      scope: input?.scope === "remote" || input?.scope === "both" ? input.scope : "local",
+    }),
+  );
+
+  ipcMain.handle("companyclaw:permission:revoke-trusted-app", (_event, input: { processName?: string }) =>
+    runtime.revokeTrustedApp(input?.processName ?? ""),
+  );
+
+  ipcMain.handle("companyclaw:permission:list-trusted-sites", () => runtime.listEffectiveTrustedSites());
+
+  ipcMain.handle("companyclaw:permission:trust-current-site", (_event, input: { domain?: string }) =>
+    runtime.trustSite({ domain: input?.domain ?? "" }),
+  );
+
+  ipcMain.handle("companyclaw:permission:revoke-trusted-site", (_event, input: { domain?: string }) =>
+    runtime.revokeTrustedSite(input?.domain ?? ""),
+  );
+
+  ipcMain.handle("companyclaw:permission:list-task-grants", () =>
+    runtime.listTaskGrants(options.ownerSid),
+  );
+
+  ipcMain.handle("companyclaw:permission:revoke-task-grant", (_event, input: { taskId?: string }) =>
+    runtime.revokeTaskGrant(input?.taskId ?? ""),
+  );
+
+  // ── Cloud vision authorization ────────────────────────────────────────
+
+  ipcMain.handle("companyclaw:vision:get", () => runtime.getPermissionPolicy().vision);
+
+  ipcMain.handle(
+    "companyclaw:vision:set",
+    (
+      _event,
+      input: {
+        origin?: string;
+        provider?: string;
+        baseUrl?: string;
+        model?: string;
+        captureScope?: string;
+        ttlMinutes?: number;
+      },
+    ) =>
+      runtime.authorizeVision({
+        origin: input?.origin === "remote" ? "remote" : "local",
+        provider: input?.provider ?? "",
+        baseUrl: input?.baseUrl ?? "",
+        model: input?.model ?? "",
+        ...(input?.captureScope ? { captureScope: input.captureScope } : {}),
+        ...(typeof input?.ttlMinutes === "number" ? { ttlMs: input.ttlMinutes * 60_000 } : {}),
+      }),
+  );
+
+  ipcMain.handle("companyclaw:vision:revoke", (_event, input: { origin?: string }) =>
+    runtime.revokeVision(input?.origin === "remote" ? "remote" : "local"),
+  );
+
+  // ── Restore safe defaults ────────────────────────────────────────────
+
+  ipcMain.handle("companyclaw:recovery:preview", () => runtime.previewSafeDefaultsReset());
+
+  ipcMain.handle("companyclaw:recovery:apply", (_event, input: { token?: string }) =>
+    runtime.restoreSafeDefaults({ token: input?.token ?? "" }),
+  );
+
+  // ── Audit and tool surface ───────────────────────────────────────────
+
+  ipcMain.handle(
+    "companyclaw:audit:query",
+    async (
+      _event,
+      input?: { taskId?: string; decision?: string; from?: string; to?: string; limit?: number },
+    ) =>
+      await runtime.listAuditEntries({
+        ...(input?.taskId ? { taskId: input.taskId } : {}),
+        ...(input?.decision ? { decision: input.decision as never } : {}),
+        ...(input?.from ? { from: input.from } : {}),
+        ...(input?.to ? { to: input.to } : {}),
+        limit: typeof input?.limit === "number" ? Math.min(Math.max(input.limit, 1), 500) : 200,
+      }),
+  );
+
+  ipcMain.handle("companyclaw:tools:list", () =>
+    AGENT_TOOLS.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      capability: tool.capability,
+      mutating: tool.mutating,
+    })),
   );
 
   ipcMain.handle("companyclaw:identity:get", () => runtime.getIdentityBinding());

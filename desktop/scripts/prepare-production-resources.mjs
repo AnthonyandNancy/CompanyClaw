@@ -381,6 +381,19 @@ if (!existsSync(path.join(brokerDist, "main.js"))) {
 cpSync(brokerDist, path.join(brokerStagingDir, "dist"), { recursive: true });
 cpSync(brokerScripts, path.join(brokerStagingDir, "scripts"), { recursive: true });
 
+// 2e-2. Windows-MCP. The employee machine runs no installer, so the vendored
+// payload and its private interpreter are staged here; a missing payload must
+// fail the build rather than produce an EXE that cannot operate the desktop.
+run(process.execPath, [
+  path.join(desktopDir, "scripts", "prepare-windows-mcp-resources.mjs"),
+  `--arch=${targetArch}`,
+]);
+const windowsMcpSourceDir = path.join(resourcesDir, "companyclaw-broker", "windows-mcp");
+if (!existsSync(path.join(windowsMcpSourceDir, "MANIFEST.json"))) {
+  throw new Error("Windows-MCP payload was not assembled; refusing to build an installer without it");
+}
+cpSync(windowsMcpSourceDir, path.join(brokerStagingDir, "windows-mcp"), { recursive: true });
+
 // 2f. CompanyClaw-patched WeChat plugin. The host loads
 // `package.json#openclaw.runtimeExtensions`, so the compiled output has to ship
 // with the installer; nothing may be installed on the employee machine.
@@ -420,6 +433,44 @@ for (const dependency of Object.keys(weixinPluginManifest.dependencies ?? {})) {
 
 // 2g. Agent skills. agent-catalog.ts owns which skill ids the product offers;
 // every one of them that ships in this repository must reach the installer.
+// The Windows-MCP payload is registered file by file from its own manifest, so
+// the startup integrity check covers every component the installer ships.
+const windowsMcpManifestPath = path.join(brokerStagingDir, "windows-mcp", "MANIFEST.json");
+const windowsMcpManifest = JSON.parse(readFileSync(windowsMcpManifestPath, "utf8"));
+if (windowsMcpManifest.upstreamCommit !== "b455c2766c63599d466a6178641bac70787979a4") {
+  throw new Error(
+    `Windows-MCP payload pins ${windowsMcpManifest.upstreamCommit}; the reviewed revision is b455c276c`,
+  );
+}
+for (const file of windowsMcpManifest.files) {
+  entries.push({
+    path: `companyclaw-broker/windows-mcp/server/${file.path}`,
+    kind: "mcp",
+    version: windowsMcpManifest.upstreamVersion,
+    arch: targetArch,
+    sha256: file.sha256,
+    license: windowsMcpManifest.license,
+  });
+}
+for (const relative of listFilesRecursive(path.join(brokerStagingDir, "windows-mcp", "python-runtime"))) {
+  entries.push({
+    path: `companyclaw-broker/windows-mcp/python-runtime/${relative}`,
+    kind: "python-runtime",
+    version: "3.14",
+    arch: targetArch,
+    sha256: sha256(path.join(brokerStagingDir, "windows-mcp", "python-runtime", relative)),
+    license: "PSF",
+  });
+}
+entries.push({
+  path: "companyclaw-broker/windows-mcp/MANIFEST.json",
+  kind: "mcp",
+  version: windowsMcpManifest.upstreamVersion,
+  arch: targetArch,
+  sha256: sha256(windowsMcpManifestPath),
+  license: windowsMcpManifest.license,
+});
+
 for (const skillId of agentSkillIds) {
   const source = path.join(repositoryDir, "skills", skillId);
   if (!existsSync(path.join(source, "SKILL.md"))) {

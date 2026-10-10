@@ -29,6 +29,19 @@ export function resolveBrokerScriptDir(brokerDir: string): string {
   return path.join(brokerDir, "scripts");
 }
 
+/**
+ * Locates the directory that holds the packaged CompanyClaw resources.
+ *
+ * Packaged, that is `<resources>`; in a source checkout the packager writes into
+ * `desktop/resources/`. The vendored Windows-MCP payload is assembled to
+ * `<this>/companyclaw-broker/windows-mcp`, which is why the broker's own
+ * directory and the payload are derived from the same root rather than from two
+ * independently guessed paths.
+ */
+export function resolveCompanyClawResourceDir(input: BrokerPathInput): string {
+  return input.isPackaged ? input.resourcesPath : path.join(path.resolve(input.appPath), "resources");
+}
+
 /** Where the broker's compiled entry point sits, relative to its directory. */
 export const BROKER_ENTRY_RELATIVE_PATH = path.join("dist", "main.js");
 

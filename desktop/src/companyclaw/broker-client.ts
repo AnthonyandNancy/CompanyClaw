@@ -33,6 +33,8 @@ export interface BrokerClientOptions {
   nodePath?: string;
   ownerSid: string;
   deviceId: string;
+  /** Shared key the broker uses to verify approval tickets on its own side. */
+  ticketSecret?: string;
   allowedProcesses: string[];
   allowedWindowTitles: string[];
   /** Overridable for tests. */
@@ -171,6 +173,8 @@ export class BrokerClient {
         COMPANYCLAW_BROKER_SCRIPT_DIR: this.options.scriptDir ?? "",
         COMPANYCLAW_BROKER_ALLOWED_PROCESSES: this.options.allowedProcesses.join(","),
         COMPANYCLAW_BROKER_ALLOWED_WINDOW_TITLES: this.options.allowedWindowTitles.join(","),
+        // Environment, not argv: the key must not appear in a process list.
+        COMPANYCLAW_BROKER_TICKET_SECRET: this.options.ticketSecret ?? "",
       },
     });
     this.child = child;

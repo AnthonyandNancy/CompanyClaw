@@ -1,5 +1,6 @@
 import { BrokerPolicyConfig } from "./policy";
 import { startBrokerServer } from "./server";
+import { createTicketVerifier } from "./ticket-verify";
 
 /**
  * Broker process entry point.
@@ -18,6 +19,13 @@ export interface BrokerBootstrap {
   allowedProcesses: string[];
   allowedWindowTitles: string[];
   scriptDir: string;
+  /**
+   * Shared key for verifying approval tickets.
+   *
+   * Without it the broker refuses every mutating operation: accepting a ticket
+   * it cannot check would defeat the whole gate.
+   */
+  ticketSecret: string;
 }
 
 export type BootstrapParseResult =
@@ -37,6 +45,7 @@ export function parseBootstrap(env: NodeJS.ProcessEnv): BootstrapParseResult {
   const ownerSid = env.COMPANYCLAW_BROKER_OWNER_SID;
   const deviceId = env.COMPANYCLAW_BROKER_DEVICE_ID;
   const scriptDir = env.COMPANYCLAW_BROKER_SCRIPT_DIR;
+  const ticketSecret = env.COMPANYCLAW_BROKER_TICKET_SECRET;
 
   if (!token || token.length < 16) return { ok: false, reason: "missing-or-weak-token" };
   if (!ownerSid) return { ok: false, reason: "missing-owner-sid" };
@@ -52,6 +61,7 @@ export function parseBootstrap(env: NodeJS.ProcessEnv): BootstrapParseResult {
       allowedProcesses: splitList(env.COMPANYCLAW_BROKER_ALLOWED_PROCESSES),
       allowedWindowTitles: splitList(env.COMPANYCLAW_BROKER_ALLOWED_WINDOW_TITLES),
       scriptDir,
+      ticketSecret: ticketSecret ?? "",
     },
   };
 }
@@ -82,12 +92,15 @@ export async function main(
     policyConfig: toPolicyConfig(parsed.value),
     scriptDir: parsed.value.scriptDir,
     token: parsed.value.token,
+    // The execution side re-verifies every ticket itself; this is that check.
+    verifyTicket: createTicketVerifier(parsed.value.ticketSecret),
   });
 
   stdout.write(`${JSON.stringify({ port: handle.port })}\n`);
 
-  // Patch-time ticket verification is supplied by the owning app for now; until
-  // then every mutation is refused by the policy's default verifier.
+  // Mutations are gated by the verifier injected above. A broker started
+  // without a shared key keeps the policy's fail-closed default and refuses
+  // every one of them rather than accepting an unchecked ticket.
   await new Promise<void>((resolve) => {
     stdin.once("end", resolve);
     stdin.once("close", resolve);

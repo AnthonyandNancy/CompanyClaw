@@ -38,6 +38,9 @@ const PRODUCED_BY_PIPELINE = [
   // the plugin's runtime dependencies are declared as their own source.
   "resources/openclaw-weixin/node_modules/",
   "resources/agent-skills/",
+  // The vendored Windows-MCP payload and its private Python runtime. Staged by
+  // the pipeline so the manifest covers every shipped file.
+  "resources/companyclaw-broker/windows-mcp/",
 ];
 
 const PRODUCED_BY_BUILD = [

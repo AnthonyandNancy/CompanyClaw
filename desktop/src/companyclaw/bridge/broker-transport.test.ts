@@ -7,6 +7,7 @@ import {
   type BrokerTransportCall,
   type BrokerTransportCaller,
 } from "./broker-transport";
+import { MUTATING_OPERATIONS } from "../broker-protocol";
 
 type CallResult = Awaited<ReturnType<BrokerTransportCaller>>;
 
@@ -62,12 +63,35 @@ describe("broker transport", () => {
   });
 
   it("refuses an action the broker cannot express", () => {
-    // A generic click or an arbitrary command has no UIA equivalent in the
-    // closed set; inventing one would hand the agent a wider surface.
-    for (const toolName of ["click", "exec", "browser", "arbitrary-command"]) {
+    // An arbitrary command or an unknown tool has no operation in the closed
+    // set; inventing one would hand the agent a wider surface.
+    for (const toolName of ["exec", "browser", "arbitrary-command", "mystery"]) {
       expect(
         mapActionToBrokerOperation(request({ action: { kind: "write", toolName } })),
       ).toBeNull();
+    }
+  });
+
+  it("maps every v2 computer-use operation", () => {
+    const pairs: [string, string][] = [
+      ["list-installed-apps", "list-installed-apps"],
+      ["launch-app", "launch-app"],
+      ["focus-window", "focus-window"],
+      ["snapshot-ui-tree", "snapshot-ui-tree"],
+      ["find-control", "find-control"],
+      ["screenshot", "screenshot"],
+      ["click", "click"],
+      ["move", "move"],
+      ["drag-drop", "drag-drop"],
+      ["scroll", "scroll"],
+      ["wait-for-condition", "wait-for-condition"],
+      ["inspect-dialog", "inspect-dialog"],
+      ["verify-state", "verify-state"],
+    ];
+    for (const [toolName, operation] of pairs) {
+      expect(
+        mapActionToBrokerOperation(request({ action: { kind: "write", toolName } })),
+      ).toBe(operation);
     }
   });
 
@@ -80,23 +104,70 @@ describe("broker transport", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("passes the ticket through so the broker can verify it again", async () => {
+  it("mints a broker ticket for the exact request instead of forwarding the policy ticket", async () => {
     const call = stubCall({ ok: true, data: { value: "ok" } });
-    const ticket = { contract: "companyclaw.approval-ticket.v1", nonce: "n1" };
-    const result = await transportWith(call)(
+    const policyTicket = { contract: "companyclaw.approval-ticket.v1", nonce: "n1" };
+    const issued: { operation: string; payloadHash: string }[] = [];
+    const transport = createBrokerTransport({
+      call,
+      payloadHashFor: () => "h",
+      targetFor: () => ({ processName: "notepad" }),
+      argsFor: () => ({}),
+      issueTicket: (input) => {
+        issued.push({ operation: input.operation, payloadHash: input.payloadHash });
+        return { contract: "companyclaw.broker-ticket.v1", nonce: "broker-n1" };
+      },
+    });
+    const result = await transport(
       request({
         action: { kind: "write", toolName: "set-value" },
-        approvalTicket: ticket as never,
+        approvalTicket: policyTicket as never,
         binding: {} as never,
       }),
     );
     expect(result.status).toBe("ok");
+    // The broker verifies a ticket signed over the request fields, so the policy
+    // ticket cannot be reused as one.
+    expect(issued).toEqual([{ operation: "set-value", payloadHash: "h" }]);
     expect(call.mock.calls[0][0]).toMatchObject({
       operation: "set-value",
       taskId: "t1",
       stepId: "s1",
-      approvalTicket: ticket,
+      approvalTicket: { contract: "companyclaw.broker-ticket.v1", nonce: "broker-n1" },
     });
+  });
+
+  it("sends no ticket for a read-only action", async () => {
+    const call = stubCall({ ok: true, data: {} });
+    const transport = createBrokerTransport({
+      call,
+      payloadHashFor: () => "h",
+      targetFor: () => ({ processName: "notepad" }),
+      argsFor: () => ({}),
+      issueTicket: () => ({ contract: "companyclaw.broker-ticket.v1", nonce: "n" }),
+    });
+    await transport(request({ action: { kind: "read", toolName: "read-value" } }));
+    expect(call.mock.calls[0][0]).not.toHaveProperty("approvalTicket");
+  });
+
+  it("refuses a mutation when no ticket can be minted", async () => {
+    const call = stubCall({ ok: true, data: {} });
+    // Without an issuer the broker would reject the call anyway; sending it
+    // unauthenticated would only produce a confusing refusal.
+    const transport = createBrokerTransport({
+      call,
+      payloadHashFor: () => "h",
+      targetFor: () => ({ processName: "notepad" }),
+      argsFor: () => ({}),
+    });
+    await transport(
+      request({
+        action: { kind: "write", toolName: "set-value" },
+        approvalTicket: { contract: "x", nonce: "n" } as never,
+        binding: {} as never,
+      }),
+    );
+    expect(call.mock.calls[0][0]).not.toHaveProperty("approvalTicket");
   });
 
   it("keeps the task and step identity on every call", async () => {
@@ -117,14 +188,23 @@ describe("broker transport", () => {
     expect((await transportWith(refused)(request())).status).toBe("rejected");
   });
 
-  it("names the three operations that mutate state", () => {
-    // Everything else is a read; the classification drives whether a ticket is
-    // required, so a new operation must be added here deliberately.
-    expect(
-      (["invoke-pattern", "set-value", "send-keys"] as const).every(isMutatingBrokerOperation),
-    ).toBe(true);
+  it("classifies writes and reads exactly as the broker does", () => {
+    // The classification drives whether a ticket is required, so a new
+    // operation has to be added to the protocol table deliberately; this test
+    // reads that table rather than repeating it.
+    for (const operation of MUTATING_OPERATIONS) {
+      expect(isMutatingBrokerOperation(operation)).toBe(true);
+    }
     expect(isMutatingBrokerOperation("read-value")).toBe(false);
     expect(isMutatingBrokerOperation("describe-element")).toBe(false);
+    expect(isMutatingBrokerOperation("screenshot")).toBe(false);
+    expect(isMutatingBrokerOperation("snapshot-ui-tree")).toBe(false);
+  });
+
+  it("treats the pointer and application operations as writes", () => {
+    for (const operation of ["click", "move", "drag-drop", "launch-app", "focus-window", "scroll"] as const) {
+      expect(isMutatingBrokerOperation(operation)).toBe(true);
+    }
   });
 
   it("never sends a target the caller did not provide", async () => {

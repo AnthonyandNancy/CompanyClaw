@@ -613,6 +613,111 @@ contextBridge.exposeInMainWorld("openclaw", {
       unbind: () => ipcRenderer.invoke("companyclaw:identity:unbind") as Promise<void>,
     },
     /**
+     * The single permission document: preset, remote authorization, grants and
+     * cloud-vision state. Every value comes from the main process; the renderer
+     * never derives a decision of its own.
+     */
+    permissions: {
+      getPolicy: () =>
+        ipcRenderer.invoke("companyclaw:permission:get-policy") as Promise<{
+          preset: "BASIC" | "FULL_DAILY" | "CUSTOM";
+          policyVersion: number;
+          presetChangedAt: string | null;
+          remote: {
+            enabled: boolean;
+            expiresAt: string | null;
+            revokedAt: string | null;
+          };
+          vision: Record<string, { enabled: boolean; provider: string; expiresAt: string | null }>;
+          warning: string | null;
+          counts: {
+            trustedApps: number;
+            trustedSites: number;
+            workFolders: number;
+            taskGrants: number;
+          };
+        }>,
+      setPreset: (input: { preset: "BASIC" | "FULL_DAILY" | "CUSTOM"; acknowledged?: boolean }) =>
+        ipcRenderer.invoke("companyclaw:permission:set-preset", input) as Promise<unknown>,
+      listTrustedApps: () => ipcRenderer.invoke("companyclaw:permission:list-trusted-apps") as Promise<unknown[]>,
+      trustApp: (input: { processName: string; displayName?: string; scope?: string }) =>
+        ipcRenderer.invoke("companyclaw:permission:trust-app", input) as Promise<unknown>,
+      revokeTrustedApp: (input: { processName: string }) =>
+        ipcRenderer.invoke("companyclaw:permission:revoke-trusted-app", input) as Promise<unknown>,
+      listTrustedSites: () => ipcRenderer.invoke("companyclaw:permission:list-trusted-sites") as Promise<unknown[]>,
+      trustCurrentSite: (input: { domain: string }) =>
+        ipcRenderer.invoke("companyclaw:permission:trust-current-site", input) as Promise<unknown>,
+      revokeTrustedSite: (input: { domain: string }) =>
+        ipcRenderer.invoke("companyclaw:permission:revoke-trusted-site", input) as Promise<unknown>,
+      listTaskGrants: () => ipcRenderer.invoke("companyclaw:permission:list-task-grants") as Promise<unknown[]>,
+      revokeTaskGrant: (input: { taskId: string }) =>
+        ipcRenderer.invoke("companyclaw:permission:revoke-task-grant", input) as Promise<unknown>,
+    },
+
+    /**
+     * Cloud-vision authorization, separate for the local and the WeChat path.
+     * Enabling a permission preset never touches this.
+     */
+    vision: {
+      get: () => ipcRenderer.invoke("companyclaw:vision:get") as Promise<unknown>,
+      set: (input: {
+        origin: "local" | "remote";
+        provider: string;
+        baseUrl: string;
+        model: string;
+        captureScope?: string;
+        ttlMinutes?: number;
+      }) => ipcRenderer.invoke("companyclaw:vision:set", input) as Promise<unknown>,
+      revoke: (input: { origin: "local" | "remote" }) =>
+        ipcRenderer.invoke("companyclaw:vision:revoke", input) as Promise<unknown>,
+    },
+
+    /**
+     * "Restore safe defaults" is deliberately two calls: the preview states the
+     * blast radius, and the apply only proceeds with the token it returned.
+     */
+    recovery: {
+      preview: () =>
+        ipcRenderer.invoke("companyclaw:recovery:preview") as Promise<{
+          token: string;
+          fromPreset: string;
+          toPreset: string;
+          cleared: string[];
+          counts: {
+            trustedApps: number;
+            trustedSites: number;
+            workFolders: number;
+            taskGrants: number;
+            activeTasks: number;
+            pendingApprovals: number;
+            legacyGrants: number;
+          };
+          retained: string[];
+        }>,
+      apply: (input: { token: string }) =>
+        ipcRenderer.invoke("companyclaw:recovery:apply", input) as Promise<{
+          applied: boolean;
+          reason?: string;
+          invalidatedApprovals?: number;
+          pausedTasks?: number;
+        }>,
+    },
+
+    /** Decision audit, newest entries first within the requested window. */
+    audit: {
+      query: (input?: { taskId?: string; decision?: string; from?: string; to?: string; limit?: number }) =>
+        ipcRenderer.invoke("companyclaw:audit:query", input) as Promise<unknown[]>,
+    },
+
+    /** The controlled tools the agent can see, for the diagnostics page. */
+    tools: {
+      list: () =>
+        ipcRenderer.invoke("companyclaw:tools:list") as Promise<
+          Array<{ name: string; description: string; capability: string; mutating: boolean }>
+        >,
+    },
+
+    /**
      * Per-component health of this installation. Each item stands alone: one
      * "everything is fine" flag cannot say which part is broken.
      */

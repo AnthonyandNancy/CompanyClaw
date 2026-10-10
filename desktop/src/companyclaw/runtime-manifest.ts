@@ -20,7 +20,14 @@ export type RuntimeResourceKind =
   | "windows-node"
   | "appcontainer"
   | "plugin"
-  | "skill";
+  | "skill"
+  // V5: the vendored Windows-MCP payload, its private interpreter and any
+  // architecture-matched native DLLs it needs. Each is hashed like every other
+  // resource, so a missing or altered component is a build failure rather than
+  // a runtime surprise.
+  | "mcp"
+  | "python-runtime"
+  | "native";
 
 export interface RuntimeManifestEntry {
   /** POSIX-style path relative to the resources root. */

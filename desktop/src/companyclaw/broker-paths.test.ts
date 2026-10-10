@@ -4,6 +4,7 @@ import {
   resolveBrokerDir,
   resolveBrokerRuntimePaths,
   resolveBrokerScriptDir,
+  resolveCompanyClawResourceDir,
 } from "./broker-paths";
 
 const p = (...segments: string[]) => path.join(...segments);
@@ -108,5 +109,40 @@ describe("resolveBrokerRuntimePaths", () => {
     // are the paths a default Chinese Windows installation produces.
     expect(resolved.nodePath).toBe(p("C:", "程序 文件", "CompanyClaw", "resources", "node.exe"));
     expect(resolved.entryPath.endsWith(p("companyclaw-broker", "dist", "main.js"))).toBe(true);
+  });
+});
+
+describe("Windows-MCP payload location", () => {
+  it("points at the resources root the packager writes, in a packaged build", () => {
+    const resolved = resolveCompanyClawResourceDir({
+      isPackaged: true,
+      resourcesPath: p("C:/app/resources"),
+      appPath: p("C:/app/resources/app.asar"),
+    });
+    expect(resolved).toBe(p("C:/app/resources"));
+  });
+
+  it("points at desktop/resources in a source checkout", () => {
+    // The payload is assembled there by prepare-windows-mcp-resources.mjs; a
+    // path derived from anywhere else would report a fault the packager never
+    // causes.
+    const resolved = resolveCompanyClawResourceDir({
+      isPackaged: false,
+      resourcesPath: p("C:/unused"),
+      appPath: p("C:/repo/desktop"),
+    });
+    expect(resolved).toBe(p("C:/repo/desktop", "resources"));
+  });
+
+  it("keeps the payload next to the broker's own resources", () => {
+    const input = {
+      isPackaged: false,
+      resourcesPath: p("C:/unused"),
+      appPath: p("C:/repo/desktop"),
+    };
+    const root = resolveCompanyClawResourceDir(input);
+    // The probe appends `companyclaw-broker/windows-mcp/<server|python-runtime>`;
+    // every one of those must sit under the same root the broker ships from.
+    expect(root).toBe(p("C:/repo/desktop", "resources"));
   });
 });

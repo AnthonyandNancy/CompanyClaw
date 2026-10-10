@@ -46,7 +46,10 @@ import {
   registerCompanyClawIpcHandlers,
   type CompanyClawRuntimeHandle,
 } from "./companyclaw/ipc";
-import { resolveBrokerRuntimePaths } from "./companyclaw/broker-paths";
+import {
+  resolveBrokerRuntimePaths,
+  resolveCompanyClawResourceDir,
+} from "./companyclaw/broker-paths";
 import { resolveOwnerSid } from "./companyclaw/owner-sid";
 import {
   findEdgeExecutable,
@@ -54,6 +57,12 @@ import {
   planFirstRunConfig,
 } from "./companyclaw/first-run-init";
 import { RUNTIME_MANIFEST_FILE, verifyRuntimeManifest } from "./companyclaw/runtime-manifest";
+import {
+  loadedToolSummary,
+  probeWindowsMcpLayout,
+  resolveWindowsMcpLayout,
+  type LayoutProbeResult,
+} from "./companyclaw/windows-mcp-layout";
 import { ArtifactDelivery } from "./companyclaw/results/weixin-delivery";
 import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
 import {
@@ -369,6 +378,14 @@ let gatewayPort = 0;
 let gatewayToken = "";
 /** CompanyClaw security core handle; null until registration succeeds. */
 let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
+/**
+ * Result of inspecting the vendored Windows-MCP payload.
+ *
+ * Resolved once at startup so the health page can name the exact fault (missing
+ * payload, missing runtime, failed hash check) instead of reporting that "the
+ * AI service failed to start".
+ */
+let windowsMcpProbe: LayoutProbeResult | null = null;
 /** Windows user SID this installation serves; set with the security core. */
 let companyClawOwnerSid = "";
 /** Device id WeChat identities are paired with; set with the security core. */
@@ -1766,6 +1783,17 @@ function collectGuardianProbes(): GuardianProbes {
     gatewayConnected: gwClient?.connected ?? false,
     gatewayFailureStage,
     gatewayFailureReason,
+    // The Windows-MCP payload is probed from the packaged layout, so a missing
+    // or altered component surfaces as its own fault code rather than as a
+    // generic Gateway/Broker failure.
+    windowsMcpHealth: windowsMcpProbe ? windowsMcpProbe.health : null,
+    windowsMcpDetail: windowsMcpProbe ? windowsMcpProbe.detail : null,
+    mcpControllableTools: windowsMcpProbe?.ok ? loadedToolSummary().controllable : null,
+    mcpBlockedTools: windowsMcpProbe?.ok ? loadedToolSummary().blocked : null,
+    visionAuthorized: companyClawRuntime
+      ? companyClawRuntime.runtime.getPermissionPolicy().vision.local.enabled ||
+        companyClawRuntime.runtime.getPermissionPolicy().vision.remote.enabled
+      : null,
     manifestProblems: runtimeManifestProblems,
     manifestChecked: runtimeManifestChecked,
     pluginInstalled: weixin.installed,
@@ -8488,6 +8516,20 @@ function registerIpcHandlers(): void {
       },
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
+    // The payload lives beside the broker resources the packager produces, so
+    // its location is derived from the same inputs the broker directory uses.
+    windowsMcpProbe = probeWindowsMcpLayout(
+      resolveWindowsMcpLayout(
+        resolveCompanyClawResourceDir({
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          appPath: app.getAppPath(),
+        }),
+      ),
+    );
+    if (!windowsMcpProbe.ok) {
+      console.warn(`[companyclaw] Windows-MCP payload check: ${windowsMcpProbe.health} — ${windowsMcpProbe.detail}`);
+    }
     // Artifact delivery reaches the plugin's upload path through the gateway
     // child process, so it can only be built once the runtime exists. The
     // recipient is this installation's bound chat: a task never names its own

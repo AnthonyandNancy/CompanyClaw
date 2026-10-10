@@ -1,4 +1,4 @@
-import type { BrokerOperation } from "../broker-protocol";
+import { MUTATING_OPERATIONS as BROKER_MUTATING_OPERATIONS, type BrokerOperation } from "../broker-protocol";
 import type { BridgeRequest, BridgeResponse, BridgeTransport } from "./execution-bridge";
 
 /**
@@ -27,15 +27,8 @@ export type BrokerTransportCaller = (
   call: BrokerTransportCall,
 ) => Promise<{ ok: true; data: unknown } | { ok: false; reason: string; unavailable?: boolean }>;
 
-/** Actions that change application state; these always need a ticket. */
-const MUTATING_OPERATIONS: readonly BrokerOperation[] = [
-  "invoke-pattern",
-  "set-value",
-  "send-keys",
-];
-
 export function isMutatingBrokerOperation(operation: BrokerOperation): boolean {
-  return MUTATING_OPERATIONS.includes(operation);
+  return BROKER_MUTATING_OPERATIONS.includes(operation);
 }
 
 /**
@@ -47,16 +40,43 @@ export function isMutatingBrokerOperation(operation: BrokerOperation): boolean {
  */
 export function mapActionToBrokerOperation(request: BridgeRequest): BrokerOperation | null {
   const fromTool = request.action.toolName;
-  if (fromTool === "list-windows") return "list-windows";
-  if (fromTool === "describe-element") return "describe-element";
-  if (fromTool === "find-elements") return "find-elements";
-  if (fromTool === "read-value") return "read-value";
-  if (fromTool === "wait-for-window") return "wait-for-window";
-  if (fromTool === "set-value") return "set-value";
-  if (fromTool === "invoke-pattern") return "invoke-pattern";
-  if (fromTool === "send-keys") return "send-keys";
-  return null;
+  if (!fromTool) return null;
+  return TOOL_TO_OPERATION[fromTool] ?? null;
 }
+
+/**
+ * Agent tool name -> broker operation.
+ *
+ * The table is closed on purpose: a tool that is not listed here cannot reach
+ * the broker at all, so widening the agent's surface requires an edit here plus
+ * the protocol change behind it, rather than happening as a side effect of a new
+ * tool name appearing upstream.
+ */
+const TOOL_TO_OPERATION: Readonly<Record<string, BrokerOperation>> = {
+  // v1: UI Automation operations.
+  "list-windows": "list-windows",
+  "describe-element": "describe-element",
+  "find-elements": "find-elements",
+  "read-value": "read-value",
+  "wait-for-window": "wait-for-window",
+  "set-value": "set-value",
+  "invoke-pattern": "invoke-pattern",
+  "send-keys": "send-keys",
+  // v2: computer-use operations (W01–W18).
+  "list-installed-apps": "list-installed-apps",
+  "launch-app": "launch-app",
+  "focus-window": "focus-window",
+  "snapshot-ui-tree": "snapshot-ui-tree",
+  "find-control": "find-control",
+  screenshot: "screenshot",
+  click: "click",
+  move: "move",
+  "drag-drop": "drag-drop",
+  scroll: "scroll",
+  "wait-for-condition": "wait-for-condition",
+  "inspect-dialog": "inspect-dialog",
+  "verify-state": "verify-state",
+};
 
 export interface BrokerTransportOptions {
   call: BrokerTransportCaller;
@@ -64,6 +84,20 @@ export interface BrokerTransportOptions {
   payloadHashFor: (request: BridgeRequest) => string;
   targetFor: (request: BridgeRequest) => { processName?: string; windowTitle?: string } | undefined;
   argsFor: (request: BridgeRequest) => Record<string, unknown>;
+  /**
+   * Mints the broker-side envelope for a mutating call.
+   *
+   * The bridge has already verified the *policy* ticket; this produces the
+   * second, execution-side credential so the broker can re-check the exact
+   * request it is about to perform. Omitting it means mutations are refused by
+   * the broker, which is the safe default rather than a silent widening.
+   */
+  issueTicket?: (input: {
+    operation: BrokerOperation;
+    taskId: string;
+    stepId: string;
+    payloadHash: string;
+  }) => unknown;
 }
 
 export function createBrokerTransport(options: BrokerTransportOptions): BridgeTransport {
@@ -75,15 +109,27 @@ export function createBrokerTransport(options: BrokerTransportOptions): BridgeTr
       return { status: "rejected", reason: "unsupported-broker-operation" };
     }
     const target = options.targetFor(request);
+    const payloadHash = options.payloadHashFor(request);
+    // The broker-side ticket is minted for this exact request; the policy ticket
+    // that satisfied the bridge is not reusable as one, because the broker signs
+    // over the request fields rather than the approval binding.
+    const brokerTicket =
+      request.approvalTicket && options.issueTicket
+        ? options.issueTicket({
+            operation,
+            taskId: request.taskId,
+            stepId: request.stepId,
+            payloadHash,
+          })
+        : undefined;
     const result = await options.call({
       operation,
       taskId: request.taskId,
       stepId: request.stepId,
-      payloadHash: options.payloadHashFor(request),
+      payloadHash,
       ...(target ? { target } : {}),
       args: options.argsFor(request),
-      // Passed through unchanged: the broker verifies it again on its side.
-      ...(request.approvalTicket ? { approvalTicket: request.approvalTicket } : {}),
+      ...(brokerTicket ? { approvalTicket: brokerTicket } : {}),
     });
     if (result.ok) {
       return { status: "ok", detail: JSON.stringify(result.data).slice(0, 2_000) };

@@ -34,6 +34,27 @@ const REQUIRED_CHANNELS = [
   "companyclaw:broker:get-targets",
   "companyclaw:broker:set-targets",
   "companyclaw:broker:get-status",
+  // V5: the permission document, cloud-vision authorization, the safe-defaults
+  // reset, the decision audit and the controlled tool surface. Every one of
+  // these is a channel the renderer calls by name, so a rename on either side
+  // must break a test rather than silently disabling the feature.
+  "companyclaw:permission:get-policy",
+  "companyclaw:permission:set-preset",
+  "companyclaw:permission:list-trusted-apps",
+  "companyclaw:permission:trust-app",
+  "companyclaw:permission:revoke-trusted-app",
+  "companyclaw:permission:list-trusted-sites",
+  "companyclaw:permission:trust-current-site",
+  "companyclaw:permission:revoke-trusted-site",
+  "companyclaw:permission:list-task-grants",
+  "companyclaw:permission:revoke-task-grant",
+  "companyclaw:vision:get",
+  "companyclaw:vision:set",
+  "companyclaw:vision:revoke",
+  "companyclaw:recovery:preview",
+  "companyclaw:recovery:apply",
+  "companyclaw:audit:query",
+  "companyclaw:tools:list",
 ] as const;
 
 describe("CompanyClaw IPC contract", () => {

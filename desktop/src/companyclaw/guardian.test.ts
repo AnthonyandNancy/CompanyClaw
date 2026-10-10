@@ -18,6 +18,11 @@ const healthy: GuardianProbes = {
   brokerRunning: true,
   brokerFailureReason: null,
   browserExecutable: "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+  windowsMcpHealth: "READY",
+  windowsMcpDetail: null,
+  mcpControllableTools: 11,
+  mcpBlockedTools: 9,
+  visionAuthorized: false,
   modelCapability: null,
 };
 
@@ -36,6 +41,9 @@ describe("guardian report", () => {
       "runtime-manifest",
       "plugin-installed",
       "broker-runtime",
+      "windows-mcp",
+      "mcp-tools",
+      "vision-authorization",
       "browser-binary",
       "model-reply",
     ]);
