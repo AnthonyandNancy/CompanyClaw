@@ -2,9 +2,12 @@ import { createServer, type Server, type Socket } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { BrokerPolicy, type BrokerPolicyConfig } from "./policy";
+import { WindowsMcpSession } from "./adapters/windows-mcp/session";
+import { WindowsMcpExecutionAdapter } from "./adapters/windows-mcp/execution-adapter";
 import {
   buildBrokerResponse,
   parseBrokerRequest,
+  V2_OPERATIONS,
   type BrokerRequest,
   type BrokerOutcome,
 } from "./protocol";
@@ -42,6 +45,14 @@ export interface BrokerServerOptions {
   token: string;
   now?: () => Date;
   verifyTicket?: (request: BrokerRequest) => boolean;
+  /**
+   * The vendored Windows-MCP session, when this broker may use it.
+   *
+   * Omitted means the v2 computer-use operations report `not-packaged` rather
+   * than silently doing nothing — a missing backend must be a named fault, not a
+   * no-op that looks like the model failing.
+   */
+  windowsMcp?: WindowsMcpSession | null;
   listWindows?: (options: {
     scriptDir: string;
   }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
@@ -178,6 +189,7 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
       scriptDir: options.scriptDir,
       token: options.token,
       now,
+      windowsMcp: options.windowsMcp ?? null,
       listWindows,
       findElements,
       readValue,
@@ -214,6 +226,8 @@ interface ConnectionContext {
   scriptDir: string;
   token: string;
   now: () => Date;
+  /** Windows-MCP session for the v2 operations; null when not available. */
+  windowsMcp: WindowsMcpSession | null;
   listWindows: (options: {
     scriptDir: string;
   }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
@@ -380,6 +394,7 @@ export async function executeAuthorized(
     | "sendKeys"
     | "wait"
     | "now"
+    | "windowsMcp"
   >,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
@@ -539,8 +554,63 @@ export async function executeAuthorized(
       }
     }
     default:
-      return { status: "rejected", reason: "unsupported-operation" };
+      // v1 handled everything it knows above; whatever remains is either a v2
+      // computer-use operation or genuinely unknown.
+      return await executeComputerUse(request, context);
   }
+}
+
+/**
+ * The v2 computer-use path.
+ *
+ * Every operation here is carried by the vendored Windows-MCP server through
+ * `WindowsMcpExecutionAdapter`, which refuses anything the allow-map does not
+ * cover. A missing session is reported by its own name so the desktop can say
+ * *which* component is absent instead of blaming the model.
+ */
+async function executeComputerUse(
+  request: BrokerRequest,
+  context: Pick<ConnectionContext, "windowsMcp" | "scriptDir" | "now">,
+): Promise<BrokerOutcome> {
+  const operation = request.operation;
+  if (!(V2_OPERATIONS as readonly string[]).includes(operation)) {
+    return { status: "rejected", reason: "unsupported-operation" };
+  }
+
+  if (operation === "capabilities") {
+    if (!context.windowsMcp) {
+      return { status: "ok", data: { available: false, health: "NOT_PACKAGED" } };
+    }
+    const status = await context.windowsMcp.ensureStarted();
+    return {
+      status: "ok",
+      data: {
+        available: status.health === "READY",
+        health: status.health,
+        detail: status.detail,
+        controllableTools: status.controllableTools,
+        blockedTools: status.blockedTools,
+        serverVersion: status.serverVersion,
+        matchesPinnedRelease: status.matchesPinnedRelease,
+      },
+    };
+  }
+
+  if (!context.windowsMcp) {
+    return { status: "failed", reason: "WINDOWS_MCP_NOT_PACKAGED" };
+  }
+
+  const adapter = new WindowsMcpExecutionAdapter({
+    callTool: (input) => context.windowsMcp!.callTool(input),
+  });
+  const result = await adapter.execute({
+    operation,
+    target: request.target ?? null,
+    args: request.args ?? {},
+  });
+  if (result.status === "ok") return { status: "ok", data: result.data };
+  if (result.status === "rejected") return { status: "rejected", reason: result.reason };
+  return { status: "failed", reason: result.reason };
 }
 
 /** How often wait-for-window re-reads the window list while waiting. */

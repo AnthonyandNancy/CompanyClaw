@@ -39,6 +39,7 @@
 | `policy/risk-classifier.ts` | 新增 `high-risk` ActionCategory 并列入"任何渠道都拒绝" | 保留 V1 `high-risk` 语义（原先是 R3 且远程恒拒）；仅靠 `unknown` 会让它降级为 R2 |
 | `policy/action-category.ts` | `read` 列入可确认类目、不列入 routine | 无系统级只读证据的 read 必须是业务写入（V1 规则），否则 `requirement-invariants` 会失败 |
 | `approvals/approval-store.ts` | 旧记录读入时回填 `resolutionChannel`/`actionCategory` | 升级时不得丢弃员工仍能在微信卡片上看到的待批请求 |
+| `broker-paths.ts` + `windows-mcp-layout.ts` | 新增 `resolveCompanyClawResourceDir`，payload 路径从**同一资源根**推导 | 首次实现把已含 `windows-mcp` 的目录又拼了一层，dev 态自检误报 `NOT_PACKAGED`；真实运行暴露后修正，并补 3 条路径用例 |
 | `runtime.ts` | `setRemoteAuthorization` 保持同步签名，落盘为异步排队 | 既有调用方需要立即读取返回的视图；同时通过 `flushPermissionWrites()` 提供可等待的落盘点 |
 | `broker/adapters/windows-mcp/tool-policy-map.ts` | 原计划按 README 的 `ControlStatus` 建模，实际 `tools/list` **没有该工具**；实际为 20 项 | 以真实握手结果为准（`b455c276` 实测）；`reconcileToolList` 已固化 `PINNED_UPSTREAM_TOOLS` |
 | `broker/adapters/windows-mcp/tool-policy-map.ts` | 新增 `BROKER_NATIVE_CAPABILITIES`（`listWindows`/`readControl`/`captureExecutionError`） | 这三项由既有 Broker UIA 实现提供，上游无对应工具；不这样做则能力覆盖有缺口 |

@@ -1,6 +1,7 @@
 import { BrokerPolicyConfig } from "./policy";
 import { startBrokerServer } from "./server";
 import { createTicketVerifier } from "./ticket-verify";
+import { WindowsMcpSession } from "./adapters/windows-mcp/session";
 
 /**
  * Broker process entry point.
@@ -88,12 +89,23 @@ export async function main(
     return 2;
   }
 
+  // The vendored payload lives beside the broker's own resources. When the
+  // desktop passes the resources root, the session is created eagerly (the
+  // interpreter starts lazily on the first computer-use call).
+  const windowsMcp = env.COMPANYCLAW_BROKER_RESOURCES_DIR
+    ? new WindowsMcpSession({
+        resourceDir: env.COMPANYCLAW_BROKER_RESOURCES_DIR,
+        stateDir: env.COMPANYCLAW_BROKER_STATE_DIR ?? parsed.value.scriptDir,
+      })
+    : null;
+
   const handle = await startBrokerServer({
     policyConfig: toPolicyConfig(parsed.value),
     scriptDir: parsed.value.scriptDir,
     token: parsed.value.token,
     // The execution side re-verifies every ticket itself; this is that check.
     verifyTicket: createTicketVerifier(parsed.value.ticketSecret),
+    windowsMcp,
   });
 
   stdout.write(`${JSON.stringify({ port: handle.port })}\n`);
@@ -107,6 +119,7 @@ export async function main(
     stdin.resume();
   });
 
+  await windowsMcp?.stop();
   await handle.close();
   return 0;
 }

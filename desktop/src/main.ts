@@ -63,6 +63,12 @@ import {
   resolveWindowsMcpLayout,
   type LayoutProbeResult,
 } from "./companyclaw/windows-mcp-layout";
+import { startMcpEndpoint, type McpEndpointHandle } from "./companyclaw/mcp/mcp-endpoint";
+import {
+  registerCompanyClawMcpServer,
+  unregisterCompanyClawMcpServer,
+} from "./companyclaw/mcp/mcp-registration";
+import { createBrokerTransport } from "./companyclaw/bridge/broker-transport";
 import { ArtifactDelivery } from "./companyclaw/results/weixin-delivery";
 import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
 import {
@@ -386,6 +392,13 @@ let companyClawRuntime: CompanyClawRuntimeHandle | null = null;
  * AI service failed to start".
  */
 let windowsMcpProbe: LayoutProbeResult | null = null;
+/**
+ * Loopback endpoint the MCP bridge calls back into.
+ *
+ * The bridge is a child of the Gateway, so this socket is the only route from a
+ * model tool call back to the permission engine in this process.
+ */
+let mcpEndpoint: McpEndpointHandle | null = null;
 /** Windows user SID this installation serves; set with the security core. */
 let companyClawOwnerSid = "";
 /** Device id WeChat identities are paired with; set with the security core. */
@@ -1766,6 +1779,161 @@ async function ensureWeixinIdentityBound(): Promise<void> {
  * client, the manifest check); nothing here re-derives a decision the security
  * core already owns.
  */
+/**
+ * Runs one tool call that arrived from the MCP bridge.
+ *
+ * This is the last hop of the chain the requirement describes: a model tool call
+ * becomes a task step, the policy engine decides for the channel it arrived
+ * through, and only an allowed action reaches the broker. The bridge itself
+ * decides nothing, and neither does this function — it supplies the trusted
+ * context and the transport.
+ *
+ * The call is treated as a *local* one: the MCP server is started by the Gateway
+ * on this machine, for this user's own session. A WeChat-originated task reaches
+ * the same code through `handleTrustedRemoteMessage` and passes its own origin,
+ * so the two channels stay distinguishable even though they share the executor.
+ */
+async function runAgentToolCall(call: {
+  name: string;
+  arguments: Record<string, unknown>;
+}): Promise<{ ok: boolean; text: string }> {
+  const runtime = companyClawRuntime?.runtime;
+  const broker = companyClawRuntime?.broker;
+  if (!runtime || !broker) {
+    return { ok: false, text: "CompanyClaw 尚未就绪，请稍后再试" };
+  }
+  if (!companyClawOwnerSid || !companyClawDeviceId) {
+    return { ok: false, text: "CompanyClaw 缺少本机身份，无法执行" };
+  }
+
+  const task = await runtime.createTask({
+    ownerSid: companyClawOwnerSid,
+    deviceId: companyClawDeviceId,
+    channel: "local",
+    objective: `工具调用：${call.name}`,
+  });
+
+  const transport = createBrokerTransport({
+    call: (brokerCall) =>
+      broker.call({
+        operation: brokerCall.operation,
+        taskId: brokerCall.taskId,
+        stepId: brokerCall.stepId,
+        payloadHash: brokerCall.payloadHash,
+        ...(brokerCall.target ? { target: brokerCall.target } : {}),
+        args: brokerCall.args ?? {},
+        ...(brokerCall.approvalTicket ? { approvalTicket: brokerCall.approvalTicket as never } : {}),
+      }),
+    payloadHashFor: (request) =>
+      createHash("sha256")
+        .update(`${request.taskId}:${request.stepId}:${JSON.stringify(request.action)}`)
+        .digest("hex"),
+    targetFor: (request) => {
+      const windowTitle = request.action.targetSystem;
+      return windowTitle ? { windowTitle } : undefined;
+    },
+    argsFor: () => ({}),
+    issueTicket: (issueInput) => {
+      // The broker verifies its own ticket over the request fields, minted here
+      // from the same secret the policy service uses.
+      const issued = companyClawRuntime?.runtime.issueExecutionCredential({
+        action: { kind: "write", toolName: issueInput.operation },
+        origin: "local-ui",
+        taskId: issueInput.taskId,
+        stepId: issueInput.stepId,
+        ownerSid: companyClawOwnerSid ?? "",
+        deviceId: companyClawDeviceId ?? "",
+      });
+      return issued?.ticket;
+    },
+  });
+
+  const result = await runtime.handleAgentToolCall({
+    call: { tool: call.name, arguments: call.arguments },
+    context: {
+      origin: "local-ui",
+      taskId: task.taskId,
+      stepId: `step-${Date.now()}`,
+      ownerSid: companyClawOwnerSid,
+      deviceId: companyClawDeviceId,
+    },
+    transport,
+  });
+
+  switch (result.status) {
+    case "executed":
+      return { ok: true, text: result.detail };
+    case "approval-required":
+      return {
+        ok: false,
+        text:
+          `该操作需要你本人确认（审批编号 ${result.approvalId}）。` +
+          `请在 CompanyClaw 权限弹窗或微信中确认后再继续，不要重复执行同一动作。`,
+      };
+    case "denied":
+      return { ok: false, text: `已拒绝：${result.reason}` };
+    case "unavailable":
+      return { ok: false, text: `执行组件不可用：${result.reason}` };
+    case "rejected":
+      return { ok: false, text: `调用无效：${result.reason}` };
+  }
+}
+
+/**
+ * Starts the MCP bridge and registers it with OpenClaw.
+ *
+ * Split out and called after startup for one reason: registration is the step
+ * that makes the agent's GUI tools exist, and it needs the broker paths, the
+ * ticket secret and the runtime handle — all of which are resolved inside the
+ * synchronous IPC registration. Doing it here keeps `registerIpcHandlers()`
+ * synchronous while still running before the user can send a message.
+ */
+async function startMcpBridge(): Promise<void> {
+  if (!companyClawRuntime) return;
+  // The step that actually gives the agent GUI tools: without it the model
+  // correctly reports that it has no way to operate the machine.
+  try {
+    const endpoint = await startMcpEndpoint({
+      callTool: async (call) => {
+        if (!companyClawRuntime) return { ok: false, text: "CompanyClaw 尚未就绪" };
+        return await runAgentToolCall(call);
+      },
+      onDiagnostic: (message) => console.warn(`[companyclaw] ${message}`),
+    });
+    mcpEndpoint = endpoint;
+    const registration = registerCompanyClawMcpServer({
+      configPath: getConfigPath(),
+      port: endpoint.port,
+      token: endpoint.token,
+    });
+    if (registration.status === "registered") {
+      console.log(
+        `[companyclaw] MCP server "${registration.serverName}" ${
+          registration.changed ? "registered" : "already current"
+        } (port ${endpoint.port})`,
+      );
+      if (registration.changed) {
+        // The Gateway reads its MCP configuration at start, so a change needs a
+        // restart before the tools appear. Reported rather than done silently:
+        // the user may be mid-conversation.
+        mainWindow?.webContents.send(
+          "gateway:log",
+          "[companyclaw] 电脑操作工具已注册；重启后生效",
+        );
+      }
+    } else {
+      console.warn(
+        `[companyclaw] MCP server not registered (${registration.status}): ${registration.reason}`,
+      );
+    }
+    } catch (error) {
+    // Registration failing must not take the app down; the tools are simply
+    // absent and the health report says so.
+    console.error("[companyclaw] MCP bridge setup failed:", error);
+    }
+
+}
+
 function collectGuardianProbes(): GuardianProbes {
   const config = readConfig();
   const weixin = readWeixinPluginStatus();
@@ -4195,6 +4363,18 @@ async function startGatewayInner(startupRetriesRemaining = 1): Promise<void> {
       ? path.join(process.env.USERPROFILE, ".agents", "skills")
       : "";
     if (customSkillsDir && fs.existsSync(customSkillsDir)) toolSandbox.addDirRO(customSkillsDir);
+
+    // Grant read access to the MCP bridge script.
+    //
+    // The Gateway launches the bridge as a child process, and the AppContainer
+    // sandbox blocks that spawn unless the script is readable inside the
+    // container. Without this the agent's computer-use tools load as an empty
+    // tool list, which looks identical to "the model cannot operate the
+    // desktop" — the exact confusion this feature exists to remove.
+    const mcpBridgeDir = path.join(app.getAppPath(), "dist", "companyclaw", "mcp");
+    if (fs.existsSync(path.join(mcpBridgeDir, "mcp-bridge-server.js"))) {
+      toolSandbox.addDirRO(mcpBridgeDir);
+    }
 
     // Load user-configured external apps whitelist from settings.
     // These apps bypass AppContainer when launched (need COM/RPC/named-pipes).
@@ -8514,6 +8694,12 @@ function registerIpcHandlers(): void {
       broker: {
         brokerDir: brokerPaths.brokerDir,
       },
+      // The broker resolves `companyclaw-broker/windows-mcp` beneath this root.
+      resourcesDir: resolveCompanyClawResourceDir({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        appPath: app.getAppPath(),
+      }),
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
     // The payload lives beside the broker resources the packager produces, so
@@ -8632,6 +8818,13 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers();
 
+  // The MCP endpoint and its registration must be in place *before* the Gateway
+  // spawns: OpenClaw reads its MCP configuration once, at startup, so a server
+  // registered afterwards is invisible until the Gateway is restarted. Doing it
+  // here rather than after the window is why the agent sees the tools on the
+  // first launch instead of the second.
+  await startMcpBridge();
+
   // Sync auto-start with OS
   app.setLoginItemSettings({ openAtLogin: settingsStore.get("autoStart") });
 
@@ -8734,6 +8927,10 @@ app.on("before-quit", () => {
   stopGatewayProcess();
   // Stop the broker so no UI Automation listener outlives the app.
   void companyClawRuntime?.broker?.stop();
+  // Close the MCP endpoint; the bridge then fails with a readable reason rather
+  // than hanging, and nothing keeps listening after the app is gone.
+  void mcpEndpoint?.close();
+  mcpEndpoint = null;
 });
 
 app.on("activate", () => {

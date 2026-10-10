@@ -1,7 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ipcMain } from "electron";
-import { BrokerClient, type BrokerClientStatus } from "./broker-client";
+import {
+  BrokerClient,
+  type BrokerCallOptions,
+  type BrokerCallResult,
+  type BrokerClientStatus,
+} from "./broker-client";
 import {
   buildCapabilityProbeRequest,
   interpretCapabilityProbe,
@@ -34,6 +39,8 @@ interface CompanyClawIpcOptions {
    * present the runtime can spawn the broker on first use.
    */
   broker?: { brokerDir: string };
+  /** Packaged-resources root, so the broker can find the Windows-MCP payload. */
+  resourcesDir?: string;
   /**
    * Private Node runtime used to launch the broker. In a packaged build
    * `process.execPath` is CompanyClaw.exe and cannot run the broker entry.
@@ -63,7 +70,18 @@ interface CompanyClawIpcOptions {
 /** Handle returned to `main.ts` so it can stop the broker on quit. */
 export interface CompanyClawRuntimeHandle {
   runtime: CompanyClawRuntime;
-  broker: { stop(): Promise<void>; getStatus(): BrokerClientStatus } | null;
+  broker: {
+    stop(): Promise<void>;
+    getStatus(): BrokerClientStatus;
+    /**
+     * Sends one call to the broker.
+     *
+     * Exposed so the agent tool path in `main.ts` can build the execution
+     * transport; the broker re-checks identity, target and ticket on its own
+     * side, so this does not widen anything by being reachable.
+     */
+    call(options: BrokerCallOptions): Promise<BrokerCallResult>;
+  } | null;
 }
 
 export const COMPANYCLAW_TICKET_SECRET_FILE = "companyclaw-ticket-secret";
@@ -110,6 +128,10 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
         ownerSid: options.ownerSid,
         deviceId: options.deviceId,
         ticketSecret: options.ticketSecret,
+        // The vendored Windows-MCP payload lives under the packaged resources
+        // root; the broker resolves `companyclaw-broker/windows-mcp` beneath it.
+        ...(options.resourcesDir ? { resourcesDir: options.resourcesDir } : {}),
+        stateDir: path.join(options.userDataDir, "companyclaw", "windows-mcp"),
         allowedProcesses: [],
         allowedWindowTitles: [],
       })

@@ -35,6 +35,10 @@ export interface BrokerClientOptions {
   deviceId: string;
   /** Shared key the broker uses to verify approval tickets on its own side. */
   ticketSecret?: string;
+  /** Packaged-resources root, so the broker can find the Windows-MCP payload. */
+  resourcesDir?: string;
+  /** Private state directory for the vendored server's cache and config. */
+  stateDir?: string;
   allowedProcesses: string[];
   allowedWindowTitles: string[];
   /** Overridable for tests. */
@@ -175,6 +179,8 @@ export class BrokerClient {
         COMPANYCLAW_BROKER_ALLOWED_WINDOW_TITLES: this.options.allowedWindowTitles.join(","),
         // Environment, not argv: the key must not appear in a process list.
         COMPANYCLAW_BROKER_TICKET_SECRET: this.options.ticketSecret ?? "",
+        COMPANYCLAW_BROKER_RESOURCES_DIR: this.options.resourcesDir ?? "",
+        COMPANYCLAW_BROKER_STATE_DIR: this.options.stateDir ?? "",
       },
     });
     this.child = child;
