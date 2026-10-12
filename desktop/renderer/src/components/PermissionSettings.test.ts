@@ -38,7 +38,17 @@ function installBridge(overrides: Record<string, unknown> = {}) {
     revokeTrustedSite: vi.fn(async () => ({})),
     revokeTaskGrant: vi.fn(async () => ({})),
   };
-  const vision = { set: vi.fn(async () => ({})), revoke: vi.fn(async () => ({})) };
+  const vision = {
+    set: vi.fn(async () => ({})),
+    revoke: vi.fn(async () => ({})),
+    // The switch names the provider it authorizes, so it reads the configured
+    // model rather than the (still empty) authorization record.
+    getConfiguredModel: vi.fn(async () => ({
+      provider: "bendi",
+      baseUrl: "http://127.0.0.1:8317/v1",
+      model: "deepseek-v4.1-flash",
+    })),
+  };
   const recovery = {
     preview: vi.fn(async () => ({
       token: "4:BASIC:1:0:0:0:0:0:0:0",
@@ -105,17 +115,18 @@ describe("permission page", () => {
   it("shows the current preset from the main process", async () => {
     installBridge();
     const wrapper = await mountPage();
-    expect(wrapper.text()).toContain("基础权限");
-    expect(wrapper.text()).toContain("全面日常操作");
-    expect(wrapper.text()).toContain("高级自定义");
+    expect(wrapper.text()).toContain("仅查看");
+    expect(wrapper.text()).toContain("需审核");
+    expect(wrapper.text()).toContain("完全权限");
     expect(wrapper.text()).toContain("与 Windows 管理员权限无关");
   });
 
-  it("asks for an acknowledgement before enabling the daily preset", async () => {
+  it("asks for an acknowledgement before enabling 完全权限", async () => {
     const { permissions } = installBridge();
     const wrapper = await mountPage();
+    // The cards read 仅查看 / 需审核 / 完全权限, so the widest one is the third.
     await wrapper
-      .findAll("input[type=radio]")[1]
+      .findAll("input[type=radio]")[2]
       .setValue(true)
       .catch(() => undefined);
     await wrapper.vm.$nextTick();
@@ -124,11 +135,11 @@ describe("permission page", () => {
     expect(wrapper.text()).toContain("确认启用");
   });
 
-  it("applies the daily preset with the acknowledgement after confirmation", async () => {
+  it("applies 完全权限 with the acknowledgement after confirmation", async () => {
     const { permissions } = installBridge();
     const wrapper = await mountPage();
     const radios = wrapper.findAll("input[type=radio]");
-    await radios[1].trigger("change");
+    await radios[2].trigger("change");
     await wrapper.vm.$nextTick();
     const buttons = wrapper.findAll("button").filter((b) => b.text() === "确认启用");
     expect(buttons).toHaveLength(1);
@@ -152,6 +163,38 @@ describe("permission page", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(vision.set).toHaveBeenCalledTimes(1);
     expect(vision.set.mock.calls[0][0]).toMatchObject({ origin: "local" });
+  });
+
+  it("authorizes the switch with the configured model, not the empty record", async () => {
+    // The original defect: the provider was read from the authorization record,
+    // which is empty until the switch is on, so enabling it always failed.
+    const { vision } = installBridge();
+    const wrapper = await mountPage();
+    const switches = wrapper.findAll("input[type=checkbox]");
+    await switches[0].trigger("change");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(vision.getConfiguredModel).toHaveBeenCalled();
+    expect(vision.set.mock.calls[0][0]).toMatchObject({
+      origin: "local",
+      provider: "bendi",
+      baseUrl: "http://127.0.0.1:8317/v1",
+      model: "deepseek-v4.1-flash",
+    });
+    // Nothing failed, so the page does not show the "configure a model" hint.
+    expect(wrapper.text()).not.toContain("请先在模型设置中配置服务商与模型");
+  });
+
+  it("explains what to do when no model is configured yet", async () => {
+    const { vision } = installBridge();
+    vision.getConfiguredModel.mockResolvedValueOnce(null);
+    const wrapper = await mountPage();
+    const switches = wrapper.findAll("input[type=checkbox]");
+    await switches[0].trigger("change");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(vision.set).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("请先在模型设置中配置服务商与模型");
   });
 
   it("shows the reset impact before applying it", async () => {

@@ -119,7 +119,7 @@ export const TOOL_POLICY_MAP: readonly ToolPolicyEntry[] = [
   {
     tool: "App",
     disposition: "wrap",
-    capabilities: ["listInstalledApps", "launchApp", "focusWindow"],
+    capabilities: ["launchApp", "focusWindow"],
     reason: "启动与切窗需经已安装应用发现与白名单校验",
   },
   {
@@ -243,6 +243,7 @@ export function isToolAllowedFor(tool: string, capability: BrokerCapability): bo
  * available when the vendored server is missing or refuses a call.
  */
 export const BROKER_NATIVE_CAPABILITIES: readonly BrokerCapability[] = [
+  "listInstalledApps",
   "listWindows",
   "readControl",
   "captureExecutionError",

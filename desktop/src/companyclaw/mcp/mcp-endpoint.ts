@@ -32,7 +32,7 @@ export interface McpEndpointDependencies {
   callTool: (call: {
     name: string;
     arguments: Record<string, unknown>;
-  }) => Promise<{ ok: boolean; text: string }>;
+  }) => Promise<{ ok: boolean; text: string; images?: { data: string; mimeType: string }[] }>;
   /** Optional diagnostic sink for refusals and transport faults. */
   onDiagnostic?: (message: string) => void;
 }
@@ -116,7 +116,12 @@ export async function startMcpEndpoint(
             callTool: async (call): Promise<BridgeToolResult> => {
               try {
                 const result = await deps.callTool(call);
-                return { ok: result.ok, text: result.text, reason: result.ok ? "ok" : "refused" };
+                return {
+                  ok: result.ok,
+                  text: result.text,
+                  reason: result.ok ? "ok" : "refused",
+                  ...(result.images ? { images: result.images } : {}),
+                };
               } catch (error) {
                 const reason = error instanceof Error ? error.message : String(error);
                 deps.onDiagnostic?.(`tool ${call.name} failed: ${reason}`);

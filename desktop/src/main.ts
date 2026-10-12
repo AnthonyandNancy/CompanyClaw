@@ -69,6 +69,7 @@ import {
   unregisterCompanyClawMcpServer,
 } from "./companyclaw/mcp/mcp-registration";
 import { createBrokerTransport } from "./companyclaw/bridge/broker-transport";
+import { issueBrokerTicket } from "./companyclaw/broker-ticket";
 import { ArtifactDelivery } from "./companyclaw/results/weixin-delivery";
 import { requestPluginFileSend } from "./companyclaw/results/plugin-file-send";
 import {
@@ -403,6 +404,11 @@ let mcpEndpoint: McpEndpointHandle | null = null;
 let companyClawOwnerSid = "";
 /** Device id WeChat identities are paired with; set with the security core. */
 let companyClawDeviceId = "";
+/**
+ * The secret the broker verifies its own tickets with; set with the security
+ * core. Held here so the tool path can mint the broker's envelope per call.
+ */
+let companyClawTicketSecret = "";
 const bundledWindowsNodeHost = new BundledWindowsNodeHost();
 let bundledWindowsNodeStartup: Promise<void> | null = null;
 let bundledWindowsNodeGeneration = 0;
@@ -692,6 +698,53 @@ function startSkillFileWatcher(): void {
 // ---------------------------------------------------------------------------
 function getConfigPath(): string {
   return path.join(getOpenClawStateDir(), "openclaw.json");
+}
+
+/**
+ * The identity of the model currently in use: provider, endpoint and model name.
+ *
+ * Read for one purpose: the cloud-vision authorization has to state *who* will
+ * receive an image, and the authorization record is empty until the switch is
+ * turned on. Returns null when nothing is configured, so the caller reports
+ * "configure a model first" instead of storing a blank authorization.
+ *
+ * The credential is deliberately not read. `apiKey` in the config is a reference
+ * such as `${OPENCLAW_MODEL_API_KEY}`; even that name is not returned, because a
+ * permission record that carried it would widen what the file can leak.
+ */
+function readConfiguredModelIdentity(): {
+  provider: string;
+  baseUrl: string;
+  model: string;
+} | null {
+  const config = readConfig();
+  if (!config || typeof config !== "object") return null;
+  const primary = config?.agents?.defaults?.model?.primary;
+  if (typeof primary !== "string" || !primary.trim()) return null;
+  const slash = primary.indexOf("/");
+  if (slash <= 0 || slash === primary.length - 1) return null;
+  const providerId = primary.slice(0, slash);
+  const model = primary.slice(slash + 1);
+
+  const providerEntry = config?.models?.providers?.[providerId];
+  const baseUrl = typeof providerEntry?.baseUrl === "string" ? providerEntry.baseUrl : "";
+
+  return {
+    provider: providerId,
+    // Normalized the same way the config writer does, so the value stored in the
+    // authorization matches what a later gate compares against.
+    baseUrl: normalizeBaseUrlForVision(baseUrl),
+    model,
+  };
+}
+
+/** Mirrors the normalization the model writer applies before storing a base URL. */
+function normalizeBaseUrlForVision(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return "";
+  let url = trimmed.replace(/\/+$/, "");
+  if (!url.endsWith("/v1")) url += "/v1";
+  return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -1796,7 +1849,7 @@ async function ensureWeixinIdentityBound(): Promise<void> {
 async function runAgentToolCall(call: {
   name: string;
   arguments: Record<string, unknown>;
-}): Promise<{ ok: boolean; text: string }> {
+}): Promise<{ ok: boolean; text: string; images?: { data: string; mimeType: string }[] }> {
   const runtime = companyClawRuntime?.runtime;
   const broker = companyClawRuntime?.broker;
   if (!runtime || !broker) {
@@ -1824,27 +1877,55 @@ async function runAgentToolCall(call: {
         args: brokerCall.args ?? {},
         ...(brokerCall.approvalTicket ? { approvalTicket: brokerCall.approvalTicket as never } : {}),
       }),
+    // The hash covers the arguments as well as the action: once arguments travel
+    // to the executor, a ticket signed over the action alone would clear a
+    // different coordinate or a different application name than the one the
+    // employee saw. The broker re-derives the same text from the request.
     payloadHashFor: (request) =>
       createHash("sha256")
-        .update(`${request.taskId}:${request.stepId}:${JSON.stringify(request.action)}`)
+        .update(
+          `${request.taskId}:${request.stepId}:${JSON.stringify(
+            request.action,
+          )}:${JSON.stringify(request.arguments ?? {})}`,
+        )
         .digest("hex"),
     targetFor: (request) => {
-      const windowTitle = request.action.targetSystem;
-      return windowTitle ? { windowTitle } : undefined;
+      // The window identity comes from the *tool arguments*, not from the
+      // action's rendered target: `describeTarget` prefers a window title but
+      // falls back to a coordinate or a text preview, and treating those as a
+      // window title would address the wrong window.
+      const args = request.arguments ?? {};
+      const windowTitle = typeof args.windowTitle === "string" ? args.windowTitle : undefined;
+      const processName = typeof args.processName === "string" ? args.processName : undefined;
+      if (!windowTitle && !processName) return undefined;
+      return {
+        ...(windowTitle ? { windowTitle } : {}),
+        ...(processName ? { processName } : {}),
+      };
     },
-    argsFor: () => ({}),
+    // No override: the transport forwards the tool call's own arguments, which is
+    // what the broker's argument contract is written against.
     issueTicket: (issueInput) => {
-      // The broker verifies its own ticket over the request fields, minted here
-      // from the same secret the policy service uses.
-      const issued = companyClawRuntime?.runtime.issueExecutionCredential({
-        action: { kind: "write", toolName: issueInput.operation },
-        origin: "local-ui",
-        taskId: issueInput.taskId,
-        stepId: issueInput.stepId,
-        ownerSid: companyClawOwnerSid ?? "",
-        deviceId: companyClawDeviceId ?? "",
+      // The broker speaks its own envelope contract. A policy approval ticket is
+      // a different shape with a different contract name, so passing one here is
+      // rejected as `malformed-ticket` before the signature is ever checked —
+      // which is exactly what happened while this used `issueExecutionCredential`.
+      if (!companyClawTicketSecret || !companyClawOwnerSid || !companyClawDeviceId) {
+        return undefined;
+      }
+      return issueBrokerTicket({
+        subject: {
+          taskId: issueInput.taskId,
+          stepId: issueInput.stepId,
+          ownerSid: companyClawOwnerSid,
+          deviceId: companyClawDeviceId,
+          operation: issueInput.operation,
+          payloadHash: issueInput.payloadHash,
+        },
+        secret: companyClawTicketSecret,
+        ttlMs: 60_000,
+        createNonce: () => randomUUID(),
       });
-      return issued?.ticket;
     },
   });
 
@@ -1862,7 +1943,11 @@ async function runAgentToolCall(call: {
 
   switch (result.status) {
     case "executed":
-      return { ok: true, text: result.detail };
+      return {
+        ok: true,
+        text: result.detail,
+        ...(result.images ? { images: result.images } : {}),
+      };
     case "approval-required":
       return {
         ok: false,
@@ -1913,13 +1998,23 @@ async function startMcpBridge(): Promise<void> {
         } (port ${endpoint.port})`,
       );
       if (registration.changed) {
-        // The Gateway reads its MCP configuration at start, so a change needs a
-        // restart before the tools appear. Reported rather than done silently:
-        // the user may be mid-conversation.
-        mainWindow?.webContents.send(
-          "gateway:log",
-          "[companyclaw] 电脑操作工具已注册；重启后生效",
-        );
+        // The Gateway reads its MCP configuration once, at startup, and it has
+        // already started when this runs on a later launch. Reporting the need
+        // without acting on it leaves the employee with a working install and no
+        // GUI tools — the exact "registered but invisible" state this path
+        // exists to prevent.
+        //
+        // Only when a Gateway is already running: on a first launch this function
+        // runs *before* the Gateway spawns, so the new configuration is picked up
+        // by that start and a restart here would start it ahead of the window.
+        if (gwClient?.connected) {
+          console.log("[companyclaw] MCP registration changed; restarting the Gateway to load it");
+          restartManagedGateway("CompanyClaw 电脑操作工具已更新，重新加载").catch((error) =>
+            console.error("[companyclaw] Gateway restart after MCP registration failed:", error),
+          );
+        } else {
+          console.log("[companyclaw] MCP registration changed; the pending Gateway start will load it");
+        }
       }
     } else {
       console.warn(
@@ -8675,6 +8770,7 @@ function registerIpcHandlers(): void {
     const ticketSecret = loadOrCreateTicketSecret(companyClawUserDataDir, () => randomUUID());
     companyClawOwnerSid = resolveOwnerSid();
     companyClawDeviceId = deviceIdentity.deviceId;
+    companyClawTicketSecret = ticketSecret;
     // The broker must run on the bundled private Node runtime: in a packaged
     // build process.execPath is CompanyClaw.exe, which cannot execute the
     // broker's JavaScript entry point. Resolving the runtime and the entry
@@ -8700,6 +8796,10 @@ function registerIpcHandlers(): void {
         resourcesPath: process.resourcesPath,
         appPath: app.getAppPath(),
       }),
+      // The cloud-vision switch has to name the provider that receives an image,
+      // so the shell resolves the configured model. Only the three identifiers
+      // are read; the credential is never touched.
+      readConfiguredModel: () => readConfiguredModelIdentity(),
     };
     companyClawRuntime = createCompanyClawRuntime(companyClawOptions);
     // The payload lives beside the broker resources the packager produces, so

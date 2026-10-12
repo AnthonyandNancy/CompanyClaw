@@ -96,7 +96,9 @@ describe("applying the reset", () => {
     const runtime = makeRuntime(io);
     await runtime.trustApp({ processName: "notepad", scope: "both" });
     await runtime.trustSite({ domain: "oa.example.com" });
-    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    // 需审核, not 完全权限: the case needs one *pending* approval to show the reset
+    // voiding it, and 完全权限 raises none.
+    await runtime.setPreset({ preset: "CUSTOM", acknowledged: true });
     runtime.setRemoteAuthorization({
       enabled: true,
       ownerSid: "S-1",

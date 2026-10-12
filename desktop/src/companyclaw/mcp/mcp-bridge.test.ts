@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 import {
   buildInitializeResult,
   buildToolsListResult,
@@ -74,6 +76,81 @@ describe("tool discovery", () => {
     expect(launch.description).toContain("不接受路径");
     const click = describeTools().find((tool) => tool.name === "click")!;
     expect(click.description).toContain("界面读取");
+  });
+
+  it("tells the model to read first and how a write reaches a named window", () => {
+    const byName = new Map(describeTools().map((tool) => [tool.name, tool]));
+
+    // The model never sees `initialize.instructions` — OpenClaw only forwards
+    // each tool's own description — so the ordering contract has to live here.
+    expect(byName.get("snapshot-ui-tree")!.description).toContain("第一步");
+    expect(byName.get("click")!.description).toContain("重读");
+    expect(byName.get("click")!.description).toContain("前台");
+    expect(byName.get("type-text")!.description).toContain("前台");
+    expect(byName.get("wait-for-condition")!.description).toContain("代替反复读取");
+  });
+
+  it("says that pressEnter submits, which is how a message is actually sent", () => {
+    const typeText = describeTools().find((tool) => tool.name === "type-text")!;
+    expect(typeText.description).toContain("提交");
+    const properties = (typeText.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    }).properties;
+    expect(properties.pressEnter.description).toContain("回车提交");
+  });
+
+  it("keeps every description under the client's per-tool limit", () => {
+    // OpenClaw truncates tool descriptions at 1024 characters
+    // (`NODE_MCP_DESCRIPTION_MAX_CHARS`), and a truncated contract is a
+    // half-read one.
+    for (const tool of describeTools()) {
+      expect(tool.description.length).toBeLessThan(300);
+    }
+  });
+
+  it("describes the window field on every tool that can address one", () => {
+    const byName = new Map(describeTools().map((tool) => [tool.name, tool]));
+    for (const name of ["snapshot-ui-tree", "click", "type-text", "scroll", "verify-state"]) {
+      const properties = (byName.get(name)!.inputSchema as {
+        properties: Record<string, { description?: string }>;
+      }).properties;
+      expect(properties.windowTitle.description).toBeTruthy();
+    }
+  });
+
+  it("separates the tools that focus a window from the ones that only read it", () => {
+    const byName = new Map(describeTools().map((tool) => [tool.name, tool]));
+    const described = (name: string) =>
+      (byName.get(name)!.inputSchema as {
+        properties: Record<string, { description?: string }>;
+      }).properties.windowTitle.description!;
+    // Saying "will be focused" about WaitFor or inspect-dialog would be false:
+    // they pass the title upstream as `window_name` and never switch windows.
+    expect(described("click")).toContain("切到前台");
+    expect(described("wait-for-condition")).toContain("不会切换前台");
+    expect(described("inspect-dialog")).toContain("不会切换前台");
+  });
+
+  it("keeps the stdio tool list in step with the http one", async () => {
+    // Two hand-maintained lists reach the model on two different transports; a
+    // contract written into only one of them would be invisible on that path.
+    const source = await readFile(path.join(__dirname, "mcp-bridge-server.ts"), "utf-8");
+    for (const tool of describeTools()) {
+      expect(source).toContain(`"${tool.name}"`);
+    }
+    // Markers rather than whole sentences: the two files lay their strings out
+    // differently (concatenated lines vs. one literal), and it is the contract
+    // words that must survive, not the line wrapping.
+    for (const marker of [
+      "任何桌面操作的第一步",
+      "不会点到别的窗口",
+      "回车提交",
+      "代替反复读取",
+      "先把此窗口切到前台再执行",
+      "不会切换前台",
+    ]) {
+      expect(source).toContain(marker);
+    }
   });
 
   it("gives an unknown tool a restrictive schema rather than a permissive one", () => {

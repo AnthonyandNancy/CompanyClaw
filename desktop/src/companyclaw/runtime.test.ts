@@ -696,6 +696,7 @@ describe("CompanyClawRuntime broker targets", () => {
     expect(runtime.getBrokerTargets()).toEqual({
       allowedProcesses: [],
       allowedWindowTitles: [],
+      unrestricted: false,
     });
   });
 
@@ -704,6 +705,7 @@ describe("CompanyClawRuntime broker targets", () => {
     const saved = await runtime.setBrokerTargets({
       allowedProcesses: ["Notepad.exe", "excel"],
       allowedWindowTitles: ["工单"],
+      unrestricted: false,
     });
     expect(saved.allowedProcesses).toEqual(["notepad", "excel"]);
     expect(saved.allowedWindowTitles).toEqual(["工单"]);
@@ -718,15 +720,89 @@ describe("CompanyClawRuntime broker targets", () => {
     await runtime.setBrokerTargets({
       allowedProcesses: ["notepad"],
       allowedWindowTitles: [],
+      unrestricted: false,
     });
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+    expect(applied[0]).toEqual({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: false,
+    });
   });
 
   it("still stores the list when no broker is running", async () => {
     const { runtime } = makeRuntime();
-    await runtime.setBrokerTargets({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+    await runtime.setBrokerTargets({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: false,
+    });
     expect(runtime.getBrokerTargets().allowedProcesses).toEqual(["notepad"]);
+  });
+});
+
+describe("the preset decides whether the broker still gates processes", () => {
+  it("lifts the allow list when the widest preset is selected", async () => {
+    // The broker receives its allow list through its environment, so the preset
+    // has to be pushed to it: without this the policy layer says "no
+    // confirmation" while the broker still refuses every process.
+    const { runtime } = makeRuntime();
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    expect(runtime.getBrokerTargets().unrestricted).toBe(true);
+  });
+
+  it("restores the employee's own list when leaving the widest preset", async () => {
+    const { runtime } = makeRuntime();
+    await runtime.setBrokerTargets({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: false,
+    });
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    await runtime.setPreset({ preset: "BASIC" });
+
+    expect(runtime.getBrokerTargets()).toEqual({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: false,
+    });
+  });
+
+  it("leaves the narrower presets restricted", async () => {
+    for (const preset of ["BASIC", "CUSTOM"] as const) {
+      const { runtime } = makeRuntime();
+      await runtime.setPreset({ preset });
+      expect(runtime.getBrokerTargets().unrestricted, preset).toBe(false);
+    }
+  });
+
+  it("pushes the change through the broker applier", async () => {
+    const { runtime } = makeRuntime();
+    const applied: { unrestricted: boolean }[] = [];
+    runtime.setBrokerTargetsApplier(async (targets) => {
+      applied.push({ unrestricted: targets.unrestricted });
+    });
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    expect(applied).toEqual([{ unrestricted: true }]);
+  });
+
+  it("corrects a stored flag that disagrees with the preset", async () => {
+    // The preset is the authority and the stored flag is only its projection, so
+    // a stale or hand-edited value must not leave the broker gating the opposite
+    // of what the UI shows.
+    const { runtime } = makeRuntime();
+
+    // Simulate a file (or a manual edit) claiming "no allow list" while the
+    // stored preset is the default, narrow one.
+    await runtime.setBrokerTargets({
+      allowedProcesses: [],
+      allowedWindowTitles: [],
+      unrestricted: true,
+    });
+    expect(runtime.getBrokerTargets().unrestricted).toBe(true);
+
+    const reconciled = await runtime.reconcileBrokerTargets();
+    expect(reconciled.unrestricted).toBe(false);
   });
 });
 

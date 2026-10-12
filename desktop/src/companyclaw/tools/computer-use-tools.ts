@@ -97,7 +97,9 @@ export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   },
   {
     name: "snapshot-ui-tree",
-    description: "读取目标窗口的界面元素树（按钮、输入框、列表等），用于定位可操作控件。",
+    description:
+      "读取目标窗口的界面元素树（按钮、输入框、列表等），返回可点击控件的坐标。任何桌面操作的第一步；" +
+      "先读再用它给出的坐标点击或输入。窗口变化后旧坐标失效，必须重新读取。",
     capability: "snapshotUiTree",
     mutating: false,
   },
@@ -115,13 +117,17 @@ export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   },
   {
     name: "click",
-    description: "在指定坐标点击。坐标必须来自最近一次界面读取，执行前会复核窗口未变化。",
+    description:
+      "在指定坐标点击。坐标必须来自最近一次界面读取；窗口变化后失效，必须重读。" +
+      "带 windowTitle 时会先把该窗口切到前台再点击，不会点到别的窗口。",
     capability: "click",
     mutating: true,
   },
   {
     name: "type-text",
-    description: "向已聚焦的输入控件输入文本，支持中文与中英混输。",
+    description:
+      "向指定坐标的输入框输入文本，支持中文与中英混输。带 windowTitle 时会先把该窗口切到前台。" +
+      "pressEnter 为 true 时输入后按回车提交，用于发送消息或在应用内确认搜索。",
     capability: "typeText",
     mutating: true,
   },
@@ -151,7 +157,9 @@ export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   },
   {
     name: "wait-for-condition",
-    description: "等待文本、窗口或控件出现，带时间上限，不会无限等待。",
+    description:
+      "等待文本、窗口或控件出现，带时间上限，不会无限等待。" +
+      "用于等应用启动或界面切换完成，代替反复读取。",
     capability: "waitForWindowOrControl",
     mutating: false,
   },

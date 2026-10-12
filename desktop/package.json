@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "concurrently -n vite,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "cd renderer && npm run dev",
-    "dev:electron": "tsc && electron .",
-    "build": "tsc && cd renderer && npm run build",
+    "dev:electron": "npm run build --prefix ../broker && tsc && electron .",
+    "build": "npm run build --prefix ../broker && tsc && cd renderer && npm run build",
     "pack": "npm run prepare-production-resources && npm run pack:prepared",
     "pack:prepared": "npm run build && electron-builder --win --x64 --dir",
     "dist": "npm run release:win",

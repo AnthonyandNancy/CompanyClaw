@@ -31,7 +31,9 @@ export const SUPPORTED_BROKER_CONTRACTS: readonly BrokerContract[] = [
 
 /** Operations introduced by v2, mapped to the requirement's W-numbers. */
 export const V2_OPERATIONS = [
-  // W01/W02 — application discovery and launch.
+  // W01/W02 — application discovery and launch. Discovery is served by the
+  // broker's own Start Menu probe (the vendored server ships no tool for it);
+  // launch is carried by the upstream App tool.
   "list-installed-apps",
   "launch-app",
   // W04 — focus, with the identity checks that keep it on the right window.
@@ -53,6 +55,14 @@ export const V2_OPERATIONS = [
   // W17/W18 — read-back verification and structured failure.
   "verify-state",
   "capture-execution-error",
+  // W12/W13 — text entry and shortcuts. Both are exposed to the agent
+  // (`type-text`, `hotkey`), so the broker has to carry them: a tool the model
+  // can see but the executor cannot route is a capability that fails only after
+  // the employee has already been told it exists.
+  "type-text",
+  "hotkey",
+  // W17 — reading one control's value. Served by the broker's own UIA probe.
+  "read-control",
   // Capability negotiation, so a desktop can adapt instead of failing late.
   "capabilities",
 ] as const;
@@ -84,6 +94,11 @@ export const MUTATING_OPERATIONS: readonly BrokerOperation[] = [
   "drag-drop",
   "scroll",
   "inspect-dialog",
+  // Text entry and shortcuts change application state exactly as pointer input
+  // does, so they take the same gate. `read-control` is absent on purpose: it
+  // reads a value and cannot write one.
+  "type-text",
+  "hotkey",
 ] as const;
 
 export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
@@ -100,6 +115,9 @@ export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
   "wait-for-condition",
   "verify-state",
   "capture-execution-error",
+  // Reading one control's value performs no input injection and no write, so it
+  // is a read here exactly as `read-value` is.
+  "read-control",
   "capabilities",
 ] as const;
 

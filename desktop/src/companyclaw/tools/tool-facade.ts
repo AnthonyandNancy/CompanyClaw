@@ -2,6 +2,7 @@ import type { ApprovalBinding, ApprovalTicket } from "../policy/approval-ticket"
 import type { ActionDescriptor, PolicyDecision } from "../policy/risk-classifier";
 import type { ExecutionOrigin } from "../policy/execution-origin";
 import type { PermissionPreset } from "../policy/permission-preset";
+import type { ImagePayload } from "../bridge/execution-bridge";
 import {
   validateToolCall,
   type AgentToolCall,
@@ -78,7 +79,7 @@ export interface FacadeExecutionGrant {
 }
 
 export type FacadeDispatchResult =
-  | { outcome: "executed"; detail: string }
+  | { outcome: "executed"; detail: string; images?: ImagePayload[] }
   | { outcome: "denied"; reason: string }
   | { outcome: "unavailable"; reason: string };
 
@@ -117,7 +118,7 @@ export interface ToolFacadeDependencies {
 }
 
 export type ToolFacadeResult =
-  | { status: "executed"; detail: string; taskId: string; stepId: string }
+  | { status: "executed"; detail: string; taskId: string; stepId: string; images?: ImagePayload[] }
   | { status: "approval-required"; approvalId: string; reason: string }
   | { status: "denied"; reason: string }
   | { status: "unavailable"; reason: string }
@@ -296,6 +297,7 @@ export class ComputerUseToolFacade {
           detail: dispatched.detail,
           taskId: context.taskId,
           stepId: context.stepId,
+          ...(dispatched.images ? { images: dispatched.images } : {}),
         };
       case "denied":
         return { status: "denied", reason: dispatched.reason };
@@ -370,9 +372,23 @@ export function describeAction(definition: AgentToolDefinition): ActionDescripto
  * the approval the employee reads must say what will be clicked. A coordinate is
  * therefore rendered as its own target rather than left blank — a blank target
  * would make the request unraisable, which is the opposite of asking.
+ *
+ * `processName` is in the list because the tool definitions accept it on its
+ * own: `focus-window` is documented as taking a process name, and a call that
+ * supplied only that described no target at all — which made every such call
+ * fail before it could reach the broker. It ranks after `windowTitle` so an
+ * explicit title still wins when both are given, matching how the execution
+ * adapter chooses the window to act on.
  */
 export function describeTarget(args: Record<string, unknown>): string {
-  for (const key of ["app", "windowTitle", "window", "targetWindow", "label"]) {
+  for (const key of [
+    "app",
+    "windowTitle",
+    "processName",
+    "window",
+    "targetWindow",
+    "label",
+  ]) {
     const value = args[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }
@@ -380,6 +396,11 @@ export function describeTarget(args: Record<string, unknown>): string {
   if (point) return `屏幕坐标 (${point[0]}, ${point[1]})`;
   const text = args.text;
   if (typeof text === "string" && text.trim()) return `文本输入：${text.trim().slice(0, 40)}`;
+  // A shortcut addresses no window — it goes to whatever holds focus — so the
+  // combination itself is what identifies the action. Rendering it keeps the
+  // approval and the audit line readable instead of blank.
+  const keys = args.keys;
+  if (typeof keys === "string" && keys.trim()) return `快捷键 ${keys.trim()}`;
   return "";
 }
 

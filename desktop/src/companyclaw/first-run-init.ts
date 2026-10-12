@@ -88,6 +88,30 @@ export function planBrowserConfig(
     browser.executablePath = edgePath;
     changed.push("browser.executablePath");
   }
+
+  // The browser tooling resolves its navigation guard from `browser.ssrfPolicy`.
+  // Behind a Clash/Mihomo TUN proxy every public name resolves into the RFC 2544
+  // benchmark range (198.18.0.0/15) — measured on this machine for baidu, github,
+  // google and example.com alike — which the guard rejects by default, so *no*
+  // site opens, not one particular site.
+  //
+  // `allowRfc2544BenchmarkRange` is the upstream setting for exactly that
+  // environment; `dangerouslyAllowPrivateNetwork` covers the remaining
+  // special-use ranges and is what makes "any site" true rather than "any site
+  // that happens to be proxied". Both are written only when the employee has not
+  // already decided, so an explicit `false` is never overwritten.
+  const existingPolicy = isPlainObject(browser.ssrfPolicy) ? { ...browser.ssrfPolicy } : {};
+  const policy = { ...existingPolicy };
+  if (typeof policy.dangerouslyAllowPrivateNetwork !== "boolean") {
+    policy.dangerouslyAllowPrivateNetwork = true;
+    changed.push("browser.ssrfPolicy.dangerouslyAllowPrivateNetwork");
+  }
+  if (typeof policy.allowRfc2544BenchmarkRange !== "boolean") {
+    policy.allowRfc2544BenchmarkRange = true;
+    changed.push("browser.ssrfPolicy.allowRfc2544BenchmarkRange");
+  }
+  browser.ssrfPolicy = policy;
+
   next.browser = browser;
   return { config: next, changed };
 }

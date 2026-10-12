@@ -102,8 +102,13 @@ describe("planBrowserConfig", () => {
 
   it("enables the browser and records the detected executable", () => {
     const result = planBrowserConfig({}, edge);
-    expect(result.config.browser).toEqual({ enabled: true, executablePath: edge });
-    expect(result.changed).toEqual(["browser.enabled", "browser.executablePath"]);
+    expect(result.config.browser).toMatchObject({ enabled: true, executablePath: edge });
+    expect(result.changed).toEqual([
+      "browser.enabled",
+      "browser.executablePath",
+      "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork",
+      "browser.ssrfPolicy.allowRfc2544BenchmarkRange",
+    ]);
   });
 
   it("never replaces an executable the user chose", () => {
@@ -123,8 +128,13 @@ describe("planBrowserConfig", () => {
 
   it("omits the executable when no browser was detected", () => {
     const result = planBrowserConfig({}, null);
-    expect(result.config.browser).toEqual({ enabled: true });
-    expect(result.changed).toEqual(["browser.enabled"]);
+    expect(result.config.browser).toMatchObject({ enabled: true });
+    expect(result.config.browser).not.toHaveProperty("executablePath");
+    expect(result.changed).toEqual([
+      "browser.enabled",
+      "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork",
+      "browser.ssrfPolicy.allowRfc2544BenchmarkRange",
+    ]);
   });
 
   it("does not mutate the input configuration", () => {
@@ -132,6 +142,47 @@ describe("planBrowserConfig", () => {
     const snapshot = JSON.stringify(config);
     planBrowserConfig(config, edge);
     expect(JSON.stringify(config)).toBe(snapshot);
+  });
+
+  it("opens the navigation guard for a fake-IP proxy environment", () => {
+    // Measured on this machine: behind Clash/Mihomo TUN *every* public name
+    // resolves into 198.18.0.0/15, so without both keys no site opens at all —
+    // not one particular site.
+    const result = planBrowserConfig({}, edge);
+    expect(result.config.browser).toMatchObject({
+      ssrfPolicy: {
+        dangerouslyAllowPrivateNetwork: true,
+        allowRfc2544BenchmarkRange: true,
+      },
+    });
+  });
+
+  it("never flips a policy the user set to false", () => {
+    // An explicit opt-out is a decision, not a missing value.
+    const result = planBrowserConfig(
+      { browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } } },
+      edge,
+    );
+    expect(result.config.browser).toMatchObject({
+      ssrfPolicy: {
+        dangerouslyAllowPrivateNetwork: false,
+        allowRfc2544BenchmarkRange: true,
+      },
+    });
+    expect(result.changed).not.toContain("browser.ssrfPolicy.dangerouslyAllowPrivateNetwork");
+  });
+
+  it("leaves a complete policy untouched", () => {
+    const result = planBrowserConfig(
+      {
+        browser: {
+          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true, allowRfc2544BenchmarkRange: true },
+        },
+      },
+      edge,
+    );
+    expect(result.changed).not.toContain("browser.ssrfPolicy.dangerouslyAllowPrivateNetwork");
+    expect(result.changed).not.toContain("browser.ssrfPolicy.allowRfc2544BenchmarkRange");
   });
 });
 

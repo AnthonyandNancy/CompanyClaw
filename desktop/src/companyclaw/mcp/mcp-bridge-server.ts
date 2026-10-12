@@ -41,29 +41,31 @@ const TOOL_DEFINITIONS: { name: string; description: string; inputSchema: unknow
     windowTitle: { type: "string" },
     processName: { type: "string" },
   }),
-  tool("snapshot-ui-tree", "读取目标窗口的界面元素树（按钮、输入框、列表等），用于定位可操作控件。", {
-    windowTitle: { type: "string" },
+  tool("snapshot-ui-tree", "读取目标窗口的界面元素树（按钮、输入框、列表等），返回可点击控件的坐标。任何桌面操作的第一步；先读再用它给出的坐标点击或输入。窗口变化后旧坐标失效，必须重新读取。", {
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
   }),
   tool("find-control", "按名称或角色查找控件。返回的引用有有效期，窗口变化后会失效。", {
     label: { type: "string" },
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
   }, ["label"]),
   tool("read-control", "读取控件当前的值或状态。", {
     label: { type: "string" },
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题（用于定位要读取的窗口，不会切换前台）" },
   }, ["label"]),
-  tool("click", "在指定坐标点击。坐标必须来自最近一次界面读取，执行前会复核窗口未变化。", {
+  tool("click", "在指定坐标点击。坐标必须来自最近一次界面读取；窗口变化后失效，必须重读。带 windowTitle 时会先把该窗口切到前台再点击，不会点到别的窗口。", {
     x: { type: "number" },
     y: { type: "number" },
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
     clicks: { type: "number", description: "0=悬停，1=单击，2=双击" },
   }, ["x", "y"]),
-  tool("type-text", "向已聚焦的输入控件输入文本，支持中文与中英混输。", {
+  tool("type-text", "向指定坐标的输入框输入文本，支持中文与中英混输。带 windowTitle 时会先把该窗口切到前台。pressEnter 为 true 时输入后按回车提交，用于发送消息或在应用内确认搜索。", {
     text: { type: "string" },
-    windowTitle: { type: "string" },
+    x: { type: "number" },
+    y: { type: "number" },
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
     clear: { type: "boolean" },
-    pressEnter: { type: "boolean" },
-  }, ["text"]),
+    pressEnter: { type: "boolean", description: "输入后是否回车提交（发送消息、确认搜索用 true）" },
+  }, ["text", "x", "y"]),
   tool("hotkey", "执行常用快捷键（如 ctrl+c、ctrl+v）。只能在支持列表内选择。", {
     keys: { type: "string" },
   }, ["keys"]),
@@ -72,7 +74,7 @@ const TOOL_DEFINITIONS: { name: string; description: string; inputSchema: unknow
     y: { type: "number" },
     direction: { type: "string", enum: ["up", "down", "left", "right"] },
     wheelTimes: { type: "number" },
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
   }),
   tool("drag-drop", "把文件或元素从一处拖到另一处。必须同时给出来源与目标窗口，任一不明确都会拒绝。", {
     from: { type: "array", items: { type: "number" } },
@@ -81,16 +83,16 @@ const TOOL_DEFINITIONS: { name: string; description: string; inputSchema: unknow
     targetWindow: { type: "string" },
   }, ["from", "to", "sourceWindow", "targetWindow"]),
   tool("screenshot", "截取目标窗口的图像。仅在需要视觉识别且已获得视觉授权时可用。", {}),
-  tool("wait-for-condition", "等待文本、窗口或控件出现，带时间上限，不会无限等待。", {
+  tool("wait-for-condition", "等待文本、窗口或控件出现，带时间上限，不会无限等待。用于等应用启动或界面切换完成，代替反复读取。", {
     text: { type: "string" },
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题（用于定位要读取的窗口，不会切换前台）" },
     timeoutSeconds: { type: "number" },
   }),
   tool("inspect-dialog", "读取普通弹窗与错误提示。Windows 安全桌面（UAC）不可交互，会被拒绝。", {
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题（用于定位要读取的窗口，不会切换前台）" },
   }),
   tool("verify-state", "执行后回读目标窗口、控件或文件状态，用于确认动作真的发生了。", {
-    windowTitle: { type: "string" },
+    windowTitle: { type: "string", description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行" },
   }),
 ];
 

@@ -147,7 +147,8 @@ describe("a task scope grant removes the repeated prompt", () => {
     expect(verdict.autoAllowedByTaskScope).toBe(false);
   });
 
-  it("does not let a grant cover an unwritten target", async () => {
+  it("does not let 完全权限 narrow anything, even on an unrelated target", async () => {
+    // 完全权限 outranks the task-scope check, so an unrelated target runs too.
     const { runtime } = makeRuntime();
     const task = await runtime.createTask({
       ownerSid: "S-1",
@@ -164,6 +165,27 @@ describe("a task scope grant removes the repeated prompt", () => {
       deviceId: "device-a",
       ownerSid: "S-1",
     });
+    expect(verdict.decision).toBe("allow");
+  });
+
+  it("keeps an unwritten target behind an approval under 需审核", async () => {
+    // The scope check still governs the narrower presets.
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "local",
+      objective: "整理报表",
+    });
+    const verdict = runtime.decideToolAction({
+      action: WRITE,
+      origin: "local-ui",
+      preset: "CUSTOM",
+      taskId: task.taskId,
+      target: "Notepad",
+      deviceId: "device-a",
+      ownerSid: "S-1",
+    });
     expect(verdict.decision).toBe("require-approval");
   });
 });
@@ -174,6 +196,68 @@ describe("desktop work is serialized", () => {
     // The lock is exercised through the same object the runtime owns.
     expect(runtime.isDesktopBusy()).toBe(false);
     runtime.releaseDesktopLock("t-1");
+    expect(runtime.isDesktopBusy()).toBe(false);
+  });
+
+  it("does not take the lock for a read", async () => {
+    // A read cannot steal focus, and holding the lock for one is not free: the
+    // lock lasts the whole broker call, so a slow probe would block every later
+    // tool — including the read the model needs to recover.
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "local",
+      objective: "看看现在开着哪些窗口",
+    });
+    const heldDuringCall: boolean[] = [];
+    const transport = async () => {
+      heldDuringCall.push(runtime.isDesktopBusy());
+      return { status: "ok" as const, detail: "done" };
+    };
+    const result = await runtime.handleAgentToolCall({
+      call: { tool: "list-windows", arguments: {} },
+      context: {
+        origin: "local-ui",
+        taskId: task.taskId,
+        stepId: "step-1",
+        ownerSid: "S-1",
+        deviceId: "device-a",
+      },
+      transport,
+    });
+    expect(result.status).toBe("executed");
+    expect(heldDuringCall).toEqual([false]);
+    expect(runtime.isDesktopBusy()).toBe(false);
+  });
+
+  it("still takes the lock for a mutation", async () => {
+    const { runtime } = makeRuntime();
+    const task = await runtime.createTask({
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      channel: "local",
+      objective: "打开记事本",
+    });
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    const heldDuringCall: boolean[] = [];
+    const transport = async () => {
+      heldDuringCall.push(runtime.isDesktopBusy());
+      return { status: "ok" as const, detail: "done" };
+    };
+    await runtime.handleAgentToolCall({
+      call: { tool: "click", arguments: { x: 1, y: 2, windowTitle: "notepad" } },
+      context: {
+        origin: "local-ui",
+        taskId: task.taskId,
+        stepId: "step-1",
+        ownerSid: "S-1",
+        deviceId: "device-a",
+      },
+      transport,
+    });
+    expect(heldDuringCall).toEqual([true]);
+    // And it is released afterwards, so the next tool is not blocked.
     expect(runtime.isDesktopBusy()).toBe(false);
   });
 });

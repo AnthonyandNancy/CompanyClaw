@@ -20,6 +20,18 @@ export interface BrokerPolicyConfig {
   allowedWindowTitles: readonly string[];
   /** Mutating operations always require a verified ticket. */
   requireApprovalForMutations: boolean;
+  /**
+   * True while the employee has selected the widest preset.
+   *
+   * It lifts two *configuration* gates — which applications and which window
+   * titles the broker may touch — because those express the employee's own allow
+   * list, and the widest preset already means "no confirmation".
+   *
+   * It deliberately does not touch identity, freshness, target-required or the
+   * mutation ticket: those are not preferences. Dropping them would remove the
+   * broker's own integrity checks rather than a confirmation.
+   */
+  unrestricted?: boolean;
 }
 
 export type BrokerDenialReason =
@@ -87,12 +99,19 @@ export class BrokerPolicy {
     if (TARGET_REQUIRED.has(request.operation) && !request.target?.processName) {
       return { allowed: false, reason: "target-required" };
     }
-    if (request.target?.processName) {
+    // The allow list and the window-title filter are the employee's own
+    // configuration, so the widest preset lifts both. Everything above and below
+    // this block stays in force.
+    if (request.target?.processName && !this.config.unrestricted) {
       if (!this.isProcessAllowed(request.target.processName)) {
         return { allowed: false, reason: "process-not-allowed" };
       }
     }
-    if (request.target?.windowTitle && this.config.allowedWindowTitles.length > 0) {
+    if (
+      !this.config.unrestricted &&
+      request.target?.windowTitle &&
+      this.config.allowedWindowTitles.length > 0
+    ) {
       const title = request.target.windowTitle.toLowerCase();
       const ok = this.config.allowedWindowTitles.some((allowed) =>
         title.includes(allowed.toLowerCase()),

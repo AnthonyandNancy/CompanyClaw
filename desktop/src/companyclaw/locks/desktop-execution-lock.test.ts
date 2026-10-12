@@ -67,4 +67,28 @@ describe("desktop execution lock", () => {
     lock.forceRelease("task-b");
     expect(lock.currentHolder()).toBe("task-a");
   });
+
+  it("stops refusing once a holder outlives its lease", () => {
+    // A wedged executor would otherwise refuse every later tool for the life of
+    // the process, reporting "busy" while nothing is running.
+    let clock = 1_000;
+    const lock = new DesktopExecutionLock({ now: () => clock, leaseMs: 5_000 });
+    lock.acquire("task-a");
+    expect(lock.acquire("task-b").acquired).toBe(false);
+
+    clock += 5_001;
+    expect(lock.isBusy()).toBe(false);
+    expect(lock.acquire("task-b").acquired).toBe(true);
+  });
+
+  it("renews the lease while the same task keeps working", () => {
+    // A long but healthy sequence must not be cut off by its own first step.
+    let clock = 1_000;
+    const lock = new DesktopExecutionLock({ now: () => clock, leaseMs: 5_000 });
+    lock.acquire("task-a");
+    clock += 4_000;
+    expect(lock.acquire("task-a").acquired).toBe(true);
+    clock += 4_000;
+    expect(lock.currentHolder()).toBe("task-a");
+  });
 });

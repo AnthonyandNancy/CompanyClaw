@@ -30,6 +30,15 @@ export interface ExecutionAdapterOptions {
   callTool: McpCaller;
   /** Upper bound for a single upstream call, so UIA cannot block forever. */
   defaultTimeoutMs?: number;
+  /**
+   * Resolves a window title for one process name.
+   *
+   * `focus-window` may be called with only a process name, but the upstream
+   * switch mode matches on *window titles*. Without a title the server raises a
+   * Python error instead of refusing, so the adapter resolves one first and
+   * refuses cleanly when the process owns no window.
+   */
+  resolveWindowTitle?: (processName: string) => Promise<string | null>;
 }
 
 export interface AdapterRequest {
@@ -44,6 +53,26 @@ export type AdapterResult =
   | { status: "rejected"; reason: string }
   | { status: "failed"; reason: string };
 
+/** An upstream call that has to succeed before the operation itself runs. */
+interface PreludeCall {
+  tool: string;
+  capability: BrokerCapability;
+  args: Record<string, unknown>;
+}
+
+/**
+ * The upstream arguments plus whatever must happen first.
+ *
+ * A window-scoped read needs a prelude rather than a parameter: `Snapshot`
+ * reads the *active* window and the pinned release documents only `display` and
+ * `region` for scoping it, so there is no field that names another window. The
+ * window is brought to the foreground first, through the same `switch` mode the
+ * `focus-window` operation uses.
+ */
+type BuiltArguments =
+  | { value: Record<string, unknown>; prelude?: PreludeCall[] }
+  | { refused: string };
+
 /** How one broker operation maps onto an upstream tool plus its capability. */
 interface Mapping {
   tool: string;
@@ -51,7 +80,6 @@ interface Mapping {
 }
 
 const MAPPINGS: Readonly<Record<string, Mapping>> = {
-  "list-installed-apps": { tool: "App", capability: "listInstalledApps" },
   "launch-app": { tool: "App", capability: "launchApp" },
   "focus-window": { tool: "App", capability: "focusWindow" },
   "snapshot-ui-tree": { tool: "Snapshot", capability: "snapshotUiTree" },
@@ -64,6 +92,11 @@ const MAPPINGS: Readonly<Record<string, Mapping>> = {
   "wait-for-condition": { tool: "WaitFor", capability: "waitForWindowOrControl" },
   "inspect-dialog": { tool: "WaitFor", capability: "inspectNotificationOrDialog" },
   "verify-state": { tool: "Snapshot", capability: "verifyState" },
+  // Text entry and shortcuts were reachable from the tool surface and implemented
+  // in `buildArguments` below, but were missing from this table — so the branches
+  // existed and could never be selected.
+  "type-text": { tool: "Type", capability: "typeText" },
+  hotkey: { tool: "Shortcut", capability: "hotkey" },
 };
 
 /** Shortcuts the product enumerates rather than passing through arbitrary keys. */
@@ -90,7 +123,9 @@ export class WindowsMcpExecutionAdapter {
   private readonly timeoutMs: number;
 
   constructor(private readonly options: ExecutionAdapterOptions) {
-    this.timeoutMs = options.defaultTimeoutMs ?? 60_000;
+    // Below both the session's own default and the Gateway's MCP timeout, so a
+    // slow call fails as our readable reason rather than as a transport timeout.
+    this.timeoutMs = options.defaultTimeoutMs ?? 40_000;
   }
 
   /** Which operations this adapter can carry right now. */
@@ -106,8 +141,35 @@ export class WindowsMcpExecutionAdapter {
       return { status: "rejected", reason: "unsupported-operation" };
     }
 
-    const args = this.buildArguments(request, mapping.capability);
+    const args = await this.buildArguments(request, mapping.capability);
     if ("refused" in args) return { status: "rejected", reason: args.refused };
+
+    // Prelude calls are checked with the same tool/capability pairing as the
+    // operation itself: bringing a window forward is an `App` action, and it
+    // must be permitted before anything is sent upstream.
+    for (const prelude of args.prelude ?? []) {
+      const allowed = authorizeToolCall({
+        tool: prelude.tool,
+        capability: prelude.capability,
+        args: prelude.args,
+      });
+      if (!allowed.allowed) return { status: "rejected", reason: allowed.reason };
+      try {
+        const result = await this.options.callTool({
+          tool: prelude.tool,
+          args: prelude.args,
+          timeoutMs: this.timeoutMs,
+        });
+        if (!result.ok) {
+          // Continuing would read whichever window happens to be in front,
+          // which is the failure the caller must never be shown as success.
+          return { status: "rejected", reason: "window-focus-failed" };
+        }
+      } catch (error) {
+        console.warn(`[windows-mcp] ${prelude.tool} prelude call failed:`, error);
+        return { status: "failed", reason: "upstream-call-failed" };
+      }
+    }
 
     const authorization = authorizeToolCall({
       tool: mapping.tool,
@@ -118,11 +180,20 @@ export class WindowsMcpExecutionAdapter {
       return { status: "rejected", reason: authorization.reason };
     }
 
-    const result = await this.options.callTool({
-      tool: mapping.tool,
-      args: args.value,
-      timeoutMs: this.timeoutMs,
-    });
+    let result: Awaited<ReturnType<McpCaller>>;
+    try {
+      result = await this.options.callTool({
+        tool: mapping.tool,
+        args: args.value,
+        timeoutMs: this.timeoutMs,
+      });
+    } catch (error) {
+      // A thrown upstream failure must stay a refusal with a stable code: the
+      // server's own message is a Python traceback fragment, and letting it
+      // through is exactly the unreadable failure this path must not produce.
+      console.warn(`[windows-mcp] ${mapping.tool} call failed:`, error);
+      return { status: "failed", reason: "upstream-call-failed" };
+    }
     if (!result.ok) return { status: "failed", reason: result.reason };
     return { status: "ok", data: result.content };
   }
@@ -134,18 +205,30 @@ export class WindowsMcpExecutionAdapter {
    * shortcut outside the enumerated set, and a drag without both endpoints are
    * all cases where proceeding would mean guessing.
    */
-  private buildArguments(
+  private async buildArguments(
     request: AdapterRequest,
     capability: BrokerCapability,
-  ): { value: Record<string, unknown> } | { refused: string } {
+  ): Promise<BuiltArguments> {
     const raw = request.args ?? {};
     const target = request.target ?? null;
     const windowName = target?.windowTitle ?? undefined;
     const processName = target?.processName;
+    /** Resolves the window this request addresses, for the reads below. */
+    const focusPrelude = async (): Promise<PreludeCall[] | { refused: string }> => {
+      if (windowName) {
+        return [{ tool: "App", capability: "focusWindow", args: { mode: "switch", name: windowName } }];
+      }
+      if (!processName) return [];
+      const resolved = await this.options.resolveWindowTitle?.(processName);
+      if (!resolved) return { refused: "window-not-found" };
+      return [{ tool: "App", capability: "focusWindow", args: { mode: "switch", name: resolved } }];
+    };
 
     switch (capability) {
       case "listInstalledApps":
-        return { value: {} };
+        // Served by the broker's own discovery probe, not by an upstream tool:
+        // the server ships no way to enumerate installed applications.
+        return { refused: "native-capability" };
 
       case "launchApp": {
         const app = typeof raw.app === "string" ? raw.app.trim() : "";
@@ -156,23 +239,38 @@ export class WindowsMcpExecutionAdapter {
         if (app.includes("\\") || app.includes("/")) {
           return { refused: "application-path-not-accepted" };
         }
-        return { value: { mode: "launch", app } };
+        // `name` is the upstream parameter. Passing `app` left it unset, and the
+        // server answers a missing name with a TypeError rather than a refusal.
+        return { value: { mode: "launch", name: app } };
       }
 
       case "focusWindow": {
         if (!windowName && !processName) return { refused: "target-required" };
-        return { value: { mode: "switch", ...(windowName ? { name: windowName } : {}) } };
+        if (windowName) return { value: { mode: "switch", name: windowName } };
+        // Only a process name was addressed. The upstream switch mode matches on
+        // window titles, so resolve one here; a process with no window is a
+        // refusal, not a server-side exception.
+        const resolved = await this.options.resolveWindowTitle?.(processName!);
+        if (!resolved) return { refused: "window-not-found" };
+        return { value: { mode: "switch", name: resolved } };
       }
 
-      case "snapshotUiTree":
-        return { value: { use_vision: false, ...(windowName ? { window_name: windowName } : {}) } };
+      case "snapshotUiTree": {
+        // `window_name` is not an upstream parameter — the pinned release
+        // documents only `display` and `region` for scoping this call, and it
+        // rejects an unknown field instead of ignoring it. The window is
+        // therefore brought forward first, which is what `Snapshot` reads.
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
+        return { value: { use_vision: false }, ...(prelude.length ? { prelude } : {}) };
+      }
 
       case "findControl": {
         const label = typeof raw.label === "string" ? raw.label.trim() : "";
         if (!label) return { refused: "label-required" };
-        return {
-          value: { use_vision: false, ...(windowName ? { window_name: windowName } : {}) },
-        };
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
+        return { value: { use_vision: false }, ...(prelude.length ? { prelude } : {}) };
       }
 
       case "screenshot":
@@ -181,11 +279,23 @@ export class WindowsMcpExecutionAdapter {
       case "click": {
         const coordinate = readCoordinate(raw);
         if (!coordinate) return { refused: "coordinate-required" };
-        return { value: { loc: coordinate, clicks: readClicks(raw) } };
+        // A pointer action on a named window has to happen *in* that window. The
+        // reads already bring it forward; leaving the writes out meant a click
+        // landed on whatever happened to be in front.
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
+        return {
+          value: { loc: coordinate, clicks: readClicks(raw) },
+          ...(prelude.length ? { prelude } : {}),
+        };
       }
 
       case "scroll": {
         const coordinate = readCoordinate(raw) ?? undefined;
+        // Same reasoning as `click`: a wheel event goes to the window under the
+        // pointer, so the window the coordinate came from must be in front.
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
         return {
           value: {
             ...(coordinate ? { loc: coordinate } : {}),
@@ -193,20 +303,30 @@ export class WindowsMcpExecutionAdapter {
             direction: readDirection(raw),
             wheel_times: readWheelTimes(raw),
           },
+          ...(prelude.length ? { prelude } : {}),
         };
       }
 
       case "typeText": {
         const text = typeof raw.text === "string" ? raw.text : "";
         if (text.length === 0) return { refused: "text-required" };
-        const coordinate = readCoordinate(raw) ?? undefined;
+        const coordinate = readCoordinate(raw);
+        // The upstream tool clicks the location first and types there, so a
+        // request without one raises inside Python. Refusing here keeps that a
+        // readable reason, exactly as the click path does.
+        if (!coordinate) return { refused: "coordinate-required" };
+        // Same reasoning as `click`: text addressed to a coordinate is only
+        // correct if the window that coordinate came from is the one in front.
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
         return {
           value: {
             text,
-            ...(coordinate ? { loc: coordinate } : {}),
+            loc: coordinate,
             clear: raw.clear === true,
             press_enter: raw.pressEnter === true,
           },
+          ...(prelude.length ? { prelude } : {}),
         };
       }
 
@@ -246,13 +366,11 @@ export class WindowsMcpExecutionAdapter {
           value: { condition: "element_exists", ...(windowName ? { window_name: windowName } : {}) },
         };
 
-      case "verifyState":
-        return {
-          value: {
-            use_vision: false,
-            ...(windowName ? { window_name: windowName } : {}),
-          },
-        };
+      case "verifyState": {
+        const prelude = await focusPrelude();
+        if (!Array.isArray(prelude)) return prelude;
+        return { value: { use_vision: false }, ...(prelude.length ? { prelude } : {}) };
+      }
 
       case "readControl":
       case "captureExecutionError":

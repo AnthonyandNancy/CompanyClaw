@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseWindowList, runListWindows } from "./uia";
+import {
+  MAX_INSTALLED_APPS,
+  parseInstalledApps,
+  parseWindowList,
+  runListInstalledApps,
+  runListWindows,
+} from "./uia";
 
 describe("parseWindowList", () => {
   it("returns descriptors for a well-formed payload", () => {
@@ -65,6 +71,54 @@ describe("parseWindowList", () => {
         processName: "",
         automationId: "",
       });
+  });
+});
+
+describe("parseInstalledApps", () => {
+  it("reads the apps payload the discovery script emits", () => {
+    const parsed = parseInstalledApps('{"apps":[{"name":"记事本","appId":"notepad"}]}');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toEqual([{ name: "记事本", appId: "notepad" }]);
+  });
+
+  it("skips unusable rows instead of failing the whole read", () => {
+    const parsed = parseInstalledApps(
+      '{"apps":[{"name":"ok","appId":"a"},{"name":""},{"appId":"b"},"junk"]}',
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toEqual([{ name: "ok", appId: "a" }]);
+  });
+
+  it("rejects a payload that is not the expected shape", () => {
+    for (const raw of ["not json", "[]", '{"windows":[]}', "null"]) {
+      expect(parseInstalledApps(raw).ok).toBe(false);
+    }
+  });
+
+  it("caps the list so a pathological host cannot flood the model", () => {
+    const apps = Array.from({ length: MAX_INSTALLED_APPS + 25 }, (_, index) => ({
+      name: `app-${index}`,
+      appId: `id-${index}`,
+    }));
+    const parsed = parseInstalledApps(JSON.stringify({ apps }));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toHaveLength(MAX_INSTALLED_APPS);
+  });
+});
+
+describe("runListInstalledApps", () => {
+  it("asks for the discovery script", async () => {
+    const runner = vi.fn((_file, args, _opts, callback) => {
+      callback(null, '{"apps":[]}', "");
+      return { args } as never;
+    });
+    const result = await runListInstalledApps({ scriptDir: "/scripts", runner: runner as never });
+    expect(result.ok).toBe(true);
+    const argv = runner.mock.calls[0][1] ?? [];
+    expect(argv.join(" ")).toContain("list-installed-apps.ps1");
   });
 });
 

@@ -660,6 +660,18 @@ contextBridge.exposeInMainWorld("openclaw", {
      */
     vision: {
       get: () => ipcRenderer.invoke("companyclaw:vision:get") as Promise<unknown>,
+      /**
+       * The model the switch would authorize, or null when none is configured.
+       * The renderer needs it because the authorization must name the provider
+       * that will receive an image, and the authorization record itself stays
+       * empty until the switch is on — so it cannot be the source.
+       */
+      getConfiguredModel: () =>
+        ipcRenderer.invoke("companyclaw:vision:get-configured-model") as Promise<{
+          provider: string;
+          baseUrl: string;
+          model: string;
+        } | null>,
       set: (input: {
         origin: "local" | "remote";
         provider: string;

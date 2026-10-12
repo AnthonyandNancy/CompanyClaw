@@ -45,7 +45,10 @@ describe("upstream tools that must never reach the agent", () => {
 describe("upstream tools the agent may use", () => {
   it("allows launching and focusing only through the app capability", () => {
     expect(isToolAllowedFor("App", "launchApp")).toBe(true);
-    expect(isToolAllowedFor("App", "listInstalledApps")).toBe(true);
+    expect(isToolAllowedFor("App", "focusWindow")).toBe(true);
+    // Discovery is broker-native: the upstream release ships no tool that
+    // enumerates installed applications, so it must not be routed through App.
+    expect(isToolAllowedFor("App", "listInstalledApps")).toBe(false);
     expect(isToolAllowedFor("App", "typeText")).toBe(false);
   });
 

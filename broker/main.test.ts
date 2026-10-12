@@ -56,6 +56,20 @@ describe("parseBootstrap", () => {
     expect(parsed.value.allowedProcesses).toEqual(["notepad", "excel"]);
     expect(parsed.value.allowedWindowTitles).toEqual(["工单"]);
   });
+
+  it("treats the unrestricted flag as opt-in on an exact true", () => {
+    const on = parseBootstrap({ ...BASE_ENV, COMPANYCLAW_BROKER_UNRESTRICTED: "true" });
+    expect(on.ok && on.value.unrestricted).toBe(true);
+
+    // A desktop build that does not send the flag must still start a working
+    // broker, and anything that is not exactly "true" stays restricted.
+    for (const value of [undefined, "", "false", "1", "TRUE", "yes"]) {
+      const parsed = parseBootstrap({ ...BASE_ENV, COMPANYCLAW_BROKER_UNRESTRICTED: value });
+      expect(parsed.ok, String(value)).toBe(true);
+      if (!parsed.ok) continue;
+      expect(parsed.value.unrestricted, String(value)).toBe(false);
+    }
+  });
 });
 
 describe("toPolicyConfig", () => {
@@ -66,9 +80,23 @@ describe("toPolicyConfig", () => {
       deviceId: "d",
       allowedProcesses: ["notepad"],
       allowedWindowTitles: [],
+      unrestricted: false,
       scriptDir: "C:/broker/scripts",
     });
     expect(config.requireApprovalForMutations).toBe(true);
     expect(config.allowedProcesses).toEqual(["notepad"]);
+  });
+
+  it("carries the unrestricted flag into the policy", () => {
+    const config = toPolicyConfig({
+      token: "0123456789abcdef0123456789abcdef",
+      ownerSid: "S-1",
+      deviceId: "d",
+      allowedProcesses: [],
+      allowedWindowTitles: [],
+      unrestricted: true,
+      scriptDir: "C:/broker/scripts",
+    });
+    expect(config.unrestricted).toBe(true);
   });
 });

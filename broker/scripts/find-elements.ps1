@@ -13,6 +13,13 @@
 #           className, isEnabled, processId, depth } ] }
 
 $ErrorActionPreference = "Stop"
+
+# The broker reads this output as UTF-8; without the explicit encoding the host
+# writes the console code page instead, and every non-ASCII control name arrives
+# as U+FFFD — which makes the Chinese labels most employees see unmatchable.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 $procName = $env:CC_TARGET_PROCESS

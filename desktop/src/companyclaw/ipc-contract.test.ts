@@ -51,6 +51,7 @@ const REQUIRED_CHANNELS = [
   "companyclaw:vision:get",
   "companyclaw:vision:set",
   "companyclaw:vision:revoke",
+  "companyclaw:vision:get-configured-model",
   "companyclaw:recovery:preview",
   "companyclaw:recovery:apply",
   "companyclaw:audit:query",

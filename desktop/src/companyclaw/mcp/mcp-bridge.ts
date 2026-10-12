@@ -49,7 +49,17 @@ export interface BridgeToolCall {
 }
 
 export type BridgeToolResult =
-  | { ok: true; text: string; structured?: unknown }
+  | {
+      ok: true;
+      text: string;
+      structured?: unknown;
+      /**
+       * Images the call produced, as MCP image blocks. Kept out of `structured`
+       * because MCP expects each image to be its own `content[]` entry, and out
+       * of `text` because a truncated base64 payload is worse than none.
+       */
+      images?: { data: string; mimeType: string }[];
+    }
   | { ok: false; text: string; reason: string };
 
 export interface McpBridgeDependencies {
@@ -80,7 +90,24 @@ export function toolInputSchema(definition: AgentToolDefinition): Record<string,
     items: { type: "number" },
     minItems: 2,
     maxItems: 2,
-    description: "屏幕坐标 [x, y]，必须来自最近一次界面读取",
+    description: "屏幕坐标 [x, y]，必须来自最近一次界面读取；窗口变化后失效，需重新读取",
+  };
+  /**
+   * A window the call names.
+   *
+   * Two variants because the two families behave differently: a read or write
+   * that the adapter focuses first, and one that only uses the title to pick
+   * which window to look at (`WaitFor` / `inspect-dialog`, whose upstream
+   * parameter is `window_name`). Saying "will be focused" about the second
+   * family would be false.
+   */
+  const focusedWindow = {
+    type: "string",
+    description: "目标窗口标题；带该参数时会先把此窗口切到前台再执行",
+  };
+  const addressedWindow = {
+    type: "string",
+    description: "目标窗口标题（用于定位要读取的窗口，不会切换前台）",
   };
 
   switch (definition.name) {
@@ -100,23 +127,23 @@ export function toolInputSchema(definition: AgentToolDefinition): Record<string,
       );
     case "snapshot-ui-tree":
     case "verify-state":
-      return object({ windowTitle: stringType });
+      return object({ windowTitle: focusedWindow });
     case "find-control":
       return object(
         {
           label: { ...stringType, description: "控件名称或可访问标签" },
-          windowTitle: stringType,
+          windowTitle: focusedWindow,
         },
         ["label"],
       );
     case "read-control":
-      return object({ label: stringType, windowTitle: stringType }, ["label"]);
+      return object({ label: stringType, windowTitle: addressedWindow }, ["label"]);
     case "click":
       return object(
         {
           x: { type: "number" },
           y: { type: "number" },
-          windowTitle: stringType,
+          windowTitle: focusedWindow,
           clicks: { type: "number", description: "0=悬停，1=单击，2=双击" },
         },
         ["x", "y"],
@@ -125,11 +152,16 @@ export function toolInputSchema(definition: AgentToolDefinition): Record<string,
       return object(
         {
           text: { ...stringType, description: "要输入的文本，支持中文" },
-          windowTitle: stringType,
+          x: { type: "number", description: "目标控件横坐标" },
+          y: { type: "number", description: "目标控件纵坐标" },
+          windowTitle: focusedWindow,
           clear: { type: "boolean", description: "是否先清空现有内容" },
-          pressEnter: { type: "boolean", description: "输入后是否回车提交" },
+          pressEnter: {
+            type: "boolean",
+            description: "输入后是否回车提交（发送消息、确认搜索用 true）",
+          },
         },
-        ["text"],
+        ["text", "x", "y"],
       );
     case "hotkey":
       return object(
@@ -142,7 +174,7 @@ export function toolInputSchema(definition: AgentToolDefinition): Record<string,
         y: { type: "number" },
         direction: { type: "string", enum: ["up", "down", "left", "right"] },
         wheelTimes: { type: "number" },
-        windowTitle: stringType,
+        windowTitle: focusedWindow,
       });
     case "drag-drop":
       return object(
@@ -157,11 +189,11 @@ export function toolInputSchema(definition: AgentToolDefinition): Record<string,
     case "wait-for-condition":
       return object({
         text: stringType,
-        windowTitle: stringType,
+        windowTitle: addressedWindow,
         timeoutSeconds: { type: "number", description: "等待上限（秒），最大 120" },
       });
     case "inspect-dialog":
-      return object({ windowTitle: stringType });
+      return object({ windowTitle: addressedWindow });
     default:
       // An unknown tool must not gain a permissive schema by default.
       return object({}, []);
@@ -268,7 +300,16 @@ async function handleToolCall(
       jsonrpc: "2.0",
       id: message.id,
       result: {
-        content: [{ type: "text", text: result.text }],
+        // The image blocks go beside the text: this is how a screenshot reaches
+        // the model's own vision rather than being described to it in words.
+        content: [
+          { type: "text", text: result.text },
+          ...(result.images ?? []).map((image) => ({
+            type: "image",
+            data: image.data,
+            mimeType: image.mimeType,
+          })),
+        ],
         ...(result.structured !== undefined ? { structuredContent: result.structured } : {}),
       },
     };

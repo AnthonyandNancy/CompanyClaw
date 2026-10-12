@@ -3,6 +3,7 @@ import {
   DEFAULT_VISION_SCOPE,
   evaluateVisionRequest,
   selectVisionRecord,
+  selectVisionRecordForRequest,
   visionGrantLifetimeMs,
 } from "./vision-gate";
 import type { VisionAuthorizationRecord } from "../permissions/permission-policy";
@@ -136,6 +137,63 @@ describe("vision gate keeps the two channels apart", () => {
       NOW,
     );
     expect(decision.allowed).toBe(true);
+  });
+
+  it("lets 完全权限 upload without the remote operation authorization (ruling ③)", () => {
+    const decision = evaluateVisionRequest(
+      record(),
+      context({ origin: "weixin-private", remoteAuthorizationExpiresAt: null }),
+      NOW,
+      { allowWithoutRemoteAuthorization: true },
+    );
+    expect(decision.allowed).toBe(true);
+  });
+});
+
+describe("either vision switch is enough (ruling a-2)", () => {
+  const policy = (local: boolean, remote: boolean) => ({
+    vision: {
+      local: record({ enabled: local, model: local ? "local-model" : "" }),
+      remote: record({ enabled: remote, model: remote ? "remote-model" : "" }),
+    },
+  });
+
+  it("uses the record the origin owns when it is enabled", () => {
+    expect(selectVisionRecordForRequest(policy(true, true), "local-ui").model).toBe("local-model");
+    expect(selectVisionRecordForRequest(policy(true, true), "weixin-private").model).toBe(
+      "remote-model",
+    );
+  });
+
+  it("falls back to the other record when the origin's own is off", () => {
+    // This is the case the strict per-origin lookup could never reach: every tool
+    // call arrives as `local-ui`, so a grant made with the remote switch was
+    // unreadable and the switch appeared to do nothing.
+    expect(selectVisionRecordForRequest(policy(true, false), "weixin-private").model).toBe(
+      "local-model",
+    );
+    expect(selectVisionRecordForRequest(policy(false, true), "local-ui").model).toBe(
+      "remote-model",
+    );
+  });
+
+  it("keeps refusing when neither switch is on", () => {
+    const selected = selectVisionRecordForRequest(policy(false, false), "local-ui");
+    expect(selected.enabled).toBe(false);
+    expect(evaluateVisionRequest(selected, context({ modelSupportsVision: true }), NOW).allowed).toBe(
+      false,
+    );
+  });
+
+  it("ignores a revoked record even when the other switch is on", () => {
+    const revoked = {
+      vision: {
+        local: record({ enabled: true, revokedAt: NOW.toISOString() }),
+        remote: record({ enabled: true, model: "remote-model" }),
+      },
+    };
+    // The local record is revoked, so the remote one applies rather than nothing.
+    expect(selectVisionRecordForRequest(revoked, "local-ui").model).toBe("remote-model");
   });
 });
 

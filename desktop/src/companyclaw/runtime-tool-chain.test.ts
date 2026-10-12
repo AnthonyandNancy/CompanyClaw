@@ -253,7 +253,10 @@ describe("task scope removes the repeated prompt", () => {
     expect(runtime.listPendingApprovals("S-1")).toHaveLength(0);
   });
 
-  it("does not let a grant cover an unnamed target", async () => {
+  it("no longer prompts for an uncovered target under 完全权限", async () => {
+    // Ruling 2026-10-10: 完全权限 allows every action, so the task-scope check no
+    // longer narrows anything. The grant still matters for the narrower presets,
+    // which is what the next case covers.
     const { runtime } = makeRuntime();
     const task = await startTask(runtime);
     await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
@@ -271,7 +274,78 @@ describe("task scope removes the repeated prompt", () => {
       context: { ...LOCAL_CONTEXT, taskId: task.taskId },
       transport,
     });
+    expect(result.status).toBe("executed");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("still keeps an uncovered target behind an approval under 需审核", async () => {
+    // The middle preset keeps the original behaviour: a covered target runs, an
+    // uncovered one is confirmed. This is what makes 需审核 different from
+    // 完全权限.
+    const { runtime } = makeRuntime();
+    const task = await startTask(runtime);
+    await runtime.setPreset({ preset: "CUSTOM", acknowledged: true });
+    await runtime.grantTaskScope({
+      taskId: task.taskId,
+      ownerSid: "S-1",
+      deviceId: "device-a",
+      origin: "local-ui",
+      targets: ["notepad"],
+      ttlMs: 600_000,
+    });
+    const { transport, calls } = recordingTransport();
+    const result = await runtime.handleAgentToolCall({
+      call: { tool: "click", arguments: { x: 1, y: 1, windowTitle: "别的窗口" } },
+      context: { ...LOCAL_CONTEXT, taskId: task.taskId },
+      transport,
+    });
     expect(result.status).toBe("approval-required");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("完全权限 skips the prompt without skipping the ticket", () => {
+  /**
+   * The ticket is not a confirmation. It is the execution side's proof that this
+   * exact request was cleared, and the broker re-checks it on its own. Dropping
+   * it along with the prompt would remove the tamper check rather than the
+   * question, which is not what "no confirmation" asks for.
+   */
+  it("dispatches a mutation with a ticket and no pending approval", async () => {
+    const { runtime } = makeRuntime();
+    const task = await startTask(runtime);
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    const { transport, calls } = recordingTransport();
+
+    const result = await runtime.handleAgentToolCall({
+      call: { tool: "click", arguments: { x: 120, y: 240, windowTitle: "notepad" } },
+      context: { ...LOCAL_CONTEXT, taskId: task.taskId },
+      transport,
+    });
+
+    expect(result.status).toBe("executed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].approvalTicket).toBeTruthy();
+    expect(calls[0].binding).toBeTruthy();
+    // Nothing was asked, so nothing is left waiting for an answer.
+    expect(runtime.listPendingApprovals("S-1")).toHaveLength(0);
+  });
+
+  it("mints a distinct ticket per call, so one call cannot be replayed as another", async () => {
+    const { runtime } = makeRuntime();
+    const task = await startTask(runtime);
+    await runtime.setPreset({ preset: "FULL_DAILY", acknowledged: true });
+    const { transport, calls } = recordingTransport();
+
+    for (let index = 0; index < 3; index += 1) {
+      await runtime.handleAgentToolCall({
+        call: { tool: "type-text", arguments: { text: "hello", windowTitle: "notepad" } },
+        context: { ...LOCAL_CONTEXT, taskId: task.taskId, stepId: `step-${index}` },
+        transport,
+      });
+    }
+
+    const nonces = calls.map((call) => call.approvalTicket?.nonce);
+    expect(new Set(nonces).size).toBe(3);
   });
 });

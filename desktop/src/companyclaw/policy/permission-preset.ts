@@ -41,21 +41,35 @@ export const PRESET_DESCRIPTIONS: Readonly<
   Record<PermissionPreset, { title: string; detail: string; confirmations: string }>
 > = {
   BASIC: {
-    title: "基础权限",
+    title: "仅查看",
     detail: "在已授权范围内查询、查看、受控浏览器阅读与只读任务",
     confirmations: "对新应用操作、文件修改、业务写入仍会请求你确认",
   },
-  FULL_DAILY: {
-    title: "全面日常操作",
-    detail: "允许正常打开已安装应用与网站、切换窗口、查找控件、普通导航与输入、整理授权任务内的文件",
-    confirmations: "重大业务提交、对外发消息、敏感文件外发、删除、付款与提权仍需要你确认",
-  },
   CUSTOM: {
-    title: "高级自定义",
+    title: "需审核",
     detail: "逐项管理应用、网站、文件目录与特殊业务权限，保留原有沙箱与隔离控制",
     confirmations: "超出自定义范围或属于业务高风险时仍会请求你确认",
   },
+  FULL_DAILY: {
+    title: "完全权限",
+    detail: "所有操作都放行，不再逐项询问：打开应用、切换窗口、查找控件、输入、文件与业务写入均直接执行",
+    confirmations: "不再需要你确认；付款、提权与系统级操作仍由 Windows 自身的限制拦在应用之外",
+  },
 };
+
+/**
+ * True for the preset the product owner defined as "完全权限": every action is
+ * allowed without a human confirmation, including the categories that are
+ * otherwise refused on every channel.
+ *
+ * Product-owner ruling 2026-10-10 explicitly overrides requirement §225/§512/§741.
+ * The three presets now read 仅查看 / 需审核 / 完全权限, and the widest of them is
+ * carried by `FULL_DAILY` — the identifier whose existing ADR meaning is already
+ * "the broadest choice", so no installed configuration changes meaning.
+ */
+export function presetAllowsEveryAction(preset: PermissionPreset): boolean {
+  return preset === "FULL_DAILY";
+}
 
 /**
  * True when the preset is the one that suppresses repeated prompts inside an

@@ -22,7 +22,11 @@ function store(initial?: unknown) {
   return { instance, writes };
 }
 
-const empty: BrokerTargets = { allowedProcesses: [], allowedWindowTitles: [] };
+const empty: BrokerTargets = {
+  allowedProcesses: [],
+  allowedWindowTitles: [],
+  unrestricted: false,
+};
 
 describe("normalizeProcessEntry", () => {
   it("lowercases and strips an .exe suffix", () => {
@@ -63,6 +67,7 @@ describe("BrokerTargetsStore", () => {
     const saved = await instance.save({
       allowedProcesses: ["Notepad.exe", "excel", "C:\\evil\\cmd.exe", ""],
       allowedWindowTitles: ["  工单  ", "", "   "],
+      unrestricted: false,
     });
     expect(saved.allowedProcesses).toEqual(["notepad", "excel"]);
     expect(saved.allowedWindowTitles).toEqual(["工单"]);
@@ -74,6 +79,7 @@ describe("BrokerTargetsStore", () => {
     const saved = await instance.save({
       allowedProcesses: ["notepad", "NOTEPAD.exe", " notepad "],
       allowedWindowTitles: [],
+      unrestricted: false,
     });
     expect(saved.allowedProcesses).toEqual(["notepad"]);
   });
@@ -102,9 +108,42 @@ describe("BrokerTargetsStore", () => {
 
   it("writes a versioned envelope", async () => {
     const { instance, writes } = store();
-    await instance.save({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+    await instance.save({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: false,
+    });
     const envelope = JSON.parse(writes[0]) as { contract: string; schemaVersion: number };
     expect(envelope.contract).toBe(COMPANYCLAW_BROKER_TARGETS_CONTRACT);
     expect(envelope.schemaVersion).toBe(1);
+  });
+
+  it("persists the unrestricted flag", async () => {
+    // The flag is what decides whether the broker's allow list still gates
+    // processes, so it has to survive a restart rather than being recomputed.
+    const { instance } = store();
+    await instance.save({ allowedProcesses: ["notepad"], allowedWindowTitles: [], unrestricted: true });
+    expect(instance.get()).toEqual({
+      allowedProcesses: ["notepad"],
+      allowedWindowTitles: [],
+      unrestricted: true,
+    });
+  });
+
+  it("reads a document written before the flag existed as restricted", () => {
+    const instance = new BrokerTargetsStore(FILE, {
+      existsFile: () => true,
+      readFile: () =>
+        JSON.stringify({
+          contract: COMPANYCLAW_BROKER_TARGETS_CONTRACT,
+          schemaVersion: 1,
+          allowedProcesses: ["notepad"],
+          allowedWindowTitles: [],
+        }),
+      writeFile: async () => undefined,
+    });
+    // An older file must not silently become "no allow list at all".
+    expect(instance.get().unrestricted).toBe(false);
+    expect(instance.inspect().warning).toBeNull();
   });
 });

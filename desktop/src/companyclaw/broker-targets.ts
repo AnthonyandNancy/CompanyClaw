@@ -16,6 +16,15 @@ export const COMPANYCLAW_BROKER_TARGETS_SCHEMA = 1;
 export interface BrokerTargets {
   allowedProcesses: string[];
   allowedWindowTitles: string[];
+  /**
+   * True while the employee has selected the widest preset.
+   *
+   * Carried here because this is the document the broker's environment is built
+   * from. The preset is the authority — this field is its projection, rewritten
+   * on every preset change — and it is kept as an explicit flag rather than an
+   * empty allow list, because an empty list already means "deny everything".
+   */
+  unrestricted: boolean;
 }
 
 export interface BrokerTargetsInspection {
@@ -28,6 +37,8 @@ interface TargetsEnvelope {
   schemaVersion: typeof COMPANYCLAW_BROKER_TARGETS_SCHEMA;
   allowedProcesses: string[];
   allowedWindowTitles: string[];
+  /** Optional in the file: a document written before this field reads as false. */
+  unrestricted?: boolean;
 }
 
 interface TargetsStoreDependencies {
@@ -36,7 +47,11 @@ interface TargetsStoreDependencies {
   writeFile?: (filePath: string, contents: string) => Promise<void>;
 }
 
-const EMPTY: BrokerTargets = { allowedProcesses: [], allowedWindowTitles: [] };
+const EMPTY: BrokerTargets = {
+  allowedProcesses: [],
+  allowedWindowTitles: [],
+  unrestricted: false,
+};
 
 /**
  * Normalizes one process entry to an executable base name, or null when the
@@ -103,6 +118,8 @@ export class BrokerTargetsStore {
         allowedWindowTitles: envelope.allowedWindowTitles.filter(
           (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
         ),
+        // A document written before this field existed reads as restricted.
+        unrestricted: envelope.unrestricted === true,
       },
       warning: null,
     };
@@ -126,6 +143,7 @@ export class BrokerTargetsStore {
     const saved: BrokerTargets = {
       allowedProcesses: [...processes],
       allowedWindowTitles: [...titles],
+      unrestricted: targets.unrestricted === true,
     };
     await this.enqueueWrite(saved);
     return saved;
@@ -138,6 +156,7 @@ export class BrokerTargetsStore {
         schemaVersion: COMPANYCLAW_BROKER_TARGETS_SCHEMA,
         allowedProcesses: targets.allowedProcesses,
         allowedWindowTitles: targets.allowedWindowTitles,
+        unrestricted: targets.unrestricted,
       };
       await this.writeFile(this.filePath, JSON.stringify(envelope, null, 2));
     });

@@ -8,6 +8,7 @@ import {
   type BrokerTransportCaller,
 } from "./broker-transport";
 import { MUTATING_OPERATIONS } from "../broker-protocol";
+import { MAX_RESULT_CHARS } from "./broker-transport";
 
 type CallResult = Awaited<ReturnType<BrokerTransportCaller>>;
 
@@ -87,6 +88,13 @@ describe("broker transport", () => {
       ["wait-for-condition", "wait-for-condition"],
       ["inspect-dialog", "inspect-dialog"],
       ["verify-state", "verify-state"],
+      // Text entry, shortcuts and single-control reads are part of the tool
+      // surface; leaving them out of the table made them fail with
+      // `unsupported-broker-operation` after the model had already been told the
+      // capability existed.
+      ["type-text", "type-text"],
+      ["hotkey", "hotkey"],
+      ["read-control", "read-control"],
     ];
     for (const [toolName, operation] of pairs) {
       expect(
@@ -219,5 +227,91 @@ describe("broker transport", () => {
     // A missing target must stay missing: an empty object would look like an
     // address rather than "no target".
     expect(call.mock.calls[0][0]).not.toHaveProperty("target");
+  });
+});
+
+describe("the tool call's arguments reach the broker", () => {
+  function transportWithoutOverride(call: (request: BrokerTransportCall) => Promise<CallResult>) {
+    return createBrokerTransport({
+      call,
+      payloadHashFor: () => "h",
+      targetFor: () => undefined,
+    });
+  }
+
+  it("forwards them when no override is configured", async () => {
+    // The production wiring used to pass `argsFor: () => ({})`, a constant that
+    // silently discarded every argument. A launch then arrived with no
+    // application name and the executor refused it — the tool looked broken while
+    // every unit below it passed.
+    const call = stubCall({ ok: true, data: {} });
+    const transport = transportWithoutOverride(call);
+    await transport(request({ action: { kind: "write", toolName: "launch-app" }, arguments: { app: "QQ" } }));
+    expect(call.mock.calls[0][0].args).toEqual({ app: "QQ" });
+  });
+
+  it("sends an empty object when the call carried no arguments", async () => {
+    const call = stubCall({ ok: true, data: {} });
+    const transport = transportWithoutOverride(call);
+    await transport(request({ action: { kind: "write", toolName: "screenshot" } }));
+    expect(call.mock.calls[0][0].args).toEqual({});
+  });
+
+  it("keeps an explicit override authoritative", async () => {
+    const call = stubCall({ ok: true, data: {} });
+    const transport = transportWith(call);
+    await transport(
+      request({ action: { kind: "write", toolName: "read-value" }, arguments: { ignored: true } }),
+    );
+    expect(call.mock.calls[0][0].args).toEqual({ selector: { automationId: "edit-1" } });
+  });
+});
+
+describe("a result reaches the model as valid JSON", () => {
+  const apps = Array.from({ length: 185 }, (_, index) => ({
+    name: `应用-${index}`,
+    appId: `C:\\Program Files\\app-${index}\\app.exe`,
+  }));
+
+  it("keeps a realistic application list intact", async () => {
+    // The fixed 2 000-character cut used to break this payload mid-string, so the
+    // model received a document no parser accepts and could not pick a name to
+    // launch — the discovery feature looked broken while every probe passed.
+    const call = stubCall({ ok: true, data: { apps } });
+    const transport = createBrokerTransport({ call, payloadHashFor: () => "h", targetFor: () => undefined });
+    const response = await transport(request({ action: { kind: "read", toolName: "list-installed-apps" } }));
+    expect(response.status).toBe("ok");
+    if (response.status !== "ok") return;
+    const parsed = JSON.parse(response.detail) as { apps: { name: string }[] };
+    expect(parsed.apps).toHaveLength(185);
+    expect(parsed.apps[0].name).toBe("应用-0");
+  });
+
+  it("shortens an oversized list by whole entries, never mid-document", async () => {
+    const huge = Array.from({ length: 40_000 }, (_, index) => ({
+      name: `item-${index}`,
+      blob: "x".repeat(40),
+    }));
+    const call = stubCall({ ok: true, data: { windows: huge } });
+    const transport = createBrokerTransport({ call, payloadHashFor: () => "h", targetFor: () => undefined });
+    const response = await transport(request({ action: { kind: "read", toolName: "list-windows" } }));
+    expect(response.status).toBe("ok");
+    if (response.status !== "ok") return;
+    // Parseable, non-empty, and shorter than the original.
+    const parsed = JSON.parse(response.detail) as { windows: unknown[] };
+    expect(Array.isArray(parsed.windows)).toBe(true);
+    expect(parsed.windows.length).toBeGreaterThan(0);
+    expect(parsed.windows.length).toBeLessThan(huge.length);
+  });
+
+  it("reports a shape it cannot shorten instead of cutting the document", async () => {
+    const call = stubCall({ ok: true, data: { note: "y".repeat(MAX_RESULT_CHARS + 1_000) } });
+    const transport = createBrokerTransport({ call, payloadHashFor: () => "h", targetFor: () => undefined });
+    const response = await transport(request({ action: { kind: "read", toolName: "verify-state" } }));
+    expect(response.status).toBe("ok");
+    if (response.status !== "ok") return;
+    const parsed = JSON.parse(response.detail) as { truncated?: boolean; reason?: string };
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.reason).toBe("result-too-large");
   });
 });

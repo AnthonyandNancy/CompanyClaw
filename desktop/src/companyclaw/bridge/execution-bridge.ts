@@ -11,17 +11,39 @@ export interface BridgeRequest {
   action: ActionDescriptor;
   approvalTicket?: ApprovalTicket;
   binding?: ApprovalBinding;
+  /**
+   * The tool call's own arguments, carried through to the transport.
+   *
+   * The action descriptor describes *what* is being done (kind, tool, target);
+   * the arguments are how the executor knows *where* — a coordinate, the text to
+   * type, the application name. They are kept separate rather than folded into
+   * the descriptor because the broker validates them against its own argument
+   * contract, and a rendered-to-text target would not survive that check.
+   */
+  arguments?: Record<string, unknown>;
+}
+
+/**
+ * One image an action produced, carried beside the text result.
+ *
+ * A screenshot is far larger than the textual `detail`, which is truncated for
+ * the log; the two therefore travel separately rather than being encoded into
+ * the detail string, where a base64 PNG would be cut off mid-payload.
+ */
+export interface ImagePayload {
+  data: string;
+  mimeType: string;
 }
 
 export type BridgeResponse =
-  | { status: "ok"; detail: string }
+  | { status: "ok"; detail: string; images?: ImagePayload[] }
   | { status: "rejected"; reason: string }
   | { status: "unavailable"; reason: string };
 
 export type BridgeTransport = (request: BridgeRequest) => Promise<BridgeResponse>;
 
 export type BridgeResult =
-  | { outcome: "executed"; detail: string }
+  | { outcome: "executed"; detail: string; images?: ImagePayload[] }
   | { outcome: "denied"; reason: string }
   | { outcome: "unavailable"; reason: string };
 
@@ -73,7 +95,13 @@ export class ExecutionBridge {
 
     try {
       const response = await this.transport(request);
-      if (response.status === "ok") return { outcome: "executed", detail: response.detail };
+      if (response.status === "ok") {
+        return {
+          outcome: "executed",
+          detail: response.detail,
+          ...(response.images ? { images: response.images } : {}),
+        };
+      }
       if (response.status === "unavailable") {
         return { outcome: "unavailable", reason: response.reason };
       }

@@ -39,22 +39,21 @@ const presetCards: {
 }[] = [
   {
     id: "BASIC",
-    title: "基础权限",
+    title: "仅查看",
     detail: "在已授权范围内查询、查看、受控浏览器阅读与只读任务",
     confirmations: "对新应用操作、文件修改、业务写入仍会请求你确认",
   },
   {
-    id: "FULL_DAILY",
-    title: "全面日常操作",
-    detail: "允许正常打开已安装应用与网站、切换窗口、查找控件、普通导航与输入、整理授权任务内的文件",
-    confirmations: "重大业务提交、对外发消息、敏感文件外发、删除、付款与提权仍需要你确认",
-    recommended: true,
-  },
-  {
     id: "CUSTOM",
-    title: "高级自定义",
+    title: "需审核",
     detail: "逐项管理应用、网站、文件目录与特殊业务权限，保留原有沙箱与隔离控制",
     confirmations: "超出自定义范围或属于业务高风险时仍会请求你确认",
+  },
+  {
+    id: "FULL_DAILY",
+    title: "完全权限",
+    detail: "所有操作都放行，不再逐项询问：打开应用、切换窗口、查找控件、输入、文件与业务写入均直接执行",
+    confirmations: "不再需要你确认；付款、提权与系统级操作仍由 Windows 自身的限制拦在应用之外",
   },
 ];
 
@@ -166,18 +165,19 @@ async function toggleVision(origin: "local" | "remote", enabled: boolean) {
     if (!enabled) {
       await api.vision.revoke({ origin });
     } else {
-      const current = vision.value[origin];
-      if (!current?.provider || !current?.model) {
-        // Authorization must name the provider; without it the employee cannot
-        // be told who receives the image.
+      // The authorization must name the provider that receives an image, so it
+      // comes from the *configured model* — the authorization record itself stays
+      // empty until the switch is on, which is why reading it here never worked.
+      const configured = await api.vision.getConfiguredModel();
+      if (!configured?.provider || !configured.model) {
         error.value = "请先在模型设置中配置服务商与模型，再授权云端视觉识别";
         return;
       }
       await api.vision.set({
         origin,
-        provider: current.provider,
-        baseUrl: current.baseUrl,
-        model: current.model,
+        provider: configured.provider,
+        baseUrl: configured.baseUrl,
+        model: configured.model,
       });
     }
     await load();
@@ -256,7 +256,7 @@ defineExpose({ load });
           v-for="card in presetCards"
           :key="card.id"
           class="card-row"
-          :class="{ 'no-border': card.id === 'CUSTOM' }"
+          :class="{ 'no-border': card.id === 'FULL_DAILY' }"
         >
           <label class="preset-option">
             <input
@@ -362,19 +362,16 @@ defineExpose({ load });
       </div>
     </template>
 
-    <el-dialog v-model="acknowledgeDialog" title="启用「全面日常操作」" width="480">
-      <p>启用后，公司电脑上的普通操作将不再逐项询问：</p>
+    <el-dialog v-model="acknowledgeDialog" title="启用「完全权限」" width="480">
+      <p>启用后，公司电脑上的操作将不再逐项询问：</p>
       <ul class="preset-list">
-        <li>正常打开已安装的应用与网站</li>
-        <li>切换窗口、查找控件、普通导航与输入</li>
+        <li>打开应用、切换窗口、查找控件、普通导航与输入</li>
+        <li>文件整理与业务写入同样直接执行，不再请求确认</li>
         <li>读取屏幕与界面信息（用于定位，不代表会上传）</li>
       </ul>
-      <p>以下操作仍然需要你确认：</p>
-      <ul class="preset-list">
-        <li>重大业务提交、对外发送消息、敏感文件外发</li>
-        <li>删除、付款、提升权限等不可逆操作</li>
-      </ul>
-      <p class="row-sub">这与 Windows 管理员权限无关，也不会关闭系统的安全机制。</p>
+      <p class="row-sub">
+        这与 Windows 管理员权限无关，也不会关闭系统的安全机制；付款、提权与系统级操作仍由 Windows 自身的限制拦在应用之外。
+      </p>
       <template #footer>
         <el-button @click="cancelAcknowledge">取消</el-button>
         <el-button type="primary" @click="confirmAcknowledge">确认启用</el-button>
@@ -385,7 +382,7 @@ defineExpose({ load });
       <template v-if="recoveryPreview">
         <p>以下内容将被清除或撤销：</p>
         <ul class="preset-list">
-          <li>权限档位恢复为「基础权限」</li>
+          <li>权限档位恢复为「仅查看」</li>
           <li>关闭本机与微信远程的云端视觉授权</li>
           <li>撤销当前的微信远程操作授权</li>
           <li>清除已记住的应用信任 {{ recoveryPreview.counts.trustedApps }} 项、网站信任 {{ recoveryPreview.counts.trustedSites }} 项</li>

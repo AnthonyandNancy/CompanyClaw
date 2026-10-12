@@ -41,6 +41,13 @@ export interface BrokerClientOptions {
   stateDir?: string;
   allowedProcesses: string[];
   allowedWindowTitles: string[];
+  /**
+   * True while the employee has selected the widest preset.
+   *
+   * Delivered through the environment like the allow list, so a change needs the
+   * process to be replaced rather than signalled.
+   */
+  unrestricted?: boolean;
   /** Overridable for tests. */
   spawnProcess?: typeof spawn;
   now?: () => Date;
@@ -177,6 +184,7 @@ export class BrokerClient {
         COMPANYCLAW_BROKER_SCRIPT_DIR: this.options.scriptDir ?? "",
         COMPANYCLAW_BROKER_ALLOWED_PROCESSES: this.options.allowedProcesses.join(","),
         COMPANYCLAW_BROKER_ALLOWED_WINDOW_TITLES: this.options.allowedWindowTitles.join(","),
+        COMPANYCLAW_BROKER_UNRESTRICTED: this.options.unrestricted === true ? "true" : "false",
         // Environment, not argv: the key must not appear in a process list.
         COMPANYCLAW_BROKER_TICKET_SECRET: this.options.ticketSecret ?? "",
         COMPANYCLAW_BROKER_RESOURCES_DIR: this.options.resourcesDir ?? "",
@@ -239,10 +247,12 @@ export class BrokerClient {
   async updateTargets(targets: {
     allowedProcesses: string[];
     allowedWindowTitles: string[];
+    unrestricted: boolean;
   }): Promise<void> {
     const wasRunning = this.isRunning();
     this.options.allowedProcesses = [...targets.allowedProcesses];
     this.options.allowedWindowTitles = [...targets.allowedWindowTitles];
+    this.options.unrestricted = targets.unrestricted === true;
     if (!wasRunning) return;
     // stop() restores the restart budget: replacing the process for a new
     // allow list is deliberate, so editing the list a few times must not lock
@@ -334,7 +344,10 @@ export class BrokerClient {
 
     let response: BrokerResponse;
     try {
-      response = (await this.send(request, options.timeoutMs ?? 120_000)) as BrokerResponse;
+      // Below the Gateway's own 60s MCP timeout, so a slow broker call is
+      // reported with the broker's reason instead of surfacing as a transport
+      // timeout the employee cannot act on.
+      response = (await this.send(request, options.timeoutMs ?? 50_000)) as BrokerResponse;
     } catch (error) {
       // A transport failure must not look like a policy decision.
       const reason = error instanceof Error ? error.message : String(error);

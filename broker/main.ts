@@ -19,6 +19,8 @@ export interface BrokerBootstrap {
   deviceId: string;
   allowedProcesses: string[];
   allowedWindowTitles: string[];
+  /** True while the employee has selected the widest preset. See BrokerPolicyConfig. */
+  unrestricted: boolean;
   scriptDir: string;
   /**
    * Shared key for verifying approval tickets.
@@ -61,6 +63,9 @@ export function parseBootstrap(env: NodeJS.ProcessEnv): BootstrapParseResult {
       deviceId,
       allowedProcesses: splitList(env.COMPANYCLAW_BROKER_ALLOWED_PROCESSES),
       allowedWindowTitles: splitList(env.COMPANYCLAW_BROKER_ALLOWED_WINDOW_TITLES),
+      // Optional: an absent or unrecognised value means "not unrestricted", so a
+      // desktop build that does not send it still starts a working broker.
+      unrestricted: env.COMPANYCLAW_BROKER_UNRESTRICTED === "true",
       scriptDir,
       ticketSecret: ticketSecret ?? "",
     },
@@ -73,6 +78,7 @@ export function toPolicyConfig(bootstrap: BrokerBootstrap): BrokerPolicyConfig {
     deviceId: bootstrap.deviceId,
     allowedProcesses: bootstrap.allowedProcesses,
     allowedWindowTitles: bootstrap.allowedWindowTitles,
+    unrestricted: bootstrap.unrestricted,
     requireApprovalForMutations: true,
   };
 }

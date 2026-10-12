@@ -6,6 +6,14 @@
 # they are easy to audit.
 
 $ErrorActionPreference = "Stop"
+
+# The broker reads probe output as UTF-8 (`runScript` passes encoding: "utf8" to
+# execFile). Without this the host writes the console code page instead, and every
+# non-ASCII window title or application name arrives as U+FFFD, which makes the
+# Chinese names most employees actually see unmatchable.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 function Write-CcJson($payload) {

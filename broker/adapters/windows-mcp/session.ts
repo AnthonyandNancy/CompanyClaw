@@ -92,7 +92,11 @@ export class WindowsMcpSession {
   private readonly handshakeTimeoutMs: number;
 
   constructor(private readonly options: WindowsMcpSessionOptions) {
-    this.callTimeoutMs = options.callTimeoutMs ?? 60_000;
+    // Deliberately below the 60s the Gateway's MCP client allows: a call that
+    // outlives the client is abandoned there, and the employee sees a transport
+    // timeout instead of our own readable reason. The budget also has to stay
+    // under the broker client's socket timeout, so the broker can still answer.
+    this.callTimeoutMs = options.callTimeoutMs ?? 40_000;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 120_000;
   }
 
@@ -117,7 +121,10 @@ export class WindowsMcpSession {
     try {
       return await this.starting;
     } catch (error) {
-      this.starting = null;
+      // A start that threw with the child still alive would leave that process
+      // running with no one holding it, so the next call would spawn a second
+      // interpreter rather than reuse or replace the first.
+      await this.stop();
       throw error;
     }
   }
@@ -207,6 +214,14 @@ export class WindowsMcpSession {
    * The capability check has already happened in the execution adapter; this
    * only transports the call and turns a timeout into a definite failure, because
    * a UIA call that never returns would otherwise block the Gateway forever.
+   *
+   * A call that fails leaves the child process behind, so the session is stopped
+   * here rather than reused. The server answers one request at a time, so an
+   * abandoned call keeps the pipe busy and every later tool would queue behind it
+   * and time out too — the fault would look like "the whole feature broke"
+   * instead of "one call timed out". Restarting costs a handshake on the next
+   * call and nothing on the healthy path, because this only runs when the call
+   * has already failed.
    */
   async callTool(input: {
     tool: string;
@@ -216,10 +231,16 @@ export class WindowsMcpSession {
     const status = await this.ensureStarted();
     if (status.health !== "READY") return { ok: false, reason: `windows-mcp-${status.health}` };
 
-    const response = await this.request(
-      buildToolCallRequest(this.nextId++, input.tool, input.args),
-      input.timeoutMs ?? this.callTimeoutMs,
-    );
+    let response: Record<string, unknown> | null;
+    try {
+      response = await this.request(
+        buildToolCallRequest(this.nextId++, input.tool, input.args),
+        input.timeoutMs ?? this.callTimeoutMs,
+      );
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
     if (!response) return { ok: false, reason: "no-response" };
     const error = response.error;
     if (typeof error === "object" && error !== null) {

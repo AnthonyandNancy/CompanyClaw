@@ -35,6 +35,11 @@ export const V2_OPERATIONS = [
   "inspect-dialog",
   "verify-state",
   "capture-execution-error",
+  // Text entry, shortcuts and single-control reads. Mirrors the broker's own
+  // list; the two are pinned together by the wire-protocol test.
+  "type-text",
+  "hotkey",
+  "read-control",
   "capabilities",
 ] as const;
 
@@ -63,6 +68,10 @@ export const MUTATING_OPERATIONS: readonly BrokerOperation[] = [
   "drag-drop",
   "scroll",
   "inspect-dialog",
+  // Text entry and shortcuts change application state like pointer input does.
+  // `read-control` stays out: it reads a value and cannot write one.
+  "type-text",
+  "hotkey",
 ] as const;
 
 export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
@@ -78,6 +87,7 @@ export const READ_ONLY_OPERATIONS: readonly BrokerOperation[] = [
   "wait-for-condition",
   "verify-state",
   "capture-execution-error",
+  "read-control",
   "capabilities",
 ] as const;
 

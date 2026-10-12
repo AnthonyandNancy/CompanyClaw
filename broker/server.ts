@@ -14,6 +14,7 @@ import {
 import {
   runFindElements,
   runInvokePattern,
+  runListInstalledApps,
   runListWindows,
   runReadValue,
   runSendKeys,
@@ -21,6 +22,7 @@ import {
   type ElementDescriptor,
   type ElementSelector,
   type ElementSummary,
+  type InstalledAppDescriptor,
   type WindowDescriptor,
   type WindowIdentity,
 } from "./uia";
@@ -56,6 +58,15 @@ export interface BrokerServerOptions {
   listWindows?: (options: {
     scriptDir: string;
   }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
+  /**
+   * Injectable application reader; defaults to the real Start Menu probe.
+   *
+   * Served by the broker rather than by the vendored server, which ships no tool
+   * that enumerates installed applications.
+   */
+  listInstalledApps?: (options: {
+    scriptDir: string;
+  }) => Promise<{ ok: true; value: InstalledAppDescriptor[] } | { ok: false; reason: string }>;
   /** Injectable element reader; defaults to the real UIA probe. */
   findElements?: (options: FindElementsProbeOptions) => Promise<
     | {
@@ -170,6 +181,9 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
   });
   const listWindows =
     options.listWindows ?? ((opts) => runListWindows({ scriptDir: opts.scriptDir }));
+  const listInstalledApps =
+    options.listInstalledApps ??
+    ((opts) => runListInstalledApps({ scriptDir: opts.scriptDir }));
   const findElements =
     options.findElements ?? ((opts) => runFindElements({ ...opts, scriptDir: opts.scriptDir }));
   const readValue =
@@ -191,6 +205,7 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
       now,
       windowsMcp: options.windowsMcp ?? null,
       listWindows,
+      listInstalledApps,
       findElements,
       readValue,
       setValue,
@@ -231,6 +246,10 @@ interface ConnectionContext {
   listWindows: (options: {
     scriptDir: string;
   }) => Promise<{ ok: true; value: WindowDescriptor[] } | { ok: false; reason: string }>;
+  /** Broker-native application discovery; see `list-installed-apps` in the switch. */
+  listInstalledApps: (options: {
+    scriptDir: string;
+  }) => Promise<{ ok: true; value: InstalledAppDescriptor[] } | { ok: false; reason: string }>;
   findElements: (options: FindElementsProbeOptions) => Promise<
     | {
         ok: true;
@@ -387,6 +406,7 @@ export async function executeAuthorized(
     ConnectionContext,
     | "scriptDir"
     | "listWindows"
+    | "listInstalledApps"
     | "findElements"
     | "readValue"
     | "setValue"
@@ -398,6 +418,13 @@ export async function executeAuthorized(
   >,
 ): Promise<BrokerOutcome> {
   switch (request.operation) {
+    case "list-installed-apps": {
+      // Broker-native: the vendored server exposes no application-enumeration
+      // tool, so this capability is served by the Start Menu probe instead.
+      const result = await context.listInstalledApps({ scriptDir: context.scriptDir });
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      return { status: "ok", data: { apps: result.value } };
+    }
     case "list-windows": {
       const result = await context.listWindows({ scriptDir: context.scriptDir });
       if (!result.ok) return { status: "failed", reason: result.reason };
@@ -434,6 +461,38 @@ export async function executeAuthorized(
       const elementOptions = buildElementOptions(request, context.scriptDir);
       if (!elementOptions.ok) return { status: "rejected", reason: elementOptions.reason };
       const result = await context.readValue(elementOptions.value);
+      if (!result.ok) return { status: "failed", reason: result.reason };
+      return { status: "ok", data: result.value };
+    }
+    case "read-control": {
+      // The tool surface addresses a control by its label plus an optional window
+      // title; the native probe addresses it by process name plus a selector. The
+      // process name is resolved from the window list here, because the model is
+      // never asked for one — the same translation `focus-window` performs for
+      // its process-name case.
+      const label = request.args?.label;
+      if (typeof label !== "string" || label.trim().length === 0) {
+        return { status: "rejected", reason: "label-required" };
+      }
+      const listed = await context.listWindows({ scriptDir: context.scriptDir });
+      if (!listed.ok) return { status: "failed", reason: listed.reason };
+      const windowTitle = request.target?.windowTitle;
+      const candidate = listed.value.find(
+        (window) => !windowTitle || window.name.includes(windowTitle),
+      );
+      if (!candidate || !candidate.processName) {
+        return { status: "rejected", reason: "target-window-not-found" };
+      }
+      const result = await context.readValue({
+        scriptDir: context.scriptDir,
+        processName: candidate.processName,
+        // The probe matches a selector name exactly, so this expects the control's
+        // real accessible name. A caller that only knows part of it should use
+        // `find-control` first (that one matches by containment) and read the name
+        // it returns; inventing a partial match here would read the wrong control.
+        selector: { name: label.trim() },
+        ...(windowTitle ? { windowTitle } : {}),
+      });
       if (!result.ok) return { status: "failed", reason: result.reason };
       return { status: "ok", data: result.value };
     }
@@ -570,7 +629,7 @@ export async function executeAuthorized(
  */
 async function executeComputerUse(
   request: BrokerRequest,
-  context: Pick<ConnectionContext, "windowsMcp" | "scriptDir" | "now">,
+  context: Pick<ConnectionContext, "windowsMcp" | "scriptDir" | "now" | "listWindows">,
 ): Promise<BrokerOutcome> {
   const operation = request.operation;
   if (!(V2_OPERATIONS as readonly string[]).includes(operation)) {
@@ -602,6 +661,18 @@ async function executeComputerUse(
 
   const adapter = new WindowsMcpExecutionAdapter({
     callTool: (input) => context.windowsMcp!.callTool(input),
+    // `focus-window` may arrive with only a process name, but the upstream
+    // switch mode matches on window titles. Resolving one here keeps that case a
+    // clean refusal instead of a Python exception inside the server.
+    resolveWindowTitle: async (processName) => {
+      const listed = await context.listWindows({ scriptDir: context.scriptDir });
+      if (!listed.ok) return null;
+      const wanted = processName.replace(/\.exe$/i, "").toLowerCase();
+      const match = listed.value.find(
+        (window) => window.processName.replace(/\.exe$/i, "").toLowerCase() === wanted,
+      );
+      return match?.name ?? null;
+    },
   });
   const result = await adapter.execute({
     operation,

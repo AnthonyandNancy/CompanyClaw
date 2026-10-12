@@ -135,6 +135,38 @@ describe("broker server transport", () => {
     });
   });
 
+  it("serves application discovery from the broker itself, not from upstream", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({ operation: "list-installed-apps" }),
+        });
+        expect(response.status).toBe("ok");
+        expect(response.data).toMatchObject({ apps: [{ name: "记事本", appId: "notepad" }] });
+      },
+      {
+        listInstalledApps: async () => ({
+          ok: true,
+          value: [{ name: "记事本", appId: "notepad" }],
+        }),
+      },
+    );
+  });
+
+  it("reports a failed discovery probe rather than an empty application list", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({ operation: "list-installed-apps" }),
+        });
+        expect(response).toMatchObject({ status: "failed", reason: "probe-failed" });
+      },
+      { listInstalledApps: async () => ({ ok: false, reason: "probe-failed" }) },
+    );
+  });
+
   it("rejects a request from another Windows user before touching UIA", async () => {
     let probeCalls = 0;
     await withServer(
@@ -325,6 +357,63 @@ describe("broker server transport", () => {
           },
         }),
       },
+    );
+  });
+
+  it("serves read-control by resolving the process from the window list", async () => {
+    // The tool surface addresses a control by label plus an optional window
+    // title, and never asks the model for a process name — so the broker
+    // resolves it, the same way `focus-window` does for its process-name case.
+    const seen: { processName?: string; selector?: unknown } = {};
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({
+            operation: "read-control",
+            target: { windowTitle: "记事本" },
+            args: { label: "文本编辑器" },
+          }),
+        });
+        expect(response.status).toBe("ok");
+        expect(response.data).toMatchObject({ value: "当前值", valueReadable: true });
+      },
+      {
+        readValue: async (options) => {
+          Object.assign(seen, options);
+          return {
+            ok: true,
+            value: {
+              window: { name: "无标题 - 记事本", processId: 111 },
+              element: {
+                name: "文本编辑器",
+                automationId: "",
+                controlType: "ControlType.Edit",
+                className: "Edit",
+                isEnabled: true,
+                processId: 111,
+              },
+              value: "当前值",
+              valueReadable: true,
+            },
+          };
+        },
+      },
+    );
+    expect(seen.processName).toBe("notepad");
+    expect(seen.selector).toEqual({ name: "文本编辑器" });
+  });
+
+  it("refuses read-control without a label instead of reading a stray control", async () => {
+    await withServer(
+      async (port) => {
+        const response = await roundTrip(port, {
+          token: TOKEN,
+          request: makeRequest({ operation: "read-control", args: {} }),
+        });
+        expect(response).toMatchObject({ status: "rejected", reason: "label-required" });
+      },
+      { readValue: async () => ({ ok: false, reason: "should-not-run" }) },
     );
   });
 

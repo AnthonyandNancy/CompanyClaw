@@ -66,18 +66,24 @@ export type ToolCallResult =
   | { ok: false; reason: string };
 
 /**
- * Frames a request as a single line.
+ * Frames a request as a single line for the stdio transport.
  *
- * The MCP stdio transport is line-delimited JSON, so a payload containing a raw
- * newline would be read as two frames. Encoding through `JSON.stringify` escapes
- * them, and this guard makes the invariant explicit.
+ * The MCP stdio transport is line-delimited, so a frame is only complete once
+ * the line terminator is there: the server reads one line at a time and keeps
+ * waiting for the rest otherwise. The terminator therefore belongs to the frame
+ * rather than to the caller's memory — writing the bare JSON left every request
+ * unanswered, and an unanswered request looks exactly like a server that is slow
+ * or wedged, which is how it was misread before.
+ *
+ * `JSON.stringify` escapes newlines inside the payload, and this guard makes the
+ * invariant explicit: one frame must not carry a second newline.
  */
 export function encodeFrame(message: JsonRpcRequest | JsonRpcNotification): string {
   const line = JSON.stringify(message);
   if (line.includes("\n")) {
     throw new Error("MCP frame must not contain a raw newline");
   }
-  return line;
+  return `${line}\n`;
 }
 
 export function buildInitializeRequest(id = 1): JsonRpcRequest {

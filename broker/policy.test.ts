@@ -120,6 +120,78 @@ describe("BrokerPolicy target restrictions", () => {
   });
 });
 
+describe("BrokerPolicy under the widest preset", () => {
+  it("touches a process the allow list never named", () => {
+    // The allow list is the employee's own configuration, and the widest preset
+    // already means "no confirmation" — so it must not be the thing that refuses.
+    const policy = new BrokerPolicy(
+      makeConfig({ allowedProcesses: [], unrestricted: true }),
+      { now: NOW },
+    );
+    expect(policy.authorize(makeRequest({ target: { processName: "QQ" } }))).toEqual({
+      allowed: true,
+    });
+  });
+
+  it("ignores a window-title filter", () => {
+    const policy = new BrokerPolicy(
+      makeConfig({ allowedWindowTitles: ["只允许这个标题"], unrestricted: true }),
+      { now: NOW },
+    );
+    expect(
+      policy.authorize(makeRequest({ target: { processName: "QQ", windowTitle: "别的窗口" } })),
+    ).toEqual({ allowed: true });
+  });
+
+  it("still refuses another Windows user", () => {
+    const policy = new BrokerPolicy(makeConfig({ unrestricted: true }), { now: NOW });
+    expect(policy.authorize(makeRequest({ ownerSid: "S-1-5-21-999", target: { processName: "QQ" } }))).toEqual({
+      allowed: false,
+      reason: "owner-mismatch",
+    });
+  });
+
+  it("still refuses another device", () => {
+    const policy = new BrokerPolicy(makeConfig({ unrestricted: true }), { now: NOW });
+    expect(policy.authorize(makeRequest({ deviceId: "other", target: { processName: "QQ" } }))).toEqual({
+      allowed: false,
+      reason: "device-mismatch",
+    });
+  });
+
+  it("still refuses an expired request", () => {
+    const policy = new BrokerPolicy(makeConfig({ unrestricted: true }), {
+      now: () => new Date("2026-10-08T00:10:00.000Z"),
+    });
+    expect(policy.authorize(makeRequest({ target: { processName: "QQ" } }))).toEqual({
+      allowed: false,
+      reason: "expired",
+    });
+  });
+
+  it("still requires a target when the operation needs one", () => {
+    const policy = new BrokerPolicy(makeConfig({ unrestricted: true }), { now: NOW });
+    expect(
+      policy.authorize(makeRequest({ operation: "find-elements", target: null })),
+    ).toEqual({ allowed: false, reason: "target-required" });
+  });
+
+  it("still requires a ticket for a mutation", () => {
+    const policy = new BrokerPolicy(makeConfig({ unrestricted: true }), { now: NOW });
+    expect(
+      policy.authorize(makeRequest({ operation: "set-value", target: { processName: "QQ" } })),
+    ).toEqual({ allowed: false, reason: "approval-required" });
+  });
+
+  it("leaves the narrower presets governed by the allow list", () => {
+    const policy = new BrokerPolicy(makeConfig({ allowedProcesses: [] }), { now: NOW });
+    expect(policy.authorize(makeRequest({ target: { processName: "QQ" } }))).toEqual({
+      allowed: false,
+      reason: "process-not-allowed",
+    });
+  });
+});
+
 describe("BrokerPolicy mutation gate", () => {
   it("requires an approval ticket for a mutating operation", () => {
     const policy = new BrokerPolicy(makeConfig(), { now: NOW });

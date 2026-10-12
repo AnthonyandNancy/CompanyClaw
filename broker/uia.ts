@@ -80,6 +80,65 @@ export function runListWindows(
   );
 }
 
+export interface InstalledAppDescriptor {
+  /** Start Menu display name; what `launch-app` matches against. */
+  name: string;
+  /** AppUserModelID, or the shortcut path on the fallback scan. */
+  appId: string;
+}
+
+/** Upper bound on a returned list, so a pathological host cannot flood the model. */
+export const MAX_INSTALLED_APPS = 2_000;
+
+/**
+ * Parses the `{ apps: [...] }` payload the discovery script emits.
+ *
+ * The shape mirrors `parseWindowList`: unusable entries are skipped rather than
+ * failing the whole read, because a single malformed row must not cost the
+ * employee the entire application list.
+ */
+export function parseInstalledApps(raw: string): UiaProbeResult<InstalledAppDescriptor[]> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  const apps = (parsed as { apps?: unknown }).apps;
+  if (!Array.isArray(apps)) {
+    return { ok: false, reason: "invalid-payload" };
+  }
+  const descriptors: InstalledAppDescriptor[] = [];
+  for (const entry of apps) {
+    if (descriptors.length >= MAX_INSTALLED_APPS) break;
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.name !== "string" || !record.name.trim()) continue;
+    descriptors.push({
+      name: record.name,
+      appId: typeof record.appId === "string" ? record.appId : "",
+    });
+  }
+  return { ok: true, value: descriptors };
+}
+
+/**
+ * The application list, read by the broker rather than by the vendored server.
+ *
+ * The pinned upstream release ships no tool that enumerates installed
+ * applications, so this capability has no other implementation.
+ */
+export function runListInstalledApps(
+  options: ProbeOptions,
+): Promise<UiaProbeResult<InstalledAppDescriptor[]>> {
+  return runScript({ ...options, scriptName: "list-installed-apps.ps1" }).then((result) =>
+    result.ok ? parseInstalledApps(result.value) : result,
+  );
+}
+
 export interface FindElementsResult {
   window: { name: string; processId: number };
   elements: ElementDescriptor[];

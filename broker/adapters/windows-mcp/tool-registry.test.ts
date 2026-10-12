@@ -41,10 +41,29 @@ describe("framing", () => {
     expect(request.params).toEqual({ name: "Click", arguments: { x: 10, y: 20 } });
   });
 
-  it("keeps a frame on one line", () => {
+  it("terminates a frame so the line-delimited transport can read it", () => {
     const line = encodeFrame(buildToolsListRequest());
-    expect(line).not.toContain("\n");
+    // The server reads one complete line per request and waits for the rest
+    // otherwise, so a frame without its terminator is silently never answered.
+    // Asserting only "no inner newline" is what let that happen.
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line.indexOf("\n")).toBe(line.length - 1);
     expect(parseFramedLine(line)?.method).toBe("tools/list");
+  });
+
+  it("refuses a payload that would smuggle in a second frame", () => {
+    expect(() =>
+      encodeFrame({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { text: "a\nb" } }),
+    ).not.toThrow();
+    // `JSON.stringify` escapes the newline, so the frame still holds one line.
+    const line = encodeFrame({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { text: "a\nb" },
+    });
+    expect(line.indexOf("\n")).toBe(line.length - 1);
+    expect(parseFramedLine(line)?.method).toBe("tools/call");
   });
 
   it("returns null for a line that is not a frame", () => {

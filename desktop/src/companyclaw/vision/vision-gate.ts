@@ -79,10 +79,38 @@ export function selectVisionRecord(
   return isRemoteOrigin(origin) ? policy.vision.remote : policy.vision.local;
 }
 
+/**
+ * The record that applies to a request, with both channel records merged.
+ *
+ * Product-owner ruling (a-2), 2026-10-10: either switch being enabled is enough.
+ * The two records are two ways for the owner to say "yes", not two separate
+ * authorities. Picking strictly by origin made the remote record unreachable:
+ * every tool call reaches the endpoint through the same shared MCP connection
+ * and is therefore always stamped `local-ui`, so a grant the employee made with
+ * the remote switch was never read.
+ */
+export function selectVisionRecordForRequest(
+  policy: { vision: { local: VisionAuthorizationRecord; remote: VisionAuthorizationRecord } },
+  origin: ExecutionOrigin,
+): VisionAuthorizationRecord {
+  const byOrigin = selectVisionRecord(policy, origin);
+  if (byOrigin.enabled && !byOrigin.revokedAt) return byOrigin;
+  const other = isRemoteOrigin(origin) ? policy.vision.local : policy.vision.remote;
+  if (other.enabled && !other.revokedAt) return other;
+  return byOrigin;
+}
+
 export function evaluateVisionRequest(
   record: VisionAuthorizationRecord,
   context: VisionContext,
   now: Date,
+  options: {
+    /**
+     * Ruling ③: under 完全权限 the remote-operation switch does not gate the
+     * upload. The switch still governs the narrower presets.
+     */
+    allowWithoutRemoteAuthorization?: boolean;
+  } = {},
 ): VisionDecision {
   if (context.enterprisePolicyTightened) {
     return {
@@ -149,7 +177,7 @@ export function evaluateVisionRequest(
     };
   }
 
-  if (isRemoteOrigin(context.origin)) {
+  if (isRemoteOrigin(context.origin) && !options.allowWithoutRemoteAuthorization) {
     if (context.remoteAuthorizationExpiresAt === null) {
       return {
         allowed: false,

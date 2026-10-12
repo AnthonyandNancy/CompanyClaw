@@ -10,6 +10,12 @@
 # `processName` is the executable base name (no .exe) so the broker can enforce
 # its allow-list on the real process rather than on window-title text.
 
+# The broker reads this output as UTF-8; without the explicit encoding the host
+# writes the console code page instead, and every non-ASCII window title arrives
+# as U+FFFD — which makes the Chinese titles most employees see unmatchable.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 $root = [System.Windows.Automation.AutomationElement]::RootElement

@@ -56,11 +56,12 @@ import { migrateToPermissionPolicy } from "./permissions/migrate";
 import {
   DEFAULT_VISION_SCOPE,
   evaluateVisionRequest,
-  selectVisionRecord,
+  selectVisionRecordForRequest,
   visionGrantLifetimeMs,
   type VisionDecision,
 } from "./vision/vision-gate";
 import {
+  presetAllowsEveryAction,
   presetSuppressesRoutinePrompts,
   type PermissionPreset,
 } from "./policy/permission-preset";
@@ -134,6 +135,18 @@ export interface RuntimeDependencies {
   /** Appends one line to the audit log; absent means auditing is disabled. */
   appendAudit?: (filePath: string, line: string) => Promise<void>;
   ticketSecret: string;
+  /**
+   * Reads the currently configured model so the vision switch can name the
+   * provider it is authorizing. Injected because the config file lives with the
+   * app shell, not with the security core.
+   *
+   * Returns null when no model is configured. Must never return credentials.
+   */
+  readConfiguredModel?: () => {
+    provider: string;
+    baseUrl: string;
+    model: string;
+  } | null;
 }
 
 export interface RemoteAuthorizationView {
@@ -321,6 +334,19 @@ export class CompanyClawRuntime {
     this.applyBrokerTargets = apply;
   }
 
+  /**
+   * Aligns the stored broker flag with the preset, then returns the result.
+   *
+   * Called once when the broker becomes reachable. The preset is the authority
+   * and the stored flag is only its projection, so a file edited by hand — or a
+   * preset stored before this field existed — must not leave the broker gating
+   * nothing while the UI shows a narrow preset, or the reverse.
+   */
+  async reconcileBrokerTargets(): Promise<BrokerTargets> {
+    await this.syncBrokerUnrestricted();
+    return this.getBrokerTargets();
+  }
+
   // ── Broker application allow list ───────────────────────────────────
 
   /**
@@ -372,7 +398,7 @@ export class CompanyClawRuntime {
     acknowledged?: boolean;
   }): Promise<PermissionPolicy> {
     if (input.preset === "FULL_DAILY" && input.acknowledged !== true) {
-      throw new Error("启用「全面日常操作」前需要确认授权范围");
+      throw new Error("启用「完全权限」前需要确认授权范围");
     }
     if (this.permissionPolicy.preset === input.preset) return this.getPermissionPolicy();
     this.permissionPolicy = {
@@ -382,7 +408,26 @@ export class CompanyClawRuntime {
       policyVersion: this.permissionPolicy.policyVersion + 1,
     };
     await this.permissions.save(this.permissionPolicy);
+    await this.syncBrokerUnrestricted();
     return this.getPermissionPolicy();
+  }
+
+  /**
+   * Projects the preset onto the broker's own allow list.
+   *
+   * The broker receives its allow list through its environment, so "the widest
+   * preset means no allow list" only takes effect once the broker is told. Only
+   * the flag moves here: the employee's own list is left alone, so leaving the
+   * widest preset restores exactly what they had configured.
+   *
+   * Runs after the policy is durable, so a failed write cannot leave the broker
+   * more permissive than the stored preset.
+   */
+  private async syncBrokerUnrestricted(): Promise<void> {
+    const current = this.brokerTargets.get();
+    const unrestricted = presetAllowsEveryAction(this.permissionPolicy.preset);
+    if (current.unrestricted === unrestricted) return;
+    await this.setBrokerTargets({ ...current, unrestricted });
   }
 
   private async savePolicy(next: PermissionPolicy): Promise<PermissionPolicy> {
@@ -638,6 +683,7 @@ export class CompanyClawRuntime {
       origin?: ExecutionOrigin;
       approvalTicket?: ApprovalTicket;
       binding?: ApprovalBinding;
+      arguments?: Record<string, unknown>;
     };
   }): Promise<BridgeResult> {
     const lock = this.desktopLock.acquire(input.taskId);
@@ -649,6 +695,7 @@ export class CompanyClawRuntime {
         taskId: input.taskId,
         stepId: input.request.stepId,
         action: input.request.action,
+        ...(input.request.arguments ? { arguments: input.request.arguments } : {}),
         ...(input.request.origin ? { origin: input.request.origin } : {}),
         ...(input.request.approvalTicket ? { approvalTicket: input.request.approvalTicket } : {}),
         ...(input.request.binding ? { binding: input.request.binding } : {}),
@@ -739,17 +786,76 @@ export class CompanyClawRuntime {
           binding = issued.binding;
         }
 
-        const result = await this.executeStepWithLock({
-          taskId: dispatchInput.taskId,
-          transport: input.transport,
-          request: {
+        // Only a focus-sensitive call takes the desktop lock. A read cannot steal
+        // focus, and taking the lock for one has a cost that is not obvious: the
+        // lock is held for the whole broker call, and the broker's own timeout is
+        // two minutes, so a slow probe would block every later tool — including
+        // the read the model needs to recover. `DesktopExecutionLock` documents
+        // the same rule.
+        const request = {
+          stepId: dispatchInput.stepId,
+          action,
+          // The arguments the agent supplied, passed through verbatim: the broker
+          // validates them against its own contract, and a coordinate or
+          // application name rendered into `targetSystem` would not survive that
+          // check.
+          arguments: dispatchInput.arguments,
+          origin: input.context.origin,
+          ...(ticket ? { approvalTicket: ticket } : {}),
+          ...(binding ? { binding } : {}),
+        };
+        const result = dispatchInput.tool.mutating
+          ? await this.executeStepWithLock({
+              taskId: dispatchInput.taskId,
+              transport: input.transport,
+              request,
+            })
+          : await this.execute(input.transport, {
+              taskId: dispatchInput.taskId,
+              ...request,
+            });
+
+        // The last gate an image passes before it leaves the machine. Capturing
+        // the screen locally is ordinary automation; *sending that image to the
+        // configured provider* is the separate consent the vision switch grants.
+        // A refusal drops the image entirely — it is never forwarded first and
+        // checked afterwards.
+        if (result.outcome === "executed" && result.images && result.images.length > 0) {
+          const decision = this.evaluateScreenshotUpload(input.context.origin);
+          if (!decision.allowed) {
+            void this.audit.record({
+              taskId: dispatchInput.taskId,
+              stepId: dispatchInput.stepId,
+              origin: input.context.origin,
+              ownerSid: input.context.ownerSid,
+              deviceId: input.context.deviceId,
+              tool: dispatchInput.tool.name,
+              actionCategory: "screenshot",
+              decision: "deny",
+              reason: decision.reason,
+              policyVersion: this.permissionPolicy.policyVersion,
+              preset: this.permissionPolicy.preset,
+              autoAllowed: false,
+              target: "",
+            });
+            const { images: _dropped, ...withoutImages } = result;
+            return withoutImages;          }
+          void this.audit.record({
+            taskId: dispatchInput.taskId,
             stepId: dispatchInput.stepId,
-            action,
             origin: input.context.origin,
-            ...(ticket ? { approvalTicket: ticket } : {}),
-            ...(binding ? { binding } : {}),
-          },
-        });
+            ownerSid: input.context.ownerSid,
+            deviceId: input.context.deviceId,
+            tool: dispatchInput.tool.name,
+            actionCategory: "screenshot",
+            decision: "allow",
+            reason: decision.reason,
+            policyVersion: this.permissionPolicy.policyVersion,
+            preset: this.permissionPolicy.preset,
+            autoAllowed: true,
+            target: "",
+          });
+        }
         return result;
       },
       recordAudit: (entry) => {
@@ -1000,6 +1106,30 @@ export class CompanyClawRuntime {
     });
   }
 
+  /**
+   * The provider, endpoint and model the employee has configured.
+   *
+   * Read from the OpenClaw config rather than from the vision record: the record
+   * is the *authorization*, and it stays empty until the switch is turned on —
+   * taking the provider from there is exactly why the switch could never be
+   * enabled. No credential is read or returned.
+   */
+  getConfiguredModel(): { provider: string; baseUrl: string; model: string } | null {
+    const read = this.deps.readConfiguredModel;
+    if (!read) return null;
+    try {
+      const configured = read();
+      if (!configured) return null;
+      const provider = configured.provider.trim();
+      const baseUrl = configured.baseUrl.trim();
+      const model = configured.model.trim();
+      if (!provider || !model) return null;
+      return { provider, baseUrl, model };
+    } catch {
+      return null;
+    }
+  }
+
   async revokeVision(origin: "local" | "remote"): Promise<PermissionPolicy> {
     const current = this.permissionPolicy.vision[origin];
     return await this.savePolicy({
@@ -1021,7 +1151,9 @@ export class CompanyClawRuntime {
     captureScope: string;
     modelSupportsVision: boolean;
   }): VisionDecision {
-    const record = selectVisionRecord(this.permissionPolicy, input.origin);
+    // Ruling (a-2): either switch being enabled is enough, so the record is
+    // chosen from both rather than strictly from the origin.
+    const record = selectVisionRecordForRequest(this.permissionPolicy, input.origin);
     return evaluateVisionRequest(
       record,
       {
@@ -1039,7 +1171,36 @@ export class CompanyClawRuntime {
         enterprisePolicyTightened: false,
       },
       this.now(),
+      // Ruling ③: 完全权限 also covers the remote-operation switch.
+      { allowWithoutRemoteAuthorization: presetAllowsEveryAction(this.permissionPolicy.preset) },
     );
+  }
+
+  /**
+   * Decides whether a produced screenshot may reach the configured model.
+   *
+   * Separate entry point from `evaluateVision` because the caller here knows only
+   * the origin: the provider, endpoint and model are resolved from the live
+   * configuration, so a grant cannot be satisfied by a model the employee has
+   * since replaced. Reported as a refusal, never as an empty image.
+   */
+  private evaluateScreenshotUpload(origin: ExecutionOrigin): VisionDecision {
+    const configured = this.getConfiguredModel();
+    if (!configured) {
+      return {
+        allowed: false,
+        code: "vision-not-authorized",
+        reason: "尚未配置模型，无法把屏幕内容发送给模型服务商",
+      };
+    }
+    return this.evaluateVision({
+      origin,
+      provider: configured.provider,
+      baseUrl: configured.baseUrl,
+      model: configured.model,
+      captureScope: DEFAULT_VISION_SCOPE,
+      modelSupportsVision: true,
+    });
   }
 
   // ── Browser ──────────────────────────────────────────────────────────
@@ -1438,6 +1599,8 @@ export class CompanyClawRuntime {
       origin?: ExecutionOrigin;
       approvalTicket?: ApprovalTicket;
       binding?: ApprovalBinding;
+      /** The tool call's arguments, carried through to the transport. */
+      arguments?: Record<string, unknown>;
     },
   ): Promise<BridgeResult> {
     const origin = request.origin ?? "local-ui";
@@ -1463,8 +1626,7 @@ export class CompanyClawRuntime {
       now: this.now,
       consumedNonces: this.consumedNonces,
     });
-    return await bridge.execute(request);
-  }
+    return await bridge.execute(request);  }
 
   // ── Artifacts ────────────────────────────────────────────────────────
 

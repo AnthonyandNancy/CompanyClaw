@@ -159,6 +159,25 @@ describe("action classification for tool calls", () => {
     expect(describeTarget({ x: 1, y: 2 })).toContain("1, 2");
     expect(describeTarget({})).toBe("");
   });
+
+  it("describes a call that addresses a window by process name alone", () => {
+    // `focus-window` accepts a process name on its own, and a call that
+    // supplied only that described no target at all — which failed before the
+    // broker was ever reached.
+    expect(describeTarget({ processName: "QQ" })).toBe("QQ");
+    // An explicit title still wins, matching the execution adapter's choice.
+    expect(describeTarget({ processName: "qq", windowTitle: "QQ" })).toBe("QQ");
+  });
+
+  it("describes a shortcut, which names no window at all", () => {
+    // `hotkey` has no target window — it goes to whatever holds focus — so a
+    // blank target made the call unraisable. The combination identifies it.
+    expect(describeTarget({ keys: "ctrl+c" })).toBe("快捷键 ctrl+c");
+  });
+
+  it("describes a text entry by its coordinates", () => {
+    expect(describeTarget({ text: "大家晚上好", x: 100, y: 200 })).toContain("100, 200");
+  });
 });
 
 describe("dispatching a call", () => {

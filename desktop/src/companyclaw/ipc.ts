@@ -65,6 +65,11 @@ interface CompanyClawIpcOptions {
       targetChannelUserId: string;
     }): Promise<unknown>;
   };
+  /**
+   * The currently configured model, so the cloud-vision switch can name the
+   * provider it authorizes. Returns provider/endpoint/model only — never a key.
+   */
+  readConfiguredModel?: () => { provider: string; baseUrl: string; model: string } | null;
 }
 
 /** Handle returned to `main.ts` so it can stop the broker on quit. */
@@ -164,6 +169,11 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
       }
       return target;
     },
+    // The configured model lives in the app's own config file, so the shell
+    // resolves it and the core receives only the three fields it needs. Never the
+    // credential: the vision authorization names *who* receives an image, and a
+    // key stored alongside it would widen what the permission file can leak.
+    ...(options.readConfiguredModel ? { readConfiguredModel: options.readConfiguredModel } : {}),
   });
   if (broker) {
     // The allow list lives in the runtime; hand the broker its current value and
@@ -171,8 +181,17 @@ export function createCompanyClawRuntime(options: CompanyClawIpcOptions): Compan
     void runtime.setBrokerTargetsApplier(async (targets) => {
       await broker.updateTargets(targets);
     });
-    const current = runtime.getBrokerTargets();
-    broker.updateTargets(current).catch(() => undefined);
+    // Reconcile first: the preset is the authority for the unrestricted flag, so
+    // a stored file that disagrees (hand-edited, or written before the field
+    // existed) is corrected before the broker is launched with it. The push is
+    // unconditional — the broker still needs its allow list even when the flag
+    // did not have to change.
+    runtime
+      .reconcileBrokerTargets()
+      .then((targets) => broker.updateTargets(targets))
+      .catch(() => {
+        broker.updateTargets(runtime.getBrokerTargets()).catch(() => undefined);
+      });
   }
   return { runtime, broker };
 }
@@ -319,13 +338,23 @@ export function registerCompanyClawIpcHandlers(
 
   ipcMain.handle(
     "companyclaw:broker:set-targets",
-    (_event, input: { allowedProcesses?: string[]; allowedWindowTitles?: string[] }) =>
-      runtime.setBrokerTargets({
+    (
+      _event,
+      input: { allowedProcesses?: string[]; allowedWindowTitles?: string[]; unrestricted?: boolean },
+    ) => {
+      // The flag follows the preset. A manual allow-list edit must not silently
+      // turn the widest preset's behaviour off, so an omitted value keeps
+      // whatever the preset already decided.
+      const current = runtime.getBrokerTargets();
+      return runtime.setBrokerTargets({
         allowedProcesses: Array.isArray(input?.allowedProcesses) ? input.allowedProcesses : [],
         allowedWindowTitles: Array.isArray(input?.allowedWindowTitles)
           ? input.allowedWindowTitles
           : [],
-      }),
+        unrestricted:
+          typeof input?.unrestricted === "boolean" ? input.unrestricted : current.unrestricted,
+      });
+    },
   );
 
   ipcMain.handle("companyclaw:browser:get-policy", () => runtime.describeBrowserPolicy());
@@ -422,6 +451,8 @@ export function registerCompanyClawIpcHandlers(
   // ── Cloud vision authorization ────────────────────────────────────────
 
   ipcMain.handle("companyclaw:vision:get", () => runtime.getPermissionPolicy().vision);
+
+  ipcMain.handle("companyclaw:vision:get-configured-model", () => runtime.getConfiguredModel());
 
   ipcMain.handle(
     "companyclaw:vision:set",

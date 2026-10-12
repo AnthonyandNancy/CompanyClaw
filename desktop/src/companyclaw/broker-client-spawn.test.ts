@@ -130,6 +130,45 @@ describe("broker production startup", () => {
     }
   });
 
+  it("carries the unrestricted flag in the broker environment", async () => {
+    const root = temporaryRoot();
+    const { nodePath } = stagedInstallation(root);
+    const { brokerDir } = stagedInstallation(root, path.basename(nodePath));
+    const calls: SpawnCall[] = [];
+    const client = new BrokerClient({
+      brokerDir,
+      scriptDir: path.join(brokerDir, "scripts"),
+      nodePath,
+      ownerSid: "S-1-5-21-0",
+      deviceId: "device-1",
+      allowedProcesses: [],
+      allowedWindowTitles: [],
+      spawnProcess: ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        calls.push({ command, args, env: options.env });
+        const child = new FakeChild();
+        setImmediate(() => child.stdout.write('{"port":41234}\n'));
+        return child;
+      }) as unknown as typeof spawn,
+    });
+    try {
+      await client.start();
+      // The flag decides whether the broker's allow list still gates processes,
+      // so it must reach the child on every launch, not only after a change.
+      expect(calls[0].env.COMPANYCLAW_BROKER_UNRESTRICTED).toBe("false");
+
+      // updateTargets replaces the process so the new value is delivered.
+      await client.updateTargets({
+        allowedProcesses: [],
+        allowedWindowTitles: [],
+        unrestricted: true,
+      });
+      await client.start();
+      expect(calls[calls.length - 1].env.COMPANYCLAW_BROKER_UNRESTRICTED).toBe("true");
+    } finally {
+      await client.stop();
+    }
+  });
+
   it("honours a node path containing spaces and non-ASCII characters", async () => {
     const root = temporaryRoot();
     const { nodePath } = stagedInstallation(root, path.join("程序 文件", "node.exe"));
@@ -340,7 +379,11 @@ describe("broker lifecycle", () => {
     await client.start();
 
     for (let edit = 0; edit < 3; edit += 1) {
-      await client.updateTargets({ allowedProcesses: ["notepad"], allowedWindowTitles: [] });
+      await client.updateTargets({
+        allowedProcesses: ["notepad"],
+        allowedWindowTitles: [],
+        unrestricted: false,
+      });
       await client.start();
     }
 

@@ -5,7 +5,11 @@ import {
   type ActionCategory,
 } from "./action-category";
 import { isRemoteOrigin, resolveOrigin, type ExecutionOrigin } from "./execution-origin";
-import { presetSuppressesRoutinePrompts, type PermissionPreset } from "./permission-preset";
+import {
+  presetAllowsEveryAction,
+  presetSuppressesRoutinePrompts,
+  type PermissionPreset,
+} from "./permission-preset";
 
 export type RiskLevel = "R0" | "R1" | "R2" | "R3";
 export type PolicyDecision = "allow" | "require-approval" | "deny";
@@ -201,6 +205,19 @@ export function decideAction(
   const origin = resolveOrigin(context.origin);
   const remote = isRemoteOrigin(origin);
 
+  // 完全权限: the product owner defined this preset as "every action runs without
+  // a human confirmation, with no exception". It therefore outranks every rule
+  // below — the never-allowed categories, the remote R3 refusal, and the remote
+  // authorization switch — which is the ruling recorded in
+  // docs/companyclaw/v5/02-permission-preset-adr.md.
+  if (presetAllowsEveryAction(context.preset ?? "BASIC")) {
+    return {
+      ...classification,
+      decision: "allow",
+      reasons: [...classification.reasons, "完全权限：不需要人为确认"],
+    };
+  }
+
   if (classification.level === "R3" && isNeverAllowed(category)) {
     return {
       ...classification,
@@ -230,6 +247,11 @@ export function decideAction(
 
   // A covered target inside an authorized task runs without a second prompt
   // only when the employee enabled the daily preset; BASIC still asks.
+  //
+  // Note: `presetAllowsEveryAction` already returned above, so this branch now
+  // serves callers that pass no preset or one of the narrower presets. It is kept
+  // rather than deleted because it is the documented contract for a task-scoped
+  // run, and other callers depend on it.
   if (
     context.taskGranted &&
     classification.level === "R2" &&

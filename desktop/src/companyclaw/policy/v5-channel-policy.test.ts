@@ -138,9 +138,68 @@ describe("V5 - the local channel is not short-circuited by the remote switch", (
     expect(decideAction({ kind: "message-single-recipient" }, context).decision).toBe("allow");
   });
 
-  it("never lets a task grant widen an R3 category", () => {
-    const context: PolicyContext = { ...remote(), preset: "FULL_DAILY", taskGranted: true };
+  it("keeps an R3 category refused on a narrower preset even with a task grant", () => {
+    // Under 需审核 the task scope still must not widen an irreversible category.
+    const context: PolicyContext = { ...remote(), preset: "CUSTOM", taskGranted: true };
     expect(decideAction({ kind: "delete-permanent" }, context).decision).toBe("deny");
     expect(decideAction({ kind: "message-bulk" }, context).decision).toBe("deny");
+  });
+
+  it("lets 完全权限 run an R3 category, per the product-owner ruling", () => {
+    // Ruling 2026-10-10: 完全权限 means every action runs without a human
+    // confirmation. It outranks the never-allowed list in decideAction, so the
+    // categories the older ADR refused outright are reachable now.
+    const context: PolicyContext = { ...remote(), preset: "FULL_DAILY" };
+    expect(decideAction({ kind: "delete-permanent" }, context).decision).toBe("allow");
+    expect(decideAction({ kind: "message-bulk" }, context).decision).toBe("allow");
+    expect(decideAction({ kind: "payment" }, context).decision).toBe("allow");
+    expect(decideAction({ kind: "bypass-security" }, context).decision).toBe("allow");
+  });
+
+  it("still refuses those categories on the narrower presets", () => {
+    for (const kind of ["delete-permanent", "message-bulk", "payment", "bypass-security"] as const) {
+      expect(decideAction({ kind }, { ...remote(), preset: "BASIC" }).decision).toBe("deny");
+    }
+  });
+});
+
+describe("V5 ruling ③ - 完全权限 outranks the remote authorization switch", () => {
+  const everyKind = [
+    "read",
+    "write",
+    "delete-to-recycle-bin",
+    "delete-permanent",
+    "delete-batch-irreversible",
+    "message-single-recipient",
+    "message-bulk",
+    "sensitive-exfil",
+    "payment",
+    "system-config",
+    "bypass-security",
+    "arbitrary-command",
+    "high-risk",
+    "unknown",
+  ] as const;
+
+  it("allows every kind on both channels while remote access is switched off", () => {
+    for (const kind of everyKind) {
+      for (const origin of ["local-ui", "weixin-private"] as const) {
+        const decision = decideAction(
+          { kind },
+          { remoteAuthorization: "disabled", origin, preset: "FULL_DAILY" },
+        );
+        expect(decision.decision, `${kind} on ${origin}`).toBe("allow");
+      }
+    }
+  });
+
+  it("leaves the narrower presets governed by the remote switch", () => {
+    for (const preset of ["BASIC", "CUSTOM"] as const) {
+      const decision = decideAction(
+        { kind: "write", writesBusinessData: true },
+        { remoteAuthorization: "disabled", origin: "weixin-private", preset },
+      );
+      expect(decision.decision, preset).toBe("deny");
+    }
   });
 });
